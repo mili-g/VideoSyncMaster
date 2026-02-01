@@ -46,24 +46,29 @@ def ensure_transformers_version(target_version):
     If not, uninstall current and install target.
     """
     if check_transformers_version(target_version):
+        print(f"[DependencyManager] Transformers version {target_version} already satisfied.")
         return True
     
-    print(f"[DependencyManager] Switching transformers to version {target_version}...")
+    print(f"[DependencyManager] Transformers version mismatch. Switching to {target_version}...")
     
-    # Optional: Uninstall first to be safe, though pip install usually handles upgrades/downgrades
-    # But for "coexistence" switching, strictly uninstaling might be cleaner to avoid debris
+    # Optional: Uninstall first to be safe
     try:
+        print(f"[DEPS_INSTALLING] transformers (switching to {target_version})", flush=True)
+        # Using -y to auto-confirm uninstall
         subprocess.check_call([sys.executable, "-m", "pip", "uninstall", "transformers", "-y"])
-    except Exception:
-        pass # Ignore if not installed or fails
+    except Exception as e:
+        print(f"[DependencyManager] Warning during uninstall: {e}")
     
     success = install_package(f"transformers=={target_version}")
+    
     if success:
-        # Verify
-        # importlib.metadata.distribution("transformers") # Force refresh might be needed or process restart
-        # In Python, once distribution metadata is loaded, it might be cached.
-        # But since we are doing this BEFORE importing transformers in main.py, it should be fine.
-        return True
+        # Re-verify
+        if check_transformers_version(target_version):
+            print(f"[DependencyManager] Successfully switched to transformers=={target_version}")
+            return True
+        else:
+            print(f"[DependencyManager] Failed to verify transformers=={target_version} after installation.")
+    
     return False
 
 def check_gpu_deps():

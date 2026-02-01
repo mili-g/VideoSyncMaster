@@ -32,8 +32,10 @@ function createWindow() {
   console.log("createWindow called");
   // ... existing createWindow code ...
   win = new BrowserWindow({
-    width: 1200,
+    width: 1500,
     height: 900,
+    minWidth: 1500,
+    minHeight: 750,
     icon: path.join(process.env.VITE_PUBLIC, 'icon.ico'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.mjs'),
@@ -87,6 +89,11 @@ app.whenReady().then(() => {
     return await dialog.showOpenDialog(win, options)
   })
 
+  ipcMain.handle('dialog:showSaveDialog', async (_event, options) => {
+    if (!win) return { canceled: true, filePath: undefined }
+    return await dialog.showSaveDialog(win, options)
+  })
+
   // IPC Handler for directory creation
   ipcMain.handle('ensure-dir', async (_event: any, dirPath: string) => {
     return new Promise((resolve, reject) => {
@@ -99,14 +106,9 @@ app.whenReady().then(() => {
 
   // IPC Handler to get paths
   ipcMain.handle('get-paths', async () => {
-    let projectRoot;
-    if (app.isPackaged) {
-      // In Prod: resources/backend... -> Root is parent of resources
-      projectRoot = path.dirname(process.resourcesPath);
-    } else {
-      // In Dev: ui/.. -> VideoSync_Master
-      projectRoot = path.resolve(process.env.APP_ROOT, '..');
-    }
+    const projectRoot = app.isPackaged
+      ? path.dirname(process.resourcesPath)
+      : path.resolve(process.env.APP_ROOT, '..');
     const outputDir = path.join(projectRoot, 'output');
     return { projectRoot, outputDir };
   })
@@ -116,63 +118,32 @@ app.whenReady().then(() => {
     return new Promise((resolve, reject) => {
       console.log('Running backend with args:', args)
 
-      let backendProcess;
+      const projectRoot = app.isPackaged
+        ? path.dirname(process.resourcesPath)
+        : path.resolve(process.env.APP_ROOT, '..');
 
-      if (app.isPackaged) {
-        // In production: resources/python/python.exe OR ../python/python.exe (external)
-        // process.resourcesPath is inside the app installation directory
+      // Uniform logic for Dev and Prod since structures are now identical
+      const pythonExe = path.join(projectRoot, 'python', 'python.exe');
+      const scriptPath = path.join(projectRoot, 'backend', 'main.py');
+      const modelsDir = path.join(projectRoot, 'models', 'index-tts', 'hub');
 
-        // Check internal (bundled) python first
-        let pythonExe = path.join(process.resourcesPath, 'python', 'python.exe');
-        let modelsDir = path.join(path.dirname(process.resourcesPath), 'models', 'index-tts', 'hub');
+      console.log('Spawning Backend:', { pythonExe, scriptPath, modelsDir });
 
-        if (!fs.existsSync(pythonExe)) {
-          // Fallback to external python (folder next to VideoSync.exe)
-          const appRoot = path.dirname(process.resourcesPath); // The folder containing .exe
-          pythonExe = path.join(appRoot, 'python', 'python.exe');
-          console.log('Internal Python not found, trying external:', pythonExe);
-        }
+      const finalPythonExe = (app.isPackaged || fs.existsSync(pythonExe)) ? pythonExe : 'python';
 
-        // Script path remains inside app.asar/backend or unpacked resources
-        const scriptPath = path.join(process.resourcesPath, 'backend', 'main.py');
-
-        // Check if models exist in default location, if not, check external
-        if (!fs.existsSync(modelsDir)) {
-          const appRoot = path.dirname(process.resourcesPath);
-          // Maybe models are in 'models' folder next to exe
-          modelsDir = path.join(appRoot, 'models', 'index-tts', 'hub');
-        }
-
-        console.log('Spawning Packaged Backend with Python:', pythonExe);
-        console.log('Target Script:', scriptPath);
-        console.log('Models Dir:', modelsDir);
-
-        if (!fs.existsSync(pythonExe)) {
-          reject(new Error(`Python environment not found. Please ensure 'python' folder exists in ${path.dirname(pythonExe)}`));
-          return;
-        }
-
-        // Spawn python process
-        backendProcess = spawn(pythonExe, [scriptPath, '--json', '--model_dir', modelsDir, ...args], {
-          env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' }
-        });
-      } else {
-        // In Dev: python backend/main.py
-        const pythonScript = path.join(process.env.APP_ROOT, '../backend/main.py')
-
-        // Models Directory: ProjectRoot/models/index-tts/hub
-        const projectRoot = path.resolve(process.env.APP_ROOT, '..');
-        const modelsDir = path.join(projectRoot, 'models', 'index-tts', 'hub');
-
-        const pythonArgs = [pythonScript, '--json', '--model_dir', modelsDir, ...args]
-
-        console.log('Spawning Python Script:', pythonScript);
-        console.log('Models Dir:', modelsDir);
-        // Force Python to use UTF-8 for IO and arguments
-        backendProcess = spawn('python', pythonArgs, {
-          env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' }
-        })
+      if (finalPythonExe !== 'python' && !fs.existsSync(finalPythonExe)) {
+        reject(new Error(`Python environment not found at ${finalPythonExe}`));
+        return;
       }
+
+      if (!fs.existsSync(scriptPath)) {
+        reject(new Error(`Backend script not found at ${scriptPath}`));
+        return;
+      }
+
+      const backendProcess = spawn(finalPythonExe, [scriptPath, '--json', '--model_dir', modelsDir, ...args], {
+        env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' }
+      });
 
       activeBackendProcess = backendProcess
 
@@ -434,40 +405,14 @@ app.whenReady().then(() => {
   ipcMain.handle('fix-python-env', async (_event) => {
     return new Promise((resolve) => {
       try {
-        let pythonExe = '';
-        let requirementsPath = '';
-        let projectRoot = '';
+        const projectRoot = app.isPackaged
+          ? path.dirname(process.resourcesPath)
+          : path.resolve(process.env.APP_ROOT, '..');
 
-        if (app.isPackaged) {
-          projectRoot = path.dirname(process.resourcesPath);
-          // 1. Try internal python
-          pythonExe = path.join(process.resourcesPath, 'python', 'python.exe');
-          if (!fs.existsSync(pythonExe)) {
-            // 2. Try external python
-            pythonExe = path.join(projectRoot, 'python', 'python.exe');
-          }
+        const pythonExe = path.join(projectRoot, 'python', 'python.exe');
+        const requirementsPath = path.join(projectRoot, 'requirements.txt');
 
-          // Requirements: Try looking in project root
-          requirementsPath = path.join(projectRoot, 'requirements.txt');
-          if (!fs.existsSync(requirementsPath)) {
-            // Try looking inside backend resource if bundled?
-            const internalReq = path.join(process.resourcesPath, 'backend', 'requirements.txt');
-            if (fs.existsSync(internalReq)) requirementsPath = internalReq;
-          }
-
-        } else {
-          projectRoot = path.resolve(process.env.APP_ROOT, '..');
-          // In dev: assuming python is in PATH or venv
-          // But let's try to find the local one first
-          if (fs.existsSync(path.join(projectRoot, 'python', 'python.exe'))) {
-            pythonExe = path.join(projectRoot, 'python', 'python.exe');
-          } else {
-            pythonExe = 'python'; // Fallback to system env
-          }
-          requirementsPath = path.join(projectRoot, 'requirements.txt');
-        }
-
-        if (!fs.existsSync(pythonExe) && pythonExe !== 'python') {
+        if (!fs.existsSync(pythonExe)) {
           resolve({ success: false, error: `找不到 Python 解释器。请确认 python 文件夹存在于 ${projectRoot}` });
           return;
         }
@@ -520,42 +465,13 @@ app.whenReady().then(() => {
   ipcMain.handle('check-python-env', async (_event) => {
     return new Promise((resolve) => {
       try {
-        let pythonExe = '';
-        let requirementsPath = '';
-        let checkScriptPath = '';
-        let projectRoot = '';
+        const projectRoot = app.isPackaged
+          ? path.dirname(process.resourcesPath)
+          : path.resolve(process.env.APP_ROOT, '..');
 
-        if (app.isPackaged) {
-          projectRoot = path.dirname(process.resourcesPath);
-          pythonExe = path.join(process.resourcesPath, 'python', 'python.exe');
-          if (!fs.existsSync(pythonExe)) {
-            pythonExe = path.join(projectRoot, 'python', 'python.exe');
-          }
-
-          requirementsPath = path.join(projectRoot, 'requirements.txt');
-          if (!fs.existsSync(requirementsPath)) {
-            const internalReq = path.join(process.resourcesPath, 'backend', 'requirements.txt');
-            if (fs.existsSync(internalReq)) requirementsPath = internalReq;
-          }
-
-          checkScriptPath = path.join(process.resourcesPath, 'backend', 'check_requirements.py');
-
-        } else {
-          projectRoot = path.resolve(process.env.APP_ROOT, '..');
-          const localPythonPath = path.join(projectRoot, 'python', 'python.exe');
-
-          if (fs.existsSync(localPythonPath)) {
-            pythonExe = localPythonPath;
-          } else {
-            // STRICT CHECK: If we are in dev but want to simulate product behavior or user requested strict check:
-            // The user explicitly asked "When root dir has no python...". 
-            // So we fail here if local python is missing, instead of falling back to system 'python'.
-            resolve({ success: false, status: 'missing_python', error: `找不到 Python 解释器。请确认 python 文件夹存在于 ${projectRoot}` });
-            return;
-          }
-          requirementsPath = path.join(projectRoot, 'requirements.txt');
-          checkScriptPath = path.join(projectRoot, 'backend', 'check_requirements.py');
-        }
+        const pythonExe = path.join(projectRoot, 'python', 'python.exe');
+        const requirementsPath = path.join(projectRoot, 'requirements.txt');
+        const checkScriptPath = path.join(projectRoot, 'backend', 'check_requirements.py');
 
         if (!fs.existsSync(pythonExe)) {
           resolve({ success: false, status: 'missing_python', error: `找不到 Python 解释器。请确认 python 文件夹存在于 ${projectRoot}` });
@@ -658,6 +574,9 @@ app.whenReady().then(() => {
           qwen_17b_custom: checkDir(['Qwen3-TTS-12Hz-1.7B-CustomVoice', 'Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice']),
           qwen_06b_base: checkDir(['Qwen3-TTS-12Hz-0.6B-Base', 'Qwen/Qwen3-TTS-12Hz-0.6B-Base']),
           qwen_06b_custom: checkDir(['Qwen3-TTS-12Hz-0.6B-CustomVoice', 'Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice']),
+          qwen_asr_06b: checkDir(['Qwen3-ASR-0.6B', 'Qwen/Qwen3-ASR-0.6B']),
+          qwen_asr_17b: checkDir(['Qwen3-ASR-1.7B', 'Qwen/Qwen3-ASR-1.7B']),
+          qwen_asr_aligner: checkDir(['Qwen3-ForcedAligner-0.6B', 'Qwen/Qwen3-ForcedAligner-0.6B']),
           rife: checkDir(['rife', 'rife-ncnn-vulkan'])
         };
 

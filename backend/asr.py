@@ -248,7 +248,7 @@ def split_into_subtitles(segments, max_chars=35, max_gap=0.5):
 
 
 
-def run_asr(audio_path, model_path=None, service="whisperx", output_dir=None, vad_onset=0.700, vad_offset=0.700):
+def run_asr(audio_path, model_path=None, service="whisperx", output_dir=None, vad_onset=0.700, vad_offset=0.700, language=None):
     """
     Run ASR using WhisperX or Cloud APIs:
     1. Transcribe (Faster-Whisper generic / Cloud)
@@ -326,6 +326,19 @@ def run_asr(audio_path, model_path=None, service="whisperx", output_dir=None, va
             })
         print(f"Bcut ASR complete. {len(segments)} segments.")
         return segments
+
+    elif service == "qwen":
+        print(f"Running Qwen3-ASR on {audio_path}")
+        try:
+            from qwen_asr_service import run_qwen_asr_inference
+            segments = run_qwen_asr_inference(audio_path, language=language)
+            return segments
+        except ImportError as e:
+            print(f"Failed to import Qwen ASR service: {e}")
+            return []
+        except Exception as e:
+            print(f"Qwen ASR execution failed: {e}")
+            return []
     
     # Default: WhisperX
     

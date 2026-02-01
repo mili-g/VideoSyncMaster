@@ -6,7 +6,7 @@ export interface Segment {
     text: string;
     audioPath?: string;
     audioDuration?: number; // Duration of the generated audio in seconds
-    audioStatus?: 'none' | 'generating' | 'ready' | 'error';
+    audioStatus?: 'none' | 'generating' | 'ready' | 'error' | 'pending';
 }
 
 interface TimelineProps {
@@ -24,6 +24,7 @@ interface TimelineProps {
     onEditStart?: (index: number) => void;
     onEditEnd?: () => void;
     onUploadSubtitle?: (file: File) => void;
+    onExport?: () => void;
 }
 
 const formatTimestamp = (seconds: number): string => {
@@ -35,7 +36,7 @@ const formatTimestamp = (seconds: number): string => {
     return `${mins.toString().padStart(2, '0')}:${secs.toFixed(2).padStart(5, '0')}`;
 };
 
-const Timeline: React.FC<TimelineProps> = ({ segments, onUpdateSegment, currentTime = 0, onPlaySegment, domRef, onScroll, onASR, loading, videoPath, playingVideoIndex, activeIndex, onEditStart, onEditEnd, onUploadSubtitle }) => {
+const Timeline: React.FC<TimelineProps> = ({ segments, onUpdateSegment, currentTime = 0, onPlaySegment, domRef, onScroll, onASR, loading, videoPath, playingVideoIndex, activeIndex, onEditStart, onEditEnd, onUploadSubtitle, onExport }) => {
     const internalRef = React.useRef<HTMLDivElement>(null);
     const itemRefs = React.useRef<(HTMLDivElement | null)[]>([]);
 
@@ -94,48 +95,71 @@ const Timeline: React.FC<TimelineProps> = ({ segments, onUpdateSegment, currentT
                                 {loading ? '识别中...' : '识别字幕'}
                             </button>
                         )}
-                        {onUploadSubtitle && (
-                            <>
-                                <input
-                                    type="file"
-                                    accept=".srt"
-                                    id="timeline-upload-input"
-                                    style={{ display: 'none' }}
-                                    onChange={(e) => {
-                                        if (e.target.files?.[0]) {
-                                            onUploadSubtitle(e.target.files[0]);
-                                            e.target.value = ''; // reset
-                                        }
-                                    }}
-                                />
+                        <div style={{ display: 'flex', gap: '5px', width: '100%' }}>
+                            {onExport && (
                                 <button
-                                    disabled={!videoPath}
-                                    onClick={() => document.getElementById('timeline-upload-input')?.click()}
-                                    onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                                    onDrop={(e) => {
-                                        e.preventDefault(); e.stopPropagation();
-                                        if (e.dataTransfer.files?.[0] && onUploadSubtitle) {
-                                            onUploadSubtitle(e.dataTransfer.files[0]);
-                                        }
-                                    }}
+                                    disabled={segments.length === 0}
+                                    onClick={onExport}
                                     className="btn"
-                                    title="上传本地字幕文件"
+                                    title="导出当前字幕为 SRT 文件"
                                     style={{
                                         padding: '5px 12px',
                                         fontSize: '0.9em',
-                                        background: !videoPath ? 'transparent' : '#6a38ffff',
-                                        border: !videoPath ? '1px dashed #6b7280' : 'none',
-                                        color: !videoPath ? '#9ca3af' : 'white',
-                                        cursor: !videoPath ? 'not-allowed' : 'pointer',
+                                        background: segments.length === 0 ? 'transparent' : '#f59e0b',
+                                        border: segments.length === 0 ? '1px dashed #6b7280' : 'none',
+                                        color: segments.length === 0 ? '#9ca3af' : 'white',
+                                        cursor: segments.length === 0 ? 'not-allowed' : 'pointer',
                                         whiteSpace: 'nowrap',
                                         height: 'fit-content',
-                                        width: '100%'
+                                        flex: 1
                                     }}
                                 >
-                                    📄 上传字幕
+                                    💾 导出字幕
                                 </button>
-                            </>
-                        )}
+                            )}
+                            {onUploadSubtitle && (
+                                <>
+                                    <input
+                                        type="file"
+                                        accept=".srt"
+                                        id="timeline-upload-input"
+                                        style={{ display: 'none' }}
+                                        onChange={(e) => {
+                                            if (e.target.files?.[0]) {
+                                                onUploadSubtitle(e.target.files[0]);
+                                                e.target.value = ''; // reset
+                                            }
+                                        }}
+                                    />
+                                    <button
+                                        disabled={!videoPath}
+                                        onClick={() => document.getElementById('timeline-upload-input')?.click()}
+                                        onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                                        onDrop={(e) => {
+                                            e.preventDefault(); e.stopPropagation();
+                                            if (e.dataTransfer.files?.[0] && onUploadSubtitle) {
+                                                onUploadSubtitle(e.dataTransfer.files[0]);
+                                            }
+                                        }}
+                                        className="btn"
+                                        title="上传本地字幕文件"
+                                        style={{
+                                            padding: '5px 12px',
+                                            fontSize: '0.9em',
+                                            background: !videoPath ? 'transparent' : '#6a38ffff',
+                                            border: !videoPath ? '1px dashed #6b7280' : 'none',
+                                            color: !videoPath ? '#9ca3af' : 'white',
+                                            cursor: !videoPath ? 'not-allowed' : 'pointer',
+                                            whiteSpace: 'nowrap',
+                                            height: 'fit-content',
+                                            flex: 1
+                                        }}
+                                    >
+                                        📄 上传字幕
+                                    </button>
+                                </>
+                            )}
+                        </div>
                     </div>
                 </div>
             </div>
@@ -159,6 +183,9 @@ const Timeline: React.FC<TimelineProps> = ({ segments, onUpdateSegment, currentT
                                 boxSizing: 'border-box'
                             }}
                         >
+                            <div style={{ minWidth: '40px', fontSize: '0.85em', color: 'var(--text-secondary)', userSelect: 'none', textAlign: 'center' }}>
+                                {idx + 1}
+                            </div>
                             <div style={{ minWidth: '120px', fontSize: '0.85em', color: isActive ? 'var(--text-primary)' : 'var(--accent-color)' }}>
                                 {formatTimestamp(seg.start)} - {formatTimestamp(seg.end)}
                             </div>

@@ -9,7 +9,9 @@ interface ModelStatus {
     qwen_17b_design: boolean;
     qwen_17b_custom: boolean;
     qwen_06b_base: boolean;
-    qwen_06b_custom: boolean;
+    qwen_asr_06b: boolean;
+    qwen_asr_17b: boolean;
+    qwen_asr_aligner: boolean;
     rife: boolean;
 }
 
@@ -86,6 +88,15 @@ const ModelManager: React.FC<ModelManagerProps> = ({ themeMode }) => {
             } else if (modelKey === 'qwen_06b_custom') {
                 modelId = 'Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice';
                 localDir = 'models/Qwen3-TTS-12Hz-0.6B-CustomVoice';
+            } else if (modelKey === 'qwen_asr_06b') {
+                modelId = 'Qwen/Qwen3-ASR-0.6B';
+                localDir = 'models/Qwen3-ASR-0.6B';
+            } else if (modelKey === 'qwen_asr_17b') {
+                modelId = 'Qwen/Qwen3-ASR-1.7B';
+                localDir = 'models/Qwen3-ASR-1.7B';
+            } else if (modelKey === 'qwen_asr_aligner') {
+                modelId = 'Qwen/Qwen3-ForcedAligner-0.6B';
+                localDir = 'models/Qwen3-ForcedAligner-0.6B';
             } else if (modelKey === 'rife') {
                 isGenericFile = true;
                 modelId = 'rife-ncnn-vulkan';
@@ -155,6 +166,10 @@ const ModelManager: React.FC<ModelManagerProps> = ({ themeMode }) => {
 
         { key: 'qwen_06b_base', name: 'Qwen3 0.6B Base', desc: 'Qwen3 声音克隆 (轻量版, 0.6B)', link: 'Models/Qwen3-TTS-12Hz-0.6B-Base' },
         { key: 'qwen_06b_custom', name: 'Qwen3 0.6B Preset', desc: 'Qwen3 预置音色 (轻量版)', link: 'Models/Qwen3-TTS-12Hz-0.6B-CustomVoice' },
+
+        { key: 'qwen_asr_06b', name: 'Qwen3 ASR 0.6B', desc: 'Qwen3 语音识别 (轻量版, 0.6B)', link: 'Models/Qwen3-ASR-0.6B' },
+        { key: 'qwen_asr_17b', name: 'Qwen3 ASR 1.7B', desc: 'Qwen3 语音识别 (标准版, 1.7B)', link: 'Models/Qwen3-ASR-1.7B' },
+        { key: 'qwen_asr_aligner', name: 'Qwen3 Aligner', desc: 'Qwen3 时间戳对齐引擎 (Forced Aligner)', link: 'Models/Qwen3-ForcedAligner-0.6B' },
 
         { key: 'rife', name: 'RIFE Flow', desc: '光流法补帧模型 ', link: 'Models/rife' },
     ];

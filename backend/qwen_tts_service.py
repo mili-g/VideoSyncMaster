@@ -5,6 +5,13 @@ import soundfile as sf
 import traceback
 import json
 
+# Ensure environment requirements
+try:
+    from dependency_manager import ensure_transformers_version
+    ensure_transformers_version("4.57.3")
+except ImportError:
+    print("[QwenTTS] Dependency manager not found, skipping version check.")
+
 # Ensure qwen-tts can be imported
 try:
     from qwen_tts import Qwen3TTSModel
@@ -221,8 +228,8 @@ def run_qwen_tts(text, ref_audio_path, output_path, language="Auto", **kwargs):
             gen_kwargs['pad_token_id'] = int(pad_id)
             
             # Use user provided parameters
-            gen_kwargs['max_new_tokens'] = int(kwargs.get('max_new_tokens', 2048))
-            if gen_kwargs['max_new_tokens'] > 2048: gen_kwargs['max_new_tokens'] = 2048 # Safety cap at 2048
+            gen_kwargs['max_new_tokens'] = int(kwargs.get('max_new_tokens', 4096))
+            # Removed safety cap as requested
 
             gen_kwargs['temperature'] = float(kwargs.get('temperature', 0.7))
             gen_kwargs['top_p'] = float(kwargs.get('top_p', 0.8))
@@ -287,21 +294,6 @@ def run_batch_qwen_tts(tasks, language="Auto", **kwargs):
             print("[QwenTTS] Note: Optimization disabled for stability. (Re-computing prompt each batch)")
             voice_clone_prompt = None
             
-            # ref_text = kwargs.get('qwen_ref_text', '') # Main global ref text
-            
-            # x_vector_mode = False
-            # if not ref_text:
-            #      print("[QwenTTS] Batch Optim: No reference text. Using x-vector only mode.")
-            #      x_vector_mode = True
-            
-            # voice_clone_prompt = model.create_voice_clone_prompt(
-            #     ref_audio=first_ref,
-            #     ref_text=ref_text,
-            #     x_vector_only_mode=x_vector_mode
-            # )
-            # current_ref_audio = first_ref
-
-        # 3. Batch Processing
         batch_size = kwargs.get('batch_size', 1)
         if batch_size < 1: batch_size = 1
         
@@ -329,8 +321,8 @@ def run_batch_qwen_tts(tasks, language="Auto", **kwargs):
             gen_kwargs['pad_token_id'] = int(pad_id)
             
             # Restore user parameters
-            gen_kwargs['max_new_tokens'] = int(kwargs.get('max_new_tokens', 2048))
-            if gen_kwargs['max_new_tokens'] > 2048: gen_kwargs['max_new_tokens'] = 2048
+            gen_kwargs['max_new_tokens'] = int(kwargs.get('max_new_tokens', 4096))
+            # if gen_kwargs['max_new_tokens'] > 2048: gen_kwargs['max_new_tokens'] = 2048
 
             gen_kwargs['temperature'] = float(kwargs.get('temperature', 0.7))
             gen_kwargs['top_p'] = float(kwargs.get('top_p', 0.8))
@@ -342,11 +334,6 @@ def run_batch_qwen_tts(tasks, language="Auto", **kwargs):
                 sr = 24000 # default
                 
                 if target_model_type == "Base":
-                    # Check if we can use the pre-computed prompt (Same Ref Optimization)
-                    # We only support batching for Clone if all items in batch use the SAME ref/prompt.
-                    # Or if the model supports list of refs (not assumed here to be safe).
-                    
-                    # We check if we have a global prompt ready (implies all tasks share ref)
                     if voice_clone_prompt:
                          wavs, sr = model.generate_voice_clone(
                             text=batch_texts,
@@ -355,14 +342,8 @@ def run_batch_qwen_tts(tasks, language="Auto", **kwargs):
                             **gen_kwargs
                         )
                     else:
-                        # No global prompt. 
-                        # If batch_size > 1, we might be in trouble if refs vary.
-                        # Fallback: check if refs vary in this batch.
                         current_batch_refs = [t['ref_audio_path'] for t in batch_tasks]
                         if all(r == current_batch_refs[0] for r in current_batch_refs):
-                             # Same ref in this batch, compute prompt or pass ref
-                             # For efficiency, just pass ref_audio if API supports "broadcasting" single ref to list of texts?
-                             # Or compute prompt for this batch.
                              batch_ref_text = kwargs.get('qwen_ref_text', '')
                              batch_x_vec = False
                              if not batch_ref_text:

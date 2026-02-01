@@ -6,9 +6,15 @@ interface QwenTTSConfigProps {
     isActive?: boolean;
     onActivate?: () => void;
     onModeChange?: (mode: 'clone' | 'design' | 'preset') => void;
+    batchSize: number;
+    setBatchSize: (size: number) => void;
+    cloneBatchSize: number;
+    setCloneBatchSize: (size: number) => void;
+    maxNewTokens: number;
+    setMaxNewTokens: (token: number) => void;
 }
 
-const QwenTTSConfig: React.FC<QwenTTSConfigProps> = ({ themeMode, isActive, onActivate, onModeChange }) => {
+const QwenTTSConfig: React.FC<QwenTTSConfigProps> = ({ themeMode, isActive, onActivate, onModeChange, batchSize, setBatchSize, cloneBatchSize, setCloneBatchSize, maxNewTokens, setMaxNewTokens }) => {
     const isLightMode = themeMode === 'gradient' || themeMode === 'light';
 
     // Modes: 'clone' (Default) | 'design' (Prompt based) | 'preset' (Built-in speakers)
@@ -232,6 +238,16 @@ const QwenTTSConfig: React.FC<QwenTTSConfigProps> = ({ themeMode, isActive, onAc
         }
     };
 
+    const handleStopPreview = async () => {
+        try {
+            await (window as any).ipcRenderer.invoke('kill-backend');
+            setPreviewLoading(false);
+            setFeedback({ title: '已停止', message: '预览生成已停止。', type: 'error' });
+        } catch (e) {
+            console.error("Failed to stop:", e);
+        }
+    };
+
     return (
         <div style={{ padding: '0px', color: isLightMode ? '#333' : '#fff' }}>
             <ConfirmDialog
@@ -276,8 +292,38 @@ const QwenTTSConfig: React.FC<QwenTTSConfigProps> = ({ themeMode, isActive, onAc
                 </div>
             </div>
 
+            <div style={{ marginBottom: '20px' }}>
+                <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>基础参数 (Basic Parameters)</label>
+                <div style={{ padding: '15px', background: isLightMode ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.05)', borderRadius: '8px', border: '1px solid ' + (isLightMode ? '#ddd' : '#444') }}>
+                    <div style={{ marginBottom: '15px' }}>
+                        <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>单次生成最大长度 (Max Tokens)</label>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                            <input
+                                type="number"
+                                min="512"
+                                value={maxNewTokens}
+                                onChange={(e) => setMaxNewTokens(Math.max(1, parseInt(e.target.value) || 2048))}
+                                className="input-field"
+                                style={{
+                                    width: '80px',
+                                    padding: '4px 8px',
+                                    background: isLightMode ? '#fff' : '#333',
+                                    color: isLightMode ? '#000' : '#fff',
+                                    borderColor: isLightMode ? '#ccc' : '#555',
+                                    textAlign: 'center',
+                                    fontWeight: 'bold'
+                                }}
+                            />
+                            <span style={{ fontSize: '0.8em', color: isLightMode ? '#666' : '#aaa' }}>Tokens (推荐 2048-4096)。此参数影响单段配音的最大时长。</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             {mode === 'preset' ? (
                 <>
+
+
                     <div style={{ marginBottom: '20px' }}>
                         <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>选择预置角色 (Preset Voice)</label>
                         <p style={{ fontSize: '0.9em', color: isLightMode ? '#666' : '#aaa', marginBottom: '5px' }}>
@@ -306,6 +352,30 @@ const QwenTTSConfig: React.FC<QwenTTSConfigProps> = ({ themeMode, isActive, onAc
                             <option value="Sohee">Sohee - 推荐韩文</option>
                         </select>
                     </div>
+
+                    <div style={{ marginBottom: '20px' }}>
+                        <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>并发设置 (Concurrency)</label>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                            <span style={{ fontSize: '0.9em', color: isLightMode ? '#666' : '#aaa' }}>批量生成时的并发数 (Batch Size):</span>
+                            <input
+                                type="number"
+                                min="1"
+                                max="50"
+                                value={batchSize}
+                                onChange={(e) => setBatchSize(Math.max(1, parseInt(e.target.value) || 1))}
+                                className="input-field"
+                                style={{
+                                    width: '60px',
+                                    padding: '4px 8px',
+                                    background: isLightMode ? '#fff' : '#333',
+                                    color: isLightMode ? '#000' : '#fff',
+                                    borderColor: isLightMode ? '#ccc' : '#555',
+                                    textAlign: 'center',
+                                    fontWeight: 'bold'
+                                }}
+                            />
+                        </div>
+                    </div>
                     <div style={{ marginBottom: '20px' }}>
                         <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>预览测试 (Preview)</label>
                         <div style={{ display: 'flex', gap: '10px' }}>
@@ -323,20 +393,19 @@ const QwenTTSConfig: React.FC<QwenTTSConfigProps> = ({ themeMode, isActive, onAc
                                 }}
                             />
                             <button
-                                onClick={handleGeneratePreview}
-                                disabled={previewLoading}
+                                onClick={previewLoading ? handleStopPreview : handleGeneratePreview}
                                 style={{
                                     padding: '0 15px',
-                                    background: previewLoading ? '#ccc' : '#8b5cf6',
+                                    background: previewLoading ? '#ef4444' : '#8b5cf6',
                                     color: 'white',
                                     border: 'none',
                                     borderRadius: '4px',
-                                    cursor: previewLoading ? 'not-allowed' : 'pointer',
+                                    cursor: 'pointer',
                                     fontWeight: 'bold',
                                     marginRight: '5px'
                                 }}
                             >
-                                {previewLoading ? '⏳ 生成中...' : '🛠️ 合成'}
+                                {previewLoading ? '⏹ 停止' : '🛠️ 合成'}
                             </button>
                             <button
                                 onClick={handlePlayPreview}
@@ -360,6 +429,7 @@ const QwenTTSConfig: React.FC<QwenTTSConfigProps> = ({ themeMode, isActive, onAc
                 </>
             ) : mode === 'clone' ? (
                 <>
+
                     <div style={{ marginBottom: '20px' }}>
                         <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>参考音频</label>
                         <p style={{ fontSize: '0.9em', color: isLightMode ? '#666' : '#aaa', marginBottom: '5px' }}>
@@ -409,6 +479,30 @@ const QwenTTSConfig: React.FC<QwenTTSConfigProps> = ({ themeMode, isActive, onAc
                     </div>
 
                     <div style={{ marginBottom: '20px' }}>
+                        <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>并发设置 (Concurrency)</label>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                            <span style={{ fontSize: '0.9em', color: isLightMode ? '#666' : '#aaa' }}>批量生成时的并发数 (Batch Size):</span>
+                            <input
+                                type="number"
+                                min="1"
+                                max="50"
+                                value={cloneBatchSize}
+                                onChange={(e) => setCloneBatchSize(Math.max(1, parseInt(e.target.value) || 1))}
+                                className="input-field"
+                                style={{
+                                    width: '60px',
+                                    padding: '4px 8px',
+                                    background: isLightMode ? '#fff' : '#333',
+                                    color: isLightMode ? '#000' : '#fff',
+                                    borderColor: isLightMode ? '#ccc' : '#555',
+                                    textAlign: 'center',
+                                    fontWeight: 'bold'
+                                }}
+                            />
+                        </div>
+                    </div>
+
+                    <div style={{ marginBottom: '20px' }}>
                         <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>预览测试 (Preview)</label>
                         <p style={{ fontSize: '0.9em', color: isLightMode ? '#666' : '#aaa', marginBottom: '5px' }}>
                             输入一段文字，点击试听以验证当前参考音频的效果。
@@ -428,20 +522,19 @@ const QwenTTSConfig: React.FC<QwenTTSConfigProps> = ({ themeMode, isActive, onAc
                                 }}
                             />
                             <button
-                                onClick={handleGeneratePreview}
-                                disabled={previewLoading}
+                                onClick={previewLoading ? handleStopPreview : handleGeneratePreview}
                                 style={{
                                     padding: '0 15px',
-                                    background: previewLoading ? '#ccc' : '#8b5cf6',
+                                    background: previewLoading ? '#ef4444' : '#8b5cf6',
                                     color: 'white',
                                     border: 'none',
                                     borderRadius: '4px',
-                                    cursor: previewLoading ? 'not-allowed' : 'pointer',
+                                    cursor: 'pointer',
                                     fontWeight: 'bold',
                                     marginRight: '5px'
                                 }}
                             >
-                                {previewLoading ? '⏳ 生成中...' : '🛠️ 合成'}
+                                {previewLoading ? '⏹ 停止' : '🛠️ 合成'}
                             </button>
                             <button
                                 onClick={handlePlayPreview}
@@ -465,6 +558,7 @@ const QwenTTSConfig: React.FC<QwenTTSConfigProps> = ({ themeMode, isActive, onAc
                 </>
             ) : ( // This is for mode === 'design'
                 <>
+
                     <div style={{ marginBottom: '20px' }}>
                         <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>音色描述指令 (Voice Instruction)</label>
                         {hasDesignRef && (
@@ -533,20 +627,19 @@ const QwenTTSConfig: React.FC<QwenTTSConfigProps> = ({ themeMode, isActive, onAc
                                 }}
                             />
                             <button
-                                onClick={handleGeneratePreview}
-                                disabled={previewLoading}
+                                onClick={previewLoading ? handleStopPreview : handleGeneratePreview}
                                 style={{
                                     padding: '0 15px',
-                                    background: previewLoading ? '#ccc' : '#8b5cf6',
+                                    background: previewLoading ? '#ef4444' : '#8b5cf6',
                                     color: 'white',
                                     border: 'none',
                                     borderRadius: '4px',
-                                    cursor: previewLoading ? 'not-allowed' : 'pointer',
+                                    cursor: 'pointer',
                                     fontWeight: 'bold',
                                     marginRight: '5px'
                                 }}
                             >
-                                {previewLoading ? '⏳ 生成中...' : '🛠️ 合成'}
+                                {previewLoading ? '⏹ 停止' : '🛠️ 合成'}
                             </button>
                             <button
                                 onClick={handlePlayPreview}
@@ -568,6 +661,32 @@ const QwenTTSConfig: React.FC<QwenTTSConfigProps> = ({ themeMode, isActive, onAc
                         </div>
                     </div>
                 </>
+            )}
+
+            {mode === 'design' && (
+                <div style={{ marginBottom: '20px' }}>
+                    <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>并发设置 (Concurrency)</label>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                        <span style={{ fontSize: '0.9em', color: isLightMode ? '#666' : '#aaa' }}>批量生成时的并发数 (Batch Size):</span>
+                        <input
+                            type="number"
+                            min="1"
+                            max="50"
+                            value={batchSize}
+                            onChange={(e) => setBatchSize(Math.max(1, parseInt(e.target.value) || 1))}
+                            className="input-field"
+                            style={{
+                                width: '60px',
+                                padding: '4px 8px',
+                                background: isLightMode ? '#fff' : '#333',
+                                color: isLightMode ? '#000' : '#fff',
+                                borderColor: isLightMode ? '#ccc' : '#555',
+                                textAlign: 'center',
+                                fontWeight: 'bold'
+                            }}
+                        />
+                    </div>
+                </div>
             )}
 
             <div style={{ marginBottom: '20px' }}>

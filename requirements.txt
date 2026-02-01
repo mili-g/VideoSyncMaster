@@ -55,3 +55,4 @@ nvidia-cudnn-cu12<9.0.0
 sox
 triton
 
+nagisa

@@ -11,6 +11,12 @@ if BACKEND_DIR not in sys.path:
     sys.path.append(BACKEND_DIR)
 
 try:
+    from dependency_manager import ensure_transformers_version
+    ensure_transformers_version("4.52.1")
+except ImportError:
+    print("[IndexTTS] Dependency manager not found, skipping version check.")
+
+try:
     from indextts.infer_v2 import IndexTTS2
 except ImportError as e:
     print(f"Failed to import IndexTTS2: {e}")
@@ -105,7 +111,7 @@ def run_tts(text, ref_audio_path, output_path, model_dir=None, config_path=None,
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
         
         # Filter out arguments not supported by IndexTTS/HF Generate
-        ignore_keys = {'batch_size', 'qwen_mode', 'voice_instruct', 'preset_voice', 'qwen_model_size', 'qwen_ref_text', 'tts_service', 'action', 'json', 'cfg_scale', 'num_beams', 'length_penalty', 'max_new_tokens'}
+        ignore_keys = {'batch_size', 'qwen_mode', 'voice_instruct', 'preset_voice', 'qwen_model_size', 'qwen_ref_text', 'tts_service', 'action', 'json', 'cfg_scale', 'num_beams', 'length_penalty', 'max_new_tokens', 'ref_audio'}
         valid_kwargs = {k: v for k, v in kwargs.items() if k not in ignore_keys}
         
         # Add IndexTTS specific defaults (User specified to remove subtalker_ prefix)
@@ -186,7 +192,7 @@ def run_batch_tts(tasks, model_dir=None, config_path=None, language="English", *
             try:
                 # Enable repetition_penalty and cfg_scale by NOT ignoring them
                 # Filter out arguments not supported by IndexTTS/HF Generate
-                ignore_keys = {'batch_size', 'qwen_mode', 'voice_instruct', 'preset_voice', 'qwen_model_size', 'qwen_ref_text', 'tts_service', 'action', 'json', 'cfg_scale', 'num_beams', 'length_penalty', 'max_new_tokens'}
+                ignore_keys = {'batch_size', 'qwen_mode', 'voice_instruct', 'preset_voice', 'qwen_model_size', 'qwen_ref_text', 'tts_service', 'action', 'json', 'cfg_scale', 'num_beams', 'length_penalty', 'max_new_tokens', 'ref_audio'}
                 
                 valid_kwargs = {k: v for k, v in kwargs.items() if k not in ignore_keys}
                 
@@ -245,14 +251,25 @@ def run_batch_tts(tasks, model_dir=None, config_path=None, language="English", *
             except Exception as e:
                 print(f"Failed task {i}: {e}")
                 
-                partial_data = {
+                # Include audio_path if file was generated (allows user to play even failed audio)
+                error_result = {
                     "index": task.get('index', i),
                     "success": False,
                     "error": str(e)
                 }
-                print(f"[PARTIAL] {json.dumps(partial_data)}", flush=True)
                 
-                yield {"success": False, "error": str(e)}
+                # Check if audio file exists despite the error
+                if os.path.exists(out):
+                    error_result["audio_path"] = out
+                    try:
+                        info = sf.info(out)
+                        error_result["duration"] = info.duration
+                    except:
+                        pass
+                
+                print(f"[PARTIAL] {json.dumps(error_result)}", flush=True)
+                
+                yield error_result
             
             # Emit progress
             print(f"[PROGRESS] {int((i + 1) / total * 100)}", flush=True)

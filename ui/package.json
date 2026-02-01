@@ -1,7 +1,7 @@
 {
   "name": "videosync",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -50,7 +50,7 @@
       "uninstallerIcon": "dist/icon.ico",
       "deleteAppDataOnUninstall": true
     },
-    "extraResources": [
+    "extraFiles": [
       {
         "from": "../backend",
         "to": "backend",
@@ -60,6 +60,15 @@
           "!**/*.pyc",
           "!**/*.pyd",
           "!**/*.so"
+        ]
+      },
+      {
+        "from": "../Qwen3-ASR",
+        "to": "Qwen3-ASR",
+        "filter": [
+          "**/*",
+          "!**/__pycache__/**",
+          "!**/*.pyc"
         ]
       },
       {

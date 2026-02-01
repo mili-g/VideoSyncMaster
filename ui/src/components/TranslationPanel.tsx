@@ -20,9 +20,7 @@ export interface TranslationPanelProps {
     dubbingLoading?: boolean;
     onReTranslate?: (index: number) => void;
     loading?: boolean;
-    onPlaySegment?: (start: number, end: number) => void;
     playingAudioIndex?: number | null;
-    playingVideoIndex?: number | null;
     activeIndex?: number;
     onEditStart?: (index: number) => void;
     onEditEnd?: () => void;
@@ -31,6 +29,7 @@ export interface TranslationPanelProps {
     ttsService?: string;
     hasErrors?: boolean;
     onRetryErrors?: () => void;
+    onExport?: () => void;
 }
 
 const TranslationPanel: React.FC<TranslationPanelProps> = ({
@@ -52,9 +51,7 @@ const TranslationPanel: React.FC<TranslationPanelProps> = ({
     dubbingLoading,
     onReTranslate,
     loading,
-    onPlaySegment,
     playingAudioIndex,
-    playingVideoIndex,
     activeIndex,
     onEditStart,
     onEditEnd,
@@ -62,7 +59,8 @@ const TranslationPanel: React.FC<TranslationPanelProps> = ({
     hasVideo = false,
     ttsService = 'indextts',
     hasErrors,
-    onRetryErrors
+    onRetryErrors,
+    onExport
 }) => {
     const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -267,37 +265,57 @@ const TranslationPanel: React.FC<TranslationPanelProps> = ({
                     </button>
                     <button
                         onClick={onGenerateAll}
-                        disabled={translatedSegments.length === 0 || dubbingLoading || loading}
+                        disabled={translatedSegments.length === 0 || dubbingLoading || loading || generatingSegmentId !== null}
                         className="btn"
                         style={{
                             padding: '8px 12px',
-                            background: translatedSegments.length === 0 || dubbingLoading || loading ? '#4b5563' : '#10b981',
-                            cursor: translatedSegments.length === 0 || dubbingLoading || loading ? 'not-allowed' : 'pointer',
-                            opacity: translatedSegments.length === 0 || dubbingLoading || loading ? 0.7 : 1,
+                            background: translatedSegments.length === 0 || dubbingLoading || loading || generatingSegmentId !== null ? '#4b5563' : '#10b981',
+                            cursor: translatedSegments.length === 0 || dubbingLoading || loading || generatingSegmentId !== null ? 'not-allowed' : 'pointer',
+                            opacity: translatedSegments.length === 0 || dubbingLoading || loading || generatingSegmentId !== null ? 0.7 : 1,
                             height: 'fit-content'
                         }}
                     >
-                        {dubbingLoading ? '处理中...' : '生成全部配音'}
+                        {dubbingLoading ? '处理中...' : (generatingSegmentId !== null ? '单个生成中...' : '生成全部配音')}
                     </button>
 
                     {hasErrors && onRetryErrors && (
                         <button
-                            disabled={dubbingLoading}
+                            disabled={dubbingLoading || generatingSegmentId !== null}
                             onClick={onRetryErrors}
                             title="重新生成所有失败(红叉)的片段"
                             className="btn"
                             style={{
                                 padding: '6px 12px',
                                 fontSize: '0.9em',
-                                background: dubbingLoading ? '#4b5563' : '#ef4444',
-                                cursor: dubbingLoading ? 'not-allowed' : 'pointer',
-                                opacity: dubbingLoading ? 0.7 : 1,
+                                background: dubbingLoading || generatingSegmentId !== null ? '#4b5563' : '#ef4444',
+                                cursor: dubbingLoading || generatingSegmentId !== null ? 'not-allowed' : 'pointer',
+                                opacity: dubbingLoading || generatingSegmentId !== null ? 0.7 : 1,
                                 whiteSpace: 'nowrap',
                                 height: 'fit-content',
                                 display: 'flex', alignItems: 'center', gap: '5px'
                             }}
                         >
                             🔄 重试失败片段
+                        </button>
+                    )}
+
+                    {onExport && (
+                        <button
+                            onClick={onExport}
+                            disabled={translatedSegments.length === 0}
+                            className="btn"
+                            title="导出翻译字幕为 SRT 文件"
+                            style={{
+                                padding: '8px 12px',
+                                background: translatedSegments.length === 0 ? 'transparent' : '#f59e0b',
+                                border: translatedSegments.length === 0 ? '1px dashed #6b7280' : 'none',
+                                color: translatedSegments.length === 0 ? '#9ca3af' : 'white',
+                                cursor: translatedSegments.length === 0 ? 'not-allowed' : 'pointer',
+                                display: 'flex', alignItems: 'center', gap: '5px',
+                                whiteSpace: 'nowrap'
+                            }}
+                        >
+                            💾 导出译文
                         </button>
                     )}
 
@@ -318,7 +336,7 @@ const TranslationPanel: React.FC<TranslationPanelProps> = ({
                     const isRetranslating = retranslatingSegmentId === idx;
                     const isBusy = isGenerating || isRetranslating;
 
-                    let bgColor = 'var(--item-bg-inactive)';
+                    let bgColor = 'var(--bg-secondary)';
                     let borderColor = 'transparent';
 
                     if (isBusy) {
@@ -456,7 +474,7 @@ const TranslationPanel: React.FC<TranslationPanelProps> = ({
 
                 {segments.length === 0 && <div style={{ padding: '20px', textAlign: 'center', color: '#6b7280' }}>暂无字幕数据</div>}
             </div>
-        </div>
+        </div >
     );
 };
 

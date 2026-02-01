@@ -105,6 +105,9 @@ package.py
 voice-pro/
 
 VideoCaptioner/
-Qwen3-TTS/
+
 
 node-v22.16.0-x64.msi
+package_app.py
+patch_installer.iss
+ui copy

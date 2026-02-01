@@ -6,11 +6,17 @@ import ConfirmDialog from './ConfirmDialog';
 interface TTSConfigProps {
     themeMode?: 'light' | 'dark' | 'gradient';
     activeService: 'indextts' | 'qwen';
-    onServiceChange: (service: 'indextts' | 'qwen') => void;
+    onServiceChange: (service: 'indextts' | 'qwen') => boolean;
     onQwenModeChange: (mode: 'clone' | 'design' | 'preset') => void;
+    batchSize: number;
+    setBatchSize: (size: number) => void;
+    cloneBatchSize: number;
+    setCloneBatchSize: (size: number) => void;
+    maxNewTokens: number;
+    setMaxNewTokens: (token: number) => void;
 }
 
-const TTSConfig: React.FC<TTSConfigProps> = ({ themeMode, activeService, onServiceChange, onQwenModeChange }) => {
+const TTSConfig: React.FC<TTSConfigProps> = ({ themeMode, activeService, onServiceChange, onQwenModeChange, batchSize, setBatchSize, cloneBatchSize, setCloneBatchSize, maxNewTokens, setMaxNewTokens }) => {
     const isLightMode = themeMode === 'gradient' || themeMode === 'light';
 
     // IndexTTS States
@@ -117,22 +123,20 @@ const TTSConfig: React.FC<TTSConfigProps> = ({ themeMode, activeService, onServi
     const handleSwitchService = async (target: 'indextts' | 'qwen') => {
         if (target === activeService) return;
 
-        // No need for native confirm. The global overlay in App.tsx will show if deps are installing.
+        // Perform validation first
+        const success = onServiceChange(target);
+        if (!success) return; // Blocked by incompatibility
+
         setSwitching(true);
         setSwitchStatus('正在配置环境...');
 
         try {
-
             await (window as any).ipcRenderer.invoke('run-backend', [
                 '--action', 'generate_single_tts',
                 '--tts_service', target,
                 '--input', 'dummy', '--output', 'dummy', '--text', 'dummy'
             ]);
 
-            // The backend will try to init, install deps, then maybe fail on dummy file.
-            // But deps will be installed.
-
-            onServiceChange(target);
             setSwitchStatus('');
             setSwitching(false);
             // No alert needed, UI update is enough feedback.
@@ -245,6 +249,12 @@ const TTSConfig: React.FC<TTSConfigProps> = ({ themeMode, activeService, onServi
                         isActive={activeService === 'qwen'}
                         onActivate={() => handleSwitchService('qwen')}
                         onModeChange={onQwenModeChange}
+                        batchSize={batchSize}
+                        setBatchSize={setBatchSize}
+                        cloneBatchSize={cloneBatchSize}
+                        setCloneBatchSize={setCloneBatchSize}
+                        maxNewTokens={maxNewTokens}
+                        setMaxNewTokens={setMaxNewTokens}
                     />
                 ) : (
                     <>

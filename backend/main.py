@@ -80,8 +80,8 @@ sys.excepthook = exception_hook
 
 if not getattr(sys, 'frozen', False):
     try:
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        portable_python = os.path.join(current_dir, "python", "python.exe")
+        # Portable python is expected to be in APP_ROOT/python/python.exe
+        portable_python = os.path.join(APP_ROOT, "python", "python.exe")
         
         if os.path.exists(portable_python):
             # Normalize paths for comparison
@@ -523,29 +523,7 @@ def dub_video(input_path, target_lang, output_path, asr_service="whisperx", vad_
             print(f"    Failed to extract ref audio: {e}")
             continue
 
-        # Custom Logic for Qwen Global Reference (Design/Preset/Clone with explicit ref)
-        # If user provides a global ref_audio via kwargs (for Qwen Design/Clone), use it instead of segment ref.
-        # However, for Qwen Clone mode default, we often want segment-based refs if no global ref is provided.
-        
-        # Check if we have a global override
         global_ref_override = kwargs.get('ref_audio') # passed from main args 'ref_audio' -> kwargs?? No, main args maps to kwargs 
-        # In main(), args.ref_audio is passed to dub_video via **tts_kwargs? No, wait.
-        # args.ref_audio is strictly for 'test_tts' or 'merge_video' in original parser. 
-        # We need to ensure dub_video receives it if we want to support it.
-        
-        # Actually, let's look at how dub_video is called in main().
-        # dub_video(..., **tts_kwargs)
-        # tts_kwargs includes: qwen_mode, voice_instruct, preset_voice, qwen_ref_text...
-        # It does NOT include 'ref_audio' from args.ref_audio by default in line 605.
-        
-        # We need to rely on `ref_clip_path` (segment specific) unless `qwen_mode` implies otherwise.
-        # But for 'design' mode, there is NO segment specific ref that makes sense (unless we use it for keeping duration?).
-        # Qwen 'design' purely relies on prompt. Ref audio is ignored by run_qwen_tts in design mode.
-        
-        # For 'clone' mode:
-        # If we are doing "Design -> Clone" handoff, we need the global designed audio.
-        # We can pass this via `kwargs['ref_audio']` if we add it to tts_kwargs in main.
-        
         effective_ref_audio = ref_clip_path
         if kwargs.get('ref_audio'):
              effective_ref_audio = kwargs.get('ref_audio')
@@ -626,6 +604,7 @@ def main():
     parser.add_argument("--output", type=str, help="Output path")
     parser.add_argument("--duration", type=float, help="Target duration in seconds for Alignment")
     parser.add_argument("--lang", type=str, help="Target language for translation/dubbing", default="English")
+    parser.add_argument("--ori_lang", type=str, help="Source language for ASR", default="Chinese")
     parser.add_argument("--json", action="store_true", help="Output result as JSON")
     parser.add_argument("--text", type=str, help="Text to speak (for generate_single_tts)")
     parser.add_argument("--start", type=float, help="Start time in seconds (for generate_single_tts)", default=0.0)
@@ -689,9 +668,9 @@ def main():
         # ... (Existing ASR code) ...
         if args.input:
             if not args.json:
-                print(f"Testing ASR on {args.input} using {args.asr}", flush=True)
+                print(f"Testing ASR on {args.input} using {args.asr} (Original Language: {args.ori_lang})", flush=True)
             # Pass output_dir for raw saving
-            segments = run_asr(args.input, service=args.asr, output_dir=args.output_dir, vad_onset=args.vad_onset, vad_offset=args.vad_offset)
+            segments = run_asr(args.input, service=args.asr, output_dir=args.output_dir, vad_onset=args.vad_onset, vad_offset=args.vad_offset, language=args.ori_lang)
             if args.json:
                 result_data = segments
             else:
@@ -1120,6 +1099,7 @@ def main():
                          
                          if final_idx in task_result_map:
                              res = task_result_map[final_idx]
+                             res['index'] = final_idx # Ensure index is present for frontend mapping
                              
                              if res['success']:
                                  start = float(seg.get('start', 0))
