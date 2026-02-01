@@ -301,19 +301,23 @@ function App() {
   // Modified to support pause toggle
   const handlePlaySegment = (startTime: number, endTime?: number, index?: number) => {
     // If we have an index and it matches currently playing video segment, toggle pause
-    if (index !== undefined && playingAudioIndex === index) { // Changed from playingVideoIndex to playingAudioIndex as playingVideoIndex was removed
+    if (index !== undefined && playingVideoIndex === index) {
       if (videoRef.current) {
-        videoRef.current.pause();
+        if (videoRef.current.paused) {
+          videoRef.current.play().catch(e => console.error(e));
+        } else {
+          videoRef.current.pause();
+          setPlayingVideoIndex(null);
+        }
       }
-      // setPlayingVideoIndex(null); // Removed
       return;
     }
 
     // Switch to new segment
     if (index !== undefined) {
-      // setPlayingVideoIndex(index); // Removed
+      setPlayingVideoIndex(index);
     } else {
-      // setPlayingVideoIndex(null); // Removed
+      setPlayingVideoIndex(null);
     }
 
     setSeekTime(null);
@@ -695,7 +699,7 @@ function App() {
           {currentView === 'home' && (
             <div className="workbench-layout">
               {/* Left Column: Video & Upload */}
-              <div className="workbench-column" style={{ width: leftWidth }}>
+              <div className="workbench-column" style={{ width: leftWidth, overflowY: 'auto', paddingRight: '10px' }}>
                 <VideoUpload
                   onFileSelected={(path) => {
                     setVideoPath(path);

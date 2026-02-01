@@ -698,7 +698,6 @@ export function useVideoProject() {
 
             if (result && result.success) {
                 setMergedVideoPath(result.output);
-                setVideoPath(result.output);
                 setStatus('视频合并完成！');
                 setFeedback({
                     title: "处理成功",
