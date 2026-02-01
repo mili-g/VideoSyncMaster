@@ -104,8 +104,8 @@ const ASRHub: React.FC<ASRHubProps> = ({ themeMode, asrService, onServiceChange 
                         {[
                             { id: 'whisperx', name: 'WhisperX (本地实时)', desc: '高质量本地模型，支持音画同步对齐' },
                             { id: 'qwen', name: 'Qwen3 ASR (本地)', desc: 'Qwen2-Audio (1.7B/0.6B) 强大的多语种识别' },
-                            { id: 'jianying', name: '剪映 API (云端)', desc: '速度极快，适合中文长视频' },
-                            { id: 'bcut', name: '哔哩哔哩 API (云端)', desc: 'B站官方接口，稳定性好' }
+                            { id: 'jianying', name: '剪刀 API (云端)', desc: '速度极快，适合中文长视频' },
+                            { id: 'bcut', name: '硬币 API (云端)', desc: '稳定性好' }
                         ].map(engine => (
                             <div
                                 key={engine.id}
