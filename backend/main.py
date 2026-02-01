@@ -26,15 +26,10 @@ if current_script_dir not in sys.path:
     sys.path.insert(0, current_script_dir)
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-PARENT_DIR_NAME = os.path.basename(os.path.dirname(CURRENT_DIR))
-
-if PARENT_DIR_NAME.lower() == 'resources':
-    IS_PROD = True
-    APP_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, "..", ".."))
-else:
-    # Development
-    IS_PROD = False
-    APP_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, ".."))
+# With flat structure, APP_ROOT is consistently the parent of backend/
+APP_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, ".."))
+# Detect production by checking for app.asar (typically in resources/) or if sys is frozen
+IS_PROD = os.path.exists(os.path.join(APP_ROOT, "resources", "app.asar")) or getattr(sys, 'frozen', False)
 
 # Logging to "logs" folder in App Root (or Project Root)
 log_dir = os.path.join(APP_ROOT, "logs")
