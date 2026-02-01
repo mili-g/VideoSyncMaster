@@ -1109,26 +1109,10 @@ def main():
                                      final_output_list.append(res)
                                      continue
 
-                                 current_dur = get_audio_duration(output_audio)
-                                 
-                                 if current_dur and current_dur > target_dur + 0.1:
-                                     strategy = getattr(args, 'strategy', 'auto_speedup')
-                                     if strategy in ['frame_blend', 'freeze_frame', 'rife']:
-                                          print(f"[批量TTS] 片段 {final_idx} 时长 {current_dur:.2f}s > {target_dur:.2f}s。策略 {strategy}，跳过对齐。")
-                                     else:
-                                          print(f"[批量TTS] 正在对齐片段 {final_idx} ({current_dur:.2f}s -> {target_dur:.2f}s)...")
-                                          temp_aligned = output_audio.replace('.wav', '_aligned_temp.wav')
-                                          if align_audio(output_audio, temp_aligned, target_dur):
-                                              import shutil
-                                              shutil.move(temp_aligned, output_audio)
-                                              
-                                              # Re-measure actual duration to be sure
-                                              new_dur = get_audio_duration(output_audio)
-                                              if new_dur:
-                                                  res['duration'] = new_dur
-                                              else:
-                                                  res['duration'] = target_dur
-                                              
+                                 if output_audio:
+                                     current_dur = get_audio_duration(output_audio)
+                                     res['duration'] = current_dur or target_dur
+                                     
                              final_output_list.append(res)
                          else:
                              final_output_list.append({

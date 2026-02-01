@@ -117,8 +117,30 @@ def merge_audios_to_video(video_path, audio_segments, output_path, strategy='aut
                 continue
 
             try:
+                # [MODIFIED] Dynamic alignment for auto_speedup without touching cache
+                target_dur = seg.get('duration')
+                final_file_path = file_path
+                temp_segment_path = None
+                
+                if strategy == 'auto_speedup' and target_dur:
+                    actual_dur = get_audio_duration(file_path)
+                    if actual_dur and actual_dur > target_dur + 0.1:
+                        fd, temp_segment_path = tempfile.mkstemp(suffix='.wav')
+                        os.close(fd)
+                        if align_audio(file_path, temp_segment_path, target_dur):
+                            final_file_path = temp_segment_path
+                            print(f"[Mixer] Segment {i} dynamically aligned: {actual_dur:.2f}s -> {target_dur:.2f}s")
+                        else:
+                            try: os.remove(temp_segment_path)
+                            except: pass
+                            temp_segment_path = None
 
-                y, _ = librosa.load(file_path, sr=target_sr, mono=False)
+                y, _ = librosa.load(final_file_path, sr=target_sr, mono=False)
+                
+                # Cleanup dynamic temp segment
+                if temp_segment_path and os.path.exists(temp_segment_path):
+                    try: os.remove(temp_segment_path)
+                    except: pass
                 
                 if y.ndim == 1:
                     y = y.reshape(1, -1)
@@ -484,9 +506,6 @@ def merge_video_advanced(video_path, audio_segments, output_path, strategy):
                             .run(overwrite_output=True, quiet=True)
                          )
                          
-                         # RIFE Interpolation only makes sense if we are actually extending duration
-                         # Pass seg_audio_dur as target. Since scale_factor >= 1.0 here (due to check above),
-                         # seg_audio_dur >= slot_dur.
                          if apply_rife_interpolation(raw_chunk, rife_out, seg_audio_dur):
                              rife_success = True
                              stream_v = ffmpeg.input(rife_out)['v']
@@ -498,9 +517,8 @@ def merge_video_advanced(video_path, audio_segments, output_path, strategy):
                      if not rife_success:
                          v_filters.append(('setpts', [f"{scale_factor}*PTS"], {}))
             
-            else:
-                 if abs(scale_factor - 1.0) > 0.02:
-                     v_filters.append(('setpts', [f"{scale_factor}*PTS"], {}))
+            elif abs(scale_factor - 1.0) > 0.02:
+                 v_filters.append(('setpts', [f"{scale_factor}*PTS"], {}))
 
             # Apply filters
             output_args = {

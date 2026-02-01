@@ -464,6 +464,7 @@ export function useVideoProject() {
                 '--text', segment.text,
                 '--start', segment.start.toString(),
                 '--duration', (segment.end - segment.start).toString(),
+                '--strategy', videoStrategy,
                 ...extraArgs
             ]);
 
@@ -581,6 +582,7 @@ export function useVideoProject() {
                 '--ref', tempJsonPath,
                 '--batch_size', effectiveBatchSize.toString(),
                 '--max_new_tokens', maxNewTokens.toString(),
+                '--strategy', videoStrategy,
                 ...extraArgs
             ]);
 
