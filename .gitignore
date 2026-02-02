@@ -53,6 +53,7 @@ _debug_final.json
 # --- Output & Cache ---
 output/
 .cache/
+.env_cache/
 backend/.cache/
 ui/.cache/
 
