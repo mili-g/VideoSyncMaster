@@ -12,6 +12,7 @@ print("DEBUG: Pre-import check passed", file=sys.stderr, flush=True)
 os.environ['HF_HUB_OFFLINE'] = '1'
 os.environ['TRANSFORMERS_OFFLINE'] = '1'
 os.environ["PYTHONUTF8"] = "1"
+os.environ["PYTHONIOENCODING"] = "utf-8"
 
 # Force UTF-8 for stdout/stderr
 sys.stdout.reconfigure(encoding='utf-8')
@@ -19,6 +20,22 @@ sys.stderr.reconfigure(encoding='utf-8')
 
 
 import subprocess
+
+_original_popen = subprocess.Popen
+
+class EncodingSafePopen(_original_popen):
+    def __init__(self, *args, **kwargs):
+        text_mode = (
+            kwargs.get("text")
+            or kwargs.get("universal_newlines")
+            or (kwargs.get("encoding") is not None)
+        )
+        if text_mode:
+            kwargs.setdefault("encoding", "utf-8")
+            kwargs.setdefault("errors", "replace")
+        super().__init__(*args, **kwargs)
+
+subprocess.Popen = EncodingSafePopen
 
 current_script_dir = os.path.dirname(os.path.abspath(__file__))
 if current_script_dir not in sys.path:
