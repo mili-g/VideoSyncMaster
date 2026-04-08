@@ -74,6 +74,10 @@ function normalizeKnownProcessMessage(message: string) {
   return message
 }
 
+function getPythonProcessEnv() {
+  return { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' }
+}
+
 function isBenignTaskkillMessage(message: string) {
   const text = message.toLowerCase()
   return (
@@ -323,7 +327,7 @@ app.whenReady().then(async () => {
       }
 
       const backendProcess = spawn(finalPythonExe, [scriptPath, '--json', '--model_dir', modelsDir, ...args], {
-        env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' }
+        env: getPythonProcessEnv()
       });
 
       activeBackendProcess = backendProcess
@@ -600,20 +604,22 @@ app.whenReady().then(async () => {
         console.log(`[FixEnv] Starting repair... Python: ${pythonExe}, Req: ${requirementsPath}`);
 
         const installProcess = spawn(pythonExe, ['-m', 'pip', 'install', '-r', requirementsPath], {
-          env: { ...process.env, PYTHONUTF8: '1' }
+          env: getPythonProcessEnv()
         });
 
         let output = '';
         let errorOut = '';
 
         installProcess.stdout.on('data', (data) => {
-          console.log(`[Pip]: ${data}`);
-          output += data.toString();
+          const s = normalizeKnownProcessMessage(decodeProcessChunk(data));
+          output += s;
+          console.log(`[Pip]: ${s}`);
         });
 
         installProcess.stderr.on('data', (data) => {
-          console.error(`[Pip Err]: ${data}`);
-          errorOut += data.toString();
+          const s = normalizeKnownProcessMessage(decodeProcessChunk(data));
+          errorOut += s;
+          console.error(`[Pip Err]: ${s}`);
         });
 
         installProcess.on('close', (code) => {
@@ -662,12 +668,16 @@ app.whenReady().then(async () => {
         }
 
         const checkProcess = spawn(pythonExe, [checkScriptPath, requirementsPath, '--json'], {
-          env: { ...process.env, PYTHONUTF8: '1' }
+          env: getPythonProcessEnv()
         });
 
         let output = '';
-        checkProcess.stdout.on('data', (data) => output += data.toString());
-        checkProcess.stderr.on('data', (data) => console.error('[CheckEnv Err]:', data.toString()));
+        checkProcess.stdout.on('data', (data) => {
+          output += normalizeKnownProcessMessage(decodeProcessChunk(data));
+        });
+        checkProcess.stderr.on('data', (data) => {
+          console.error('[CheckEnv Err]:', normalizeKnownProcessMessage(decodeProcessChunk(data)));
+        });
 
         checkProcess.on('close', (code) => {
           try {
@@ -866,7 +876,7 @@ except Exception as e:
     print(f"ERROR: {e}")
 `;
         const proc = spawn(pythonExe, ['-c', script], {
-          env: { ...process.env, PYTHONUTF8: '1' }
+          env: getPythonProcessEnv()
         });
 
         if (key) activeDownloads.set(key, proc);
@@ -875,12 +885,12 @@ except Exception as e:
         let errorOut = '';
 
         proc.stdout.on('data', (data) => {
-          const s = data.toString();
+          const s = normalizeKnownProcessMessage(decodeProcessChunk(data));
           console.log(`[DownloadFile]: ${s}`);
           output += s;
         });
         proc.stderr.on('data', (data) => {
-          const s = data.toString();
+          const s = normalizeKnownProcessMessage(decodeProcessChunk(data));
           console.error(`[DownloadFile Err]: ${s}`);
           errorOut += s;
         });
@@ -984,7 +994,7 @@ except Exception as e:
         }
 
         const proc = spawn(pythonExe, ['-c', script], {
-          env: { ...process.env, PYTHONUTF8: '1' }
+          env: getPythonProcessEnv()
         });
 
         activeDownloads.set(trackingKey, proc);
@@ -993,13 +1003,13 @@ except Exception as e:
         let errorOut = '';
 
         proc.stdout.on('data', (data) => {
-          const s = data.toString();
+          const s = normalizeKnownProcessMessage(decodeProcessChunk(data));
           console.log(`[ModelScope]: ${s}`);
           output += s;
           if (logStream) logStream.write(s);
         });
         proc.stderr.on('data', (data) => {
-          const s = data.toString();
+          const s = normalizeKnownProcessMessage(decodeProcessChunk(data));
           console.error(`[ModelScope Err]: ${s}`);
           errorOut += s;
           if (logStream) logStream.write(`[STDERR] ${s}`);
