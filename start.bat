@@ -50,20 +50,19 @@ echo [INFO] Python 环境准备就绪。
 
 :SKIP_UNZIP
 
-echo ==========================================
-echo       VideoSync 一键启动器
-echo ==========================================
-echo ooooooooooooo  o8o                        oooooooooo.                                    
-echo 8'   888   `8  `^"'                        `888'   `Y8b                                   
-echo      888      oooo   .oooo.   ooo. .oo.    888      888  .ooooo.  ooo. .oo.    .oooooooo 
-echo      888      `888  `P  )88b  `888P"Y88b   888      888 d88' `88b `888P"Y88b  888' `88b  
-echo      888       888   .oP"888   888   888   888      888 888   888  888   888  888   888  
-echo      888       888  d8(  888   888   888   888     d88' 888   888  888   888  `88bod8P'  
-echo     o888o     o888o `Y888""8o o888o o888o o888bood8P'   `Y8bod8P' o888o o888o `8oooooo.  
-echo                                                                              d"     YD  
-echo                                                                              ^"Y88888P'  
-echo 天冬AI制作：https://space.bilibili.com/32275117
-echo ==========================================
+echo(==========================================
+echo(      VideoSync 一键启动器
+echo(==========================================
+echo ooooooooo.   ooooooooo.     .oooooo.              oooooooooo.    .oooooo..o 
+echo `888   `Y88. `888   `Y88.  d8P'  `Y8b             `888'   `Y8b  d8P'    `Y8 
+echo  888   .d88'  888   .d88' 888      888             888      888 Y88bo.      
+echo  888ooo88P'   888ooo88P'  888      888             888      888  `"Y8888o.  
+echo  888`88b.     888`88b.    888      888    8888888  888      888      `"Y88b 
+echo  888  `88b.   888  `88b.  `88b    d88b             888     d88' oo     .d8P 
+echo  o888o  o888o o888o  o888o  `Y8bood8P'Ybd'         o888bood8P'   8""88888P'  
+
+echo(RRQ-DS优化与批量功能增强
+echo(==========================================
 
 set PATH=%~dp0python;%~dp0python\Scripts;%PATH%
 

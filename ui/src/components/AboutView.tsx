@@ -80,7 +80,7 @@ const AboutView: React.FC<AboutViewProps> = ({ themeMode }) => {
                 </div>
 
                 <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '20px', fontSize: '0.85em', color: isLightMode ? '#64748b' : '#94a3b8' }}>
-                    <p>© 2026 VideoSyncMaster. Developed by 天冬 (TianDong)</p>
+                    <p>© 2026 VideoSyncMaster. Developed by 天冬 (TianDong) - Batch Features and Optimization by RRQ-DS</p>
                 </div>
             </div>
         </div>
