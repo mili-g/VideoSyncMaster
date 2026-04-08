@@ -22,3 +22,91 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
   // You can expose other APTs you need here.
   // ...
 })
+
+contextBridge.exposeInMainWorld('api', {
+  getFileUrl(filePath: string) {
+    return ipcRenderer.invoke('get-file-url', filePath)
+  },
+  saveFile(filePath: string, content: string) {
+    return ipcRenderer.invoke('save-file', filePath, content)
+  },
+  ensureDir(dirPath: string) {
+    return ipcRenderer.invoke('ensure-dir', dirPath)
+  },
+  deletePath(targetPath: string) {
+    return ipcRenderer.invoke('delete-path', targetPath)
+  },
+  getPaths() {
+    return ipcRenderer.invoke('get-paths')
+  },
+  runBackend(args: string[]) {
+    return ipcRenderer.invoke('run-backend', args)
+  },
+  cacheVideo(filePath: string) {
+    return ipcRenderer.invoke('cache-video', filePath)
+  },
+  openFolder(filePath: string) {
+    return ipcRenderer.invoke('open-folder', filePath)
+  },
+  openExternal(filePath: string) {
+    return ipcRenderer.invoke('open-external', filePath)
+  },
+  openBackendLog() {
+    return ipcRenderer.invoke('open-backend-log')
+  },
+  killBackend() {
+    return ipcRenderer.invoke('kill-backend')
+  },
+  fixPythonEnv() {
+    return ipcRenderer.invoke('fix-python-env')
+  },
+  checkPythonEnv() {
+    return ipcRenderer.invoke('check-python-env')
+  },
+  checkModelStatus() {
+    return ipcRenderer.invoke('check-model-status')
+  },
+  downloadModel(payload: { key: string; model: string; localDir: string }) {
+    return ipcRenderer.invoke('download-model', payload)
+  },
+  downloadFile(payload: { key: string; url: string; targetDir: string; name: string }) {
+    return ipcRenderer.invoke('download-file', payload)
+  },
+  cancelDownload(payload: { key: string }) {
+    return ipcRenderer.invoke('cancel-download', payload)
+  },
+  cancelFileDownload(payload: { key: string }) {
+    return ipcRenderer.invoke('cancel-file-download', payload)
+  },
+  openFileDialog(options: unknown) {
+    return ipcRenderer.invoke('dialog:openFile', options)
+  },
+  showSaveDialog(options: unknown) {
+    return ipcRenderer.invoke('dialog:showSaveDialog', options)
+  },
+  onBackendProgress(listener: (value: number) => void) {
+    const wrapped = (_event: unknown, value: number) => listener(value)
+    ipcRenderer.on('backend-progress', wrapped)
+    return () => ipcRenderer.off('backend-progress', wrapped)
+  },
+  onBackendPartialResult(listener: (data: unknown) => void) {
+    const wrapped = (_event: unknown, data: unknown) => listener(data)
+    ipcRenderer.on('backend-partial-result', wrapped)
+    return () => ipcRenderer.off('backend-partial-result', wrapped)
+  },
+  onBackendDepsInstalling(listener: (pkgName: string) => void) {
+    const wrapped = (_event: unknown, pkgName: string) => listener(pkgName)
+    ipcRenderer.on('backend-deps-installing', wrapped)
+    return () => ipcRenderer.off('backend-deps-installing', wrapped)
+  },
+  onBackendDepsDone(listener: () => void) {
+    const wrapped = () => listener()
+    ipcRenderer.on('backend-deps-done', wrapped)
+    return () => ipcRenderer.off('backend-deps-done', wrapped)
+  },
+  onMainProcessMessage(listener: (message: string) => void) {
+    const wrapped = (_event: unknown, message: string) => listener(message)
+    ipcRenderer.on('main-process-message', wrapped)
+    return () => ipcRenderer.off('main-process-message', wrapped)
+  },
+})

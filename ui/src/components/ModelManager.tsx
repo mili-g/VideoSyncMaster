@@ -28,7 +28,7 @@ const ModelManager: React.FC<ModelManagerProps> = ({ themeMode }) => {
     const checkStatus = async () => {
         setLoading(true);
         try {
-            const result = await (window as any).ipcRenderer.invoke('check-model-status');
+            const result = await window.api.checkModelStatus();
             if (result.success) {
                 setStatus(result.status);
                 setModelsRoot(result.root);
@@ -106,14 +106,14 @@ const ModelManager: React.FC<ModelManagerProps> = ({ themeMode }) => {
 
             let result;
             if (isGenericFile) {
-                result = await (window as any).ipcRenderer.invoke('download-file', {
+                result = await window.api.downloadFile({
                     key: modelKey,
                     url: downloadUrl,
                     targetDir: localDir,
                     name: modelId
                 });
             } else {
-                result = await (window as any).ipcRenderer.invoke('download-model', {
+                result = await window.api.downloadModel({
                     key: modelKey,
                     model: modelId,
                     localDir: localDir
@@ -140,9 +140,9 @@ const ModelManager: React.FC<ModelManagerProps> = ({ themeMode }) => {
     const handleCancel = async (modelKey: string) => {
         try {
             if (modelKey === 'rife') {
-                await (window as any).ipcRenderer.invoke('cancel-file-download', { key: modelKey });
+                await window.api.cancelFileDownload({ key: modelKey });
             } else {
-                await (window as any).ipcRenderer.invoke('cancel-download', { key: modelKey });
+                await window.api.cancelDownload({ key: modelKey });
             }
             setDownloadProgress('正在取消...');
         } catch (e) {

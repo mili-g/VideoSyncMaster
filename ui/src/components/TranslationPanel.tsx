@@ -79,6 +79,7 @@ const TranslationPanel: React.FC<TranslationPanelProps> = ({
         e.preventDefault();
         e.stopPropagation();
     };
+
     const formatTimestamp = (seconds: number): string => {
         if (seconds < 60) {
             return `${seconds.toFixed(2)}s`;
@@ -93,8 +94,6 @@ const TranslationPanel: React.FC<TranslationPanelProps> = ({
 
     const listRef = domRef || internalRef;
 
-    // Sync scroll effect for active item
-    // Use passed activeIndex or calculate local fallback
     const activeIdx = activeIndex !== undefined
         ? activeIndex
         : segments.findIndex(seg => currentTime >= seg.start && currentTime < seg.end);
@@ -127,7 +126,7 @@ const TranslationPanel: React.FC<TranslationPanelProps> = ({
                             onChange={(e) => {
                                 if (e.target.files && e.target.files.length > 0) {
                                     onUploadSubtitle?.(e.target.files[0]);
-                                    e.target.value = ''; // Reset
+                                    e.target.value = '';
                                 }
                             }}
                         />
@@ -137,10 +136,10 @@ const TranslationPanel: React.FC<TranslationPanelProps> = ({
                             onDragOver={handleDragOver}
                             className="btn"
                             disabled={!hasVideo || loading || dubbingLoading}
-                            title={!hasVideo ? "请先上传视频" : "点击上传或拖拽SRT文件至此"}
+                            title={!hasVideo ? '请先上传视频' : '点击上传或拖拽 SRT 文件至此'}
                             style={{
                                 padding: '4px 12px',
-                                background: (!hasVideo || loading || dubbingLoading) ? '#4b5563' : '#10b981', // Gray if disabled
+                                background: (!hasVideo || loading || dubbingLoading) ? '#4b5563' : '#10b981',
                                 fontSize: '0.9em',
                                 height: 'auto',
                                 cursor: (!hasVideo || loading || dubbingLoading) ? 'not-allowed' : 'pointer',
@@ -156,9 +155,9 @@ const TranslationPanel: React.FC<TranslationPanelProps> = ({
                             className="btn"
                             style={{
                                 padding: '4px 12px',
-                                background: '#8b5cf6', // Violet
+                                background: '#8b5cf6',
                                 fontSize: '0.9em',
-                                height: 'auto', // Will match h3 roughly or be set explicitly
+                                height: 'auto',
                                 cursor: (segments.length === 0 || loading || dubbingLoading) ? 'not-allowed' : 'pointer',
                                 opacity: (segments.length === 0 || loading || dubbingLoading) ? 0.7 : 1,
                                 flex: 1
@@ -203,38 +202,36 @@ const TranslationPanel: React.FC<TranslationPanelProps> = ({
                             if (paths.length === 0) return;
 
                             try {
-                                const result = await (window as any).ipcRenderer.invoke('run-backend', [
+                                const result = await window.api.runBackend([
                                     '--action', 'check_audio_files',
                                     '--input', JSON.stringify(paths)
                                 ]);
 
                                 if (result && result.success && result.durations) {
                                     setTranslatedSegments(prev => prev.map(seg => {
-                                        let newSeg = { ...seg };
+                                        const newSeg = { ...seg };
 
-                                        // 1. Check verified files
                                         if (seg.audioPath && result.durations[seg.audioPath] !== undefined) {
                                             const dur = result.durations[seg.audioPath];
                                             if (dur < 0) {
-                                                newSeg.audioStatus = 'error'; // File missing
+                                                newSeg.audioStatus = 'error';
                                                 newSeg.audioDuration = undefined;
                                             } else {
                                                 newSeg.audioDuration = dur;
-                                                // Also re-validate duration -> error if too long
                                                 if (dur - (seg.end - seg.start) > 5.0) {
                                                     newSeg.audioStatus = 'error';
                                                 }
                                             }
-                                        }
-                                        // 2. Cleanup Zombie state (Ready but no path)
-                                        else if (seg.audioStatus === 'ready' && !seg.audioPath) {
+                                        } else if (seg.audioStatus === 'ready' && !seg.audioPath) {
                                             newSeg.audioStatus = 'error';
                                         }
 
                                         return newSeg;
                                     }));
                                 }
-                            } catch (e) { console.error(e); }
+                            } catch (e) {
+                                console.error(e);
+                            }
                         }}
                         className="btn"
                         style={{
@@ -243,12 +240,14 @@ const TranslationPanel: React.FC<TranslationPanelProps> = ({
                             color: 'var(--text-secondary)',
                             border: '1px solid var(--border-color)',
                             cursor: 'pointer',
-                            display: 'flex', alignItems: 'center', gap: '5px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '5px',
                             whiteSpace: 'nowrap'
                         }}
-                        title="扫描本地文件并更新状态 (Check Files)"
+                        title="扫描本地文件并更新状态"
                     >
-                        🔍 校验状态
+                        校验状态
                     </button>
                     <button
                         onClick={onTranslate}
@@ -282,7 +281,7 @@ const TranslationPanel: React.FC<TranslationPanelProps> = ({
                         <button
                             disabled={dubbingLoading || generatingSegmentId !== null}
                             onClick={onRetryErrors}
-                            title="重新生成所有失败(红叉)的片段"
+                            title="重新生成所有失败片段"
                             className="btn"
                             style={{
                                 padding: '6px 12px',
@@ -292,10 +291,12 @@ const TranslationPanel: React.FC<TranslationPanelProps> = ({
                                 opacity: dubbingLoading || generatingSegmentId !== null ? 0.7 : 1,
                                 whiteSpace: 'nowrap',
                                 height: 'fit-content',
-                                display: 'flex', alignItems: 'center', gap: '5px'
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '5px'
                             }}
                         >
-                            🔄 重试失败片段
+                            重试失败片段
                         </button>
                     )}
 
@@ -311,27 +312,22 @@ const TranslationPanel: React.FC<TranslationPanelProps> = ({
                                 border: translatedSegments.length === 0 ? '1px dashed #6b7280' : 'none',
                                 color: translatedSegments.length === 0 ? '#9ca3af' : 'white',
                                 cursor: translatedSegments.length === 0 ? 'not-allowed' : 'pointer',
-                                display: 'flex', alignItems: 'center', gap: '5px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '5px',
                                 whiteSpace: 'nowrap'
                             }}
                         >
-                            💾 导出译文
+                            导出译文
                         </button>
                     )}
-
-
-
-
                 </div>
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '10px' }}>
-                {/* Timeline View of Translated Segments */}
                 {(translatedSegments.length > 0 ? translatedSegments : segments).map((seg, idx) => {
                     const isTranslated = translatedSegments.length > 0;
                     const isActive = idx === activeIdx;
-
-                    // Highlighting Logic
                     const isGenerating = generatingSegmentId === idx;
                     const isRetranslating = retranslatingSegmentId === idx;
                     const isBusy = isGenerating || isRetranslating;
@@ -340,18 +336,19 @@ const TranslationPanel: React.FC<TranslationPanelProps> = ({
                     let borderColor = 'transparent';
 
                     if (isBusy) {
-                        bgColor = 'rgba(245, 158, 11, 0.2)'; // Amber active
+                        bgColor = 'rgba(245, 158, 11, 0.2)';
                         borderColor = '#f59e0b';
                     } else if (isActive) {
                         bgColor = 'rgba(99,102,241, 0.3)';
                         borderColor = '#6366f1';
                     }
 
+                    const durationTooLong = Boolean(seg.audioDuration && (seg.audioDuration - (seg.end - seg.start) > 5.0));
+
                     return (
                         <div
                             key={idx}
-                            ref={el => itemRefs.current[idx] = el}
-                            // onClick={() => onPlaySegment?.(seg.start, seg.end)} // Disabled per user request (don't play original audio on click)
+                            ref={el => { itemRefs.current[idx] = el; }}
                             style={{
                                 display: 'flex',
                                 gap: '10px',
@@ -392,17 +389,16 @@ const TranslationPanel: React.FC<TranslationPanelProps> = ({
                                         style={{ flex: 1, background: 'transparent', border: 'none', color: 'inherit' }}
                                     />
                                     <div style={{ display: 'flex', gap: '5px', alignItems: 'center', flexShrink: 0 }}>
-                                        {/* Status Icon */}
                                         {seg.audioStatus === 'generating' && <span title="生成中">⏳</span>}
-                                        {(seg.audioStatus === 'error' || (seg.audioDuration && (seg.audioDuration - (seg.end - seg.start) > 5.0))) && <span title="生成失败: 音频过长 (幻觉)">❌</span>}
-                                        {seg.audioStatus === 'ready' && !(seg.audioDuration && (seg.audioDuration - (seg.end - seg.start) > 5.0)) && <span title="已生成">✅</span>}
+                                        {(seg.audioStatus === 'error' || durationTooLong) && <span title="生成失败">❌</span>}
+                                        {seg.audioStatus === 'ready' && !durationTooLong && <span title="已生成">✅</span>}
 
-
-
-                                        {/* Play Button */}
                                         {seg.audioPath && (
                                             <button
-                                                onClick={(e) => { e.stopPropagation(); onPlayAudio?.(idx, seg.audioPath!); }}
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    onPlayAudio?.(idx, seg.audioPath!);
+                                                }}
                                                 className="btn-icon"
                                                 title="播放配音"
                                                 style={{
@@ -415,16 +411,15 @@ const TranslationPanel: React.FC<TranslationPanelProps> = ({
                                                     color: 'white'
                                                 }}
                                             >
-                                                {/* Show different icon if playing. Note: TranslationPanel doesn't receive playing state per segment directly 
-                                                  except if we used playingAudioIndex passed in props. 
-                                                  Ah, we have playingAudioIndex in props! */}
-                                                {(playingAudioIndex === idx) ? '⏸' : '▶'}
+                                                {playingAudioIndex === idx ? '⏸' : '▶'}
                                             </button>
                                         )}
 
-                                        {/* Regenerate Button */}
                                         <button
-                                            onClick={(e) => { e.stopPropagation(); onGenerateSingle?.(idx); }}
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                onGenerateSingle?.(idx);
+                                            }}
                                             disabled={generatingSegmentId !== null || loading || dubbingLoading}
                                             className="btn-icon"
                                             title="重新生成配音"
@@ -438,14 +433,16 @@ const TranslationPanel: React.FC<TranslationPanelProps> = ({
                                                 color: 'white'
                                             }}
                                         >
-                                            {generatingSegmentId === idx ? '...' : '🔄'}
+                                            {generatingSegmentId === idx ? '...' : '🔁'}
                                         </button>
 
-                                        {/* Re-translate Button */}
                                         <button
-                                            onClick={(e) => { e.stopPropagation(); onReTranslate?.(idx); }}
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                onReTranslate?.(idx);
+                                            }}
                                             disabled={loading || dubbingLoading || generatingSegmentId !== null}
-                                            title="重新翻译 (Re-translate Source)"
+                                            title="重新翻译"
                                             style={{
                                                 background: 'transparent',
                                                 border: 'none',
@@ -459,7 +456,7 @@ const TranslationPanel: React.FC<TranslationPanelProps> = ({
                                                 marginLeft: '5px'
                                             }}
                                         >
-                                            <span style={{ fontSize: '1.2em' }}>↻</span>
+                                            ↻
                                         </button>
                                     </div>
                                 </>
@@ -474,7 +471,7 @@ const TranslationPanel: React.FC<TranslationPanelProps> = ({
 
                 {segments.length === 0 && <div style={{ padding: '20px', textAlign: 'center', color: '#6b7280' }}>暂无字幕数据</div>}
             </div>
-        </div >
+        </div>
     );
 };
 

@@ -1,9 +1,8 @@
 import ffmpeg
 import os
-import ffmpeg
-import os
 import tempfile
-# Lazy imports: numpy, soundfile, librosa
+
+TARGET_SAMPLE_RATE = 44100
 
 def get_audio_duration(file_path):
     try:
@@ -64,138 +63,502 @@ def align_audio(input_path, output_path, target_duration_sec):
         print(f"FFmpeg Error: {e.stderr.decode() if e.stderr else str(e)}")
         return False
 
-def merge_audios_to_video(video_path, audio_segments, output_path, strategy='auto_speedup'):
+def _ensure_stereo(audio):
+    import numpy as np
+
+    if audio.ndim == 1:
+        audio = audio.reshape(1, -1)
+
+    if audio.shape[0] == 1:
+        audio = np.repeat(audio, 2, axis=0)
+    elif audio.shape[0] > 2:
+        audio = audio[:2, :]
+
+    return audio.astype(np.float32, copy=False)
+
+
+def _ensure_frame_major_stereo(audio):
+    import numpy as np
+
+    audio = np.asarray(audio, dtype=np.float32)
+    if audio.ndim == 1:
+        audio = np.stack([audio, audio], axis=1)
+    elif audio.ndim == 2:
+        if audio.shape[0] == 2 and audio.shape[1] != 2:
+            audio = audio.T
+        elif audio.shape[1] == 1:
+            audio = np.repeat(audio, 2, axis=1)
+        elif audio.shape[1] > 2:
+            audio = audio[:, :2]
+    return audio.astype(np.float32, copy=False)
+
+
+def _apply_fade(audio, sample_rate, fade_ms=24):
+    import numpy as np
+
+    audio = _ensure_stereo(audio).copy()
+    fade_samples = min(int(sample_rate * fade_ms / 1000), audio.shape[1] // 2)
+    if fade_samples <= 0:
+        return audio
+
+    ramp = np.linspace(0.0, 1.0, fade_samples, dtype=np.float32)
+    audio[:, :fade_samples] *= ramp
+    audio[:, -fade_samples:] *= ramp[::-1]
+    return audio
+
+
+def _time_stretch_stereo(audio, sample_rate, target_duration_sec):
+    audio = _ensure_stereo(audio)
+    current_duration = audio.shape[1] / float(sample_rate)
+    if target_duration_sec <= 0 or current_duration <= 0:
+        return audio
+
+    rate = current_duration / float(target_duration_sec)
+    if abs(rate - 1.0) < 0.02:
+        return audio
+
+    import numpy as np
+    import librosa
+
+    stretched = []
+    for channel in audio:
+        stretched.append(librosa.effects.time_stretch(channel, rate=rate))
+
+    stretched_audio = np.vstack(stretched)
+    target_samples = max(1, int(round(target_duration_sec * sample_rate)))
+
+    if stretched_audio.shape[1] > target_samples:
+        stretched_audio = stretched_audio[:, :target_samples]
+    elif stretched_audio.shape[1] < target_samples:
+        pad_width = target_samples - stretched_audio.shape[1]
+        stretched_audio = np.pad(stretched_audio, ((0, 0), (0, pad_width)))
+
+    return stretched_audio.astype(np.float32, copy=False)
+
+
+def _load_audio_file(audio_path, sample_rate):
+    import librosa
+
+    audio, _ = librosa.load(audio_path, sr=sample_rate, mono=False)
+    return _ensure_stereo(audio)
+
+
+def _extract_video_audio_chunk(video_path, start_time, duration, sample_rate):
+    if duration <= 0:
+        return None
+
+    temp_audio_path = None
+    try:
+        fd, temp_audio_path = tempfile.mkstemp(suffix=".wav")
+        os.close(fd)
+
+        ffmpeg.input(video_path, ss=start_time, t=duration).output(
+            temp_audio_path,
+            acodec="pcm_s16le",
+            ac=2,
+            ar=sample_rate,
+            loglevel="error"
+        ).run(overwrite_output=True, quiet=True)
+
+        return _load_audio_file(temp_audio_path, sample_rate)
+    except Exception as error:
+        print(f"[Mixer] Failed to extract background chunk {start_time:.2f}-{start_time + duration:.2f}: {error}")
+        return None
+    finally:
+        if temp_audio_path and os.path.exists(temp_audio_path):
+            try:
+                os.remove(temp_audio_path)
+            except Exception:
+                pass
+
+
+def _extract_full_video_audio(video_path, sample_rate):
+    temp_audio_path = None
+    try:
+        fd, temp_audio_path = tempfile.mkstemp(suffix=".wav")
+        os.close(fd)
+
+        ffmpeg.input(video_path).output(
+            temp_audio_path,
+            acodec="pcm_s16le",
+            ac=2,
+            ar=sample_rate,
+            loglevel="error"
+        ).run(overwrite_output=True, quiet=True)
+
+        return _load_audio_file(temp_audio_path, sample_rate)
+    finally:
+        if temp_audio_path and os.path.exists(temp_audio_path):
+            try:
+                os.remove(temp_audio_path)
+            except Exception:
+                pass
+
+
+def _reduce_dialog(audio, center_attenuation=0.9, ducking=0.78, side_boost=1.02):
+    audio = _ensure_stereo(audio)
+    left = audio[0]
+    right = audio[1]
+
+    mid = (left + right) * 0.5
+    side = (left - right) * 0.5 * side_boost
+    reduced_mid = mid * max(0.0, 1.0 - center_attenuation)
+
+    processed = audio.copy()
+    processed[0] = (reduced_mid + side) * ducking
+    processed[1] = (reduced_mid - side) * ducking
+    return processed
+
+
+def _blend_segments(base_audio, processed_audio, start_idx, end_idx, feather_samples):
+    import numpy as np
+
+    if end_idx <= start_idx:
+        return
+
+    base_slice = base_audio[:, start_idx:end_idx]
+    if processed_audio.ndim != 2:
+        return
+
+    target_length = base_slice.shape[1]
+    if target_length <= 0:
+        return
+
+    if processed_audio.shape[1] == target_length:
+        processed_slice = processed_audio
+    else:
+        safe_start = max(0, min(start_idx, processed_audio.shape[1]))
+        safe_end = max(safe_start, min(end_idx, processed_audio.shape[1]))
+        processed_slice = processed_audio[:, safe_start:safe_end]
+
+        if processed_slice.shape[1] != target_length:
+            usable = min(target_length, processed_slice.shape[1])
+            if usable <= 0:
+                return
+            base_slice = base_slice[:, :usable]
+            processed_slice = processed_slice[:, :usable]
+            end_idx = start_idx + usable
+
+    length = base_slice.shape[1]
+    if length <= 0:
+        return
+
+    weights = np.ones(length, dtype=np.float32)
+    fade = min(feather_samples, length // 2)
+    if fade > 0:
+        ramp = np.linspace(0.0, 1.0, fade, dtype=np.float32)
+        weights[:fade] = ramp
+        weights[-fade:] = ramp[::-1]
+
+    base_audio[:, start_idx:end_idx] = (
+        base_slice * (1.0 - weights[None, :]) +
+        processed_slice * weights[None, :]
+    )
+
+
+def _apply_dialog_reduction_windows(
+    original_audio,
+    audio_segments,
+    sample_rate,
+    pre_padding=0.08,
+    post_padding=0.12,
+    center_attenuation=0.94,
+    ducking=0.92,
+    side_boost=1.03,
+    feather_ms=36
+):
+    processed = _ensure_stereo(original_audio).copy()
+    total_samples = processed.shape[1]
+    feather_samples = int(sample_rate * feather_ms / 1000)
+
+    for segment in audio_segments:
+        start_time = max(0.0, float(segment.get("start", 0.0)) - pre_padding)
+        duration = float(segment.get("duration") or 0.0)
+        if duration <= 0:
+            end_time = float(segment.get("end", start_time))
+            duration = max(0.0, end_time - float(segment.get("start", 0.0)))
+
+        end_time = min(total_samples / float(sample_rate), float(segment.get("start", start_time)) + duration + post_padding)
+        start_idx = max(0, int(round(start_time * sample_rate)))
+        end_idx = min(total_samples, int(round(end_time * sample_rate)))
+        if end_idx <= start_idx:
+            continue
+
+        reduced = _reduce_dialog(
+            processed[:, start_idx:end_idx],
+            center_attenuation=center_attenuation,
+            ducking=ducking,
+            side_boost=side_boost
+        )
+        _blend_segments(processed, reduced, start_idx, end_idx, feather_samples)
+
+    return processed
+
+
+def _mix_into_buffer(buffer, audio, start_time, sample_rate, gain=1.0):
+    import numpy as np
+
+    audio = _ensure_stereo(audio)
+    start_idx = max(0, int(round(start_time * sample_rate)))
+    if start_idx >= buffer.shape[0]:
+        return
+
+    clip = (audio.T * gain).astype(np.float32, copy=False)
+    end_idx = min(buffer.shape[0], start_idx + clip.shape[0])
+    usable = clip[: max(0, end_idx - start_idx)]
+    if usable.size == 0:
+        return
+
+    buffer[start_idx:end_idx] += usable
+
+
+def _normalize_audio(audio):
+    import numpy as np
+
+    peak = float(np.max(np.abs(audio))) if audio.size else 0.0
+    if peak > 0.98:
+        audio = audio * (0.98 / peak)
+    return audio
+
+
+def _write_audio_buffer(audio, sample_rate):
+    import soundfile as sf
+
+    fd, temp_audio_path = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    sf.write(temp_audio_path, audio, sample_rate)
+    return temp_audio_path
+
+
+def _mux_video_with_audio(video_source, audio_source, output_path):
+    video_input = ffmpeg.input(video_source)
+    audio_input = ffmpeg.input(audio_source)
+    stream = ffmpeg.output(video_input["v"], audio_input["a"], output_path, vcodec="copy", acodec="aac", shortest=None)
+    ffmpeg.run(stream, overwrite_output=True, quiet=False)
+
+
+def _build_dubbed_audio_buffer(total_duration, audio_segments, sample_rate):
+    import numpy as np
+
+    total_samples = int(total_duration * sample_rate) + 1
+    dubbed_audio = np.zeros((total_samples, 2), dtype=np.float32)
+
+    for index, segment in enumerate(audio_segments):
+        file_path = segment.get("path")
+        if not file_path or not os.path.exists(file_path):
+            continue
+
+        try:
+            audio = _load_audio_file(file_path, sample_rate)
+            audio = _apply_fade(audio, sample_rate, fade_ms=30)
+            start_time = float(segment.get("timeline_start", segment.get("start", 0.0)))
+            _mix_into_buffer(dubbed_audio, audio, start_time, sample_rate, gain=1.12)
+            print(f"[Mixer] Mixed dubbed segment {index} at {start_time:.2f}s")
+        except Exception as error:
+            print(f"[Mixer] Failed to load dubbed segment {file_path}: {error}")
+
+    return dubbed_audio
+
+
+def _build_background_buffer(video_path, total_duration, chunk_specs, sample_rate):
+    import numpy as np
+
+    total_samples = int(total_duration * sample_rate) + 1
+    background_audio = np.zeros((total_samples, 2), dtype=np.float32)
+
+    for index, spec in enumerate(chunk_specs):
+        source_duration = float(spec.get("source_duration", 0.0))
+        timeline_duration = float(spec.get("timeline_duration", source_duration))
+        if source_duration <= 0 or timeline_duration <= 0:
+            continue
+
+        chunk = _extract_video_audio_chunk(
+            video_path,
+            float(spec.get("source_start", 0.0)),
+            source_duration,
+            sample_rate
+        )
+        if chunk is None:
+            continue
+
+        if spec.get("attenuate_dialog", False):
+            chunk = _reduce_dialog(chunk)
+
+        chunk = _time_stretch_stereo(chunk, sample_rate, timeline_duration)
+        chunk = _apply_fade(chunk, sample_rate, fade_ms=18 if spec.get("attenuate_dialog", False) else 10)
+
+        gain = 0.66 if spec.get("attenuate_dialog", False) else 0.9
+        _mix_into_buffer(background_audio, chunk, float(spec.get("timeline_start", 0.0)), sample_rate, gain=gain)
+        print(
+            f"[Mixer] Mixed background chunk {index}: "
+            f"src={spec.get('source_start', 0.0):.2f}s/{source_duration:.2f}s -> "
+            f"timeline={spec.get('timeline_start', 0.0):.2f}s/{timeline_duration:.2f}s"
+        )
+
+    return background_audio
+
+
+def _build_direct_original_mix(video_path, total_duration, audio_segments, sample_rate):
+    original_audio = _extract_full_video_audio(video_path, sample_rate)
+    original_audio = _ensure_stereo(original_audio)
+    target_samples = int(total_duration * sample_rate) + 1
+
+    if original_audio.shape[1] > target_samples:
+        original_audio = original_audio[:, :target_samples]
+    elif original_audio.shape[1] < target_samples:
+        import numpy as np
+        original_audio = np.pad(original_audio, ((0, 0), (0, target_samples - original_audio.shape[1])))
+
+    return _ensure_frame_major_stereo(
+        _apply_dialog_reduction_windows(original_audio, audio_segments, sample_rate)
+    )
+
+
+def _build_auto_background_specs(video_duration, audio_segments):
+    specs = []
+    cursor = 0.0
+
+    for segment in sorted(audio_segments, key=lambda item: float(item.get("start", 0.0))):
+        start_time = float(segment.get("start", 0.0))
+        segment_duration = float(segment.get("duration") or 0.0)
+        if segment_duration <= 0:
+            end_time = float(segment.get("end", start_time))
+            segment_duration = max(0.0, end_time - start_time)
+
+        if start_time > cursor:
+            gap_duration = start_time - cursor
+            specs.append({
+                "source_start": cursor,
+                "source_duration": gap_duration,
+                "timeline_start": cursor,
+                "timeline_duration": gap_duration,
+                "attenuate_dialog": False
+            })
+
+        specs.append({
+            "source_start": start_time,
+            "source_duration": segment_duration,
+            "timeline_start": start_time,
+            "timeline_duration": segment_duration,
+            "attenuate_dialog": True
+        })
+        cursor = max(cursor, start_time + segment_duration)
+
+    if cursor < video_duration:
+        tail_duration = video_duration - cursor
+        specs.append({
+            "source_start": cursor,
+            "source_duration": tail_duration,
+            "timeline_start": cursor,
+            "timeline_duration": tail_duration,
+            "attenuate_dialog": False
+        })
+
+    return specs
+
+
+def _finalize_mix(video_source_path, audio_segments, output_path, total_duration, audio_mix_mode, background_specs=None):
+    if audio_mix_mode == "replace_original":
+        return True
+
+    import numpy as np
+
+    temp_audio_path = None
+    temp_output_path = None
+    try:
+        dubbed_audio = _build_dubbed_audio_buffer(total_duration, audio_segments, TARGET_SAMPLE_RATE)
+        dubbed_audio = _ensure_frame_major_stereo(dubbed_audio)
+        background_audio = _build_background_buffer(
+            video_source_path,
+            total_duration,
+            background_specs or _build_auto_background_specs(total_duration, audio_segments),
+            TARGET_SAMPLE_RATE
+        )
+        background_audio = _ensure_frame_major_stereo(background_audio)
+        mixed_audio = _normalize_audio(dubbed_audio + background_audio)
+
+        temp_audio_path = _write_audio_buffer(mixed_audio, TARGET_SAMPLE_RATE)
+        fd, temp_output_path = tempfile.mkstemp(suffix=".mp4")
+        os.close(fd)
+        os.remove(temp_output_path)
+
+        print("[PROGRESS] 50", flush=True)
+        _mux_video_with_audio(output_path, temp_audio_path, temp_output_path)
+        os.replace(temp_output_path, output_path)
+        temp_output_path = None
+        print("[PROGRESS] 100", flush=True)
+        return True
+    except Exception as error:
+        print(f"Error finalizing preserve-background mix: {error}")
+        import traceback
+        traceback.print_exc()
+        return False
+    finally:
+        if temp_audio_path and os.path.exists(temp_audio_path):
+            try:
+                os.remove(temp_audio_path)
+            except Exception:
+                pass
+        if temp_output_path and os.path.exists(temp_output_path):
+            try:
+                os.remove(temp_output_path)
+            except Exception:
+                pass
+
+
+def merge_audios_to_video(video_path, audio_segments, output_path, strategy='auto_speedup', audio_mix_mode='preserve_background'):
     """
-    Merge multiple audio segments into a final video using Numpy for mixing.
-    This avoids the 'Argument list too long' (WinError 206) issue with ffmpeg complex filters.
-    
-    :param video_path: Path to original video.
-    :param audio_segments: List of dicts {'start': float, 'path': str}
-    :param output_path: Path to save final video.
+    Merge multiple audio segments into a final video.
+
+    audio_mix_mode:
+      - preserve_background: keep background/music as much as possible and suppress centered dialog
+      - replace_original: replace the original track with dubbed audio only
     """
     temp_mixed_path = None
     try:
-        # Lazy imports for performance
         import numpy as np
-        import librosa
-        import soundfile as sf
 
         if not audio_segments:
             print("No audio segments provided.")
             return False
 
         if strategy and strategy != 'auto_speedup':
-            return merge_video_advanced(video_path, audio_segments, output_path, strategy)
+            return merge_video_advanced(video_path, audio_segments, output_path, strategy, audio_mix_mode=audio_mix_mode)
 
-
-        # 1. Get video duration to initialize the audio buffer
         try:
             probe = ffmpeg.probe(video_path)
             video_duration = float(probe['format']['duration'])
-        except Exception as e:
-            print(f"Error probing video duration: {e}")
+        except Exception as error:
+            print(f"Error probing video duration: {error}")
             return False
-            
-        target_sr = 44100
-        total_samples = int(video_duration * target_sr) + 1
-        
-        mixed_audio = np.zeros((total_samples, 2), dtype=np.float32)
 
-        print(f"[Mixer] Initialized buffer: {video_duration:.2f}s ({total_samples} samples)", flush=True)
+        print(f"[Mixer] Initialized auto-speedup merge: {video_duration:.2f}s", flush=True)
+        dubbed_audio = _build_dubbed_audio_buffer(video_duration, audio_segments, TARGET_SAMPLE_RATE)
+        dubbed_audio = _ensure_frame_major_stereo(dubbed_audio)
 
-        # 2. Mix audio segments        
-        for i, seg in enumerate(audio_segments):
-            start_time = seg['start']
-            file_path = seg['path']
-            
-            # Start index
-            start_idx = int(start_time * target_sr)
-            print(f"[Mixer] Processing segment {i}: {file_path} (Start: {start_time}s)", flush=True)
-            
-            if start_idx >= total_samples:
-                print(f"[Mixer] Warning: Segment {i} starts after video ends. Skipping.")
-                continue
+        if audio_mix_mode == 'preserve_background':
+            background_audio = _build_direct_original_mix(
+                video_path,
+                video_duration,
+                audio_segments,
+                TARGET_SAMPLE_RATE
+            )
+            background_audio = _ensure_frame_major_stereo(background_audio)
+            mixed_audio = dubbed_audio + background_audio
+        else:
+            mixed_audio = dubbed_audio
 
-            try:
-                # [MODIFIED] Dynamic alignment for auto_speedup without touching cache
-                target_dur = seg.get('duration')
-                final_file_path = file_path
-                temp_segment_path = None
-                
-                if strategy == 'auto_speedup' and target_dur:
-                    actual_dur = get_audio_duration(file_path)
-                    if actual_dur and actual_dur > target_dur + 0.1:
-                        fd, temp_segment_path = tempfile.mkstemp(suffix='.wav')
-                        os.close(fd)
-                        if align_audio(file_path, temp_segment_path, target_dur):
-                            final_file_path = temp_segment_path
-                            print(f"[Mixer] Segment {i} dynamically aligned: {actual_dur:.2f}s -> {target_dur:.2f}s")
-                        else:
-                            try: os.remove(temp_segment_path)
-                            except: pass
-                            temp_segment_path = None
-
-                y, _ = librosa.load(final_file_path, sr=target_sr, mono=False)
-                
-                # Cleanup dynamic temp segment
-                if temp_segment_path and os.path.exists(temp_segment_path):
-                    try: os.remove(temp_segment_path)
-                    except: pass
-                
-                if y.ndim == 1:
-                    y = y.reshape(1, -1)
-                
-                if y.shape[0] == 1:
-                    y = np.repeat(y, 2, axis=0)
-                elif y.shape[0] > 2:
-                    y = y[:2, :] 
-                
-                y = y.T 
-                
-                y = y * 1.2
-                
-                seg_samples = y.shape[0]
-                
-                end_idx = start_idx + seg_samples
-                if end_idx > total_samples:
-                    y = y[:total_samples - start_idx]
-                    end_idx = total_samples
-                
-                mixed_audio[start_idx:end_idx] += y
-                
-            except Exception as e:
-                print(f"[Mixer] Error processing segment {file_path}: {e}")
-                continue
-
-        max_val = np.max(np.abs(mixed_audio))
-        if max_val > 1.0:
-            print(f"[Mixer] Audio amplitude {max_val:.2f} > 1.0, normalizing.")
-            mixed_audio = mixed_audio / max_val
-        
-        fd, temp_mixed_path = tempfile.mkstemp(suffix='.wav')
-        os.close(fd)
-        
-        sf.write(temp_mixed_path, mixed_audio, target_sr)
+        mixed_audio = _normalize_audio(mixed_audio)
+        temp_mixed_path = _write_audio_buffer(mixed_audio, TARGET_SAMPLE_RATE)
         print(f"[Mixer] Saved temporary merged audio to {temp_mixed_path}")
-        
-        print("[PROGRESS] 50", flush=True)
 
-        input_video = ffmpeg.input(video_path)
-        input_audio = ffmpeg.input(temp_mixed_path)
-        
-        v = input_video['v']
-        a = input_audio['a']
-        
-        stream = ffmpeg.output(v, a, output_path, vcodec='copy', acodec='aac', shortest=None)
-        
-        ffmpeg.run(stream, overwrite_output=True, quiet=False)
+        print("[PROGRESS] 50", flush=True)
+        _mux_video_with_audio(video_path, temp_mixed_path, output_path)
         print("[PROGRESS] 100", flush=True)
         print(f"Final video saved to {output_path}", flush=True)
-        
         return True
-        
-    except Exception as e:
-        print(f"Error merging video: {e}")
+    except Exception as error:
+        print(f"Error merging video: {error}")
         import traceback
         traceback.print_exc()
         return False
@@ -203,7 +566,7 @@ def merge_audios_to_video(video_path, audio_segments, output_path, strategy='aut
         if temp_mixed_path and os.path.exists(temp_mixed_path):
             try:
                 os.remove(temp_mixed_path)
-            except:
+            except Exception:
                 pass
 
 def get_rife_executable():
@@ -411,7 +774,7 @@ def apply_rife_interpolation(input_path, output_path, target_duration):
                  
     return success
 
-def merge_video_advanced(video_path, audio_segments, output_path, strategy):
+def merge_video_advanced(video_path, audio_segments, output_path, strategy, audio_mix_mode='preserve_background'):
     """
     Advanced video merging with frame rate conversion/blending.
     Reconstructs video timeline to match audio duration.
@@ -419,9 +782,6 @@ def merge_video_advanced(video_path, audio_segments, output_path, strategy):
     print(f"[AdvancedMerge] Starting with strategy: {strategy}")
     import subprocess
     import shutil
-    
-    # helper to clean paths
-    clean_paths = []
     
     try:
         # Pre-process segments: sort by start
@@ -438,6 +798,8 @@ def merge_video_advanced(video_path, audio_segments, output_path, strategy):
         os.makedirs(chunk_dir, exist_ok=True)
         
         source_cursor = 0.0
+        output_cursor = 0.0
+        background_specs = []
         
         for i, seg in enumerate(sorted_segments):
             seg_start = float(seg['start'])
@@ -465,6 +827,14 @@ def merge_video_advanced(video_path, audio_segments, output_path, strategy):
                             .run(overwrite_output=True, quiet=True)
                         )
                         clips_list.append(v_chunk)
+                        background_specs.append({
+                            "source_start": source_cursor,
+                            "source_duration": gap_dur,
+                            "timeline_start": output_cursor,
+                            "timeline_duration": gap_dur,
+                            "attenuate_dialog": False
+                        })
+                        output_cursor += gap_dur
                     except ffmpeg.Error as e:
                         print(f"Gap generation error: {e.stderr.decode() if e.stderr else str(e)}")
                 
@@ -547,6 +917,16 @@ def merge_video_advanced(video_path, audio_segments, output_path, strategy):
                     .run(overwrite_output=True, quiet=True)
                 )
                 clips_list.append(v_chunk_seg)
+                seg['timeline_start'] = output_cursor
+                seg['timeline_duration'] = target_dur
+                background_specs.append({
+                    "source_start": effective_video_start,
+                    "source_duration": slot_dur,
+                    "timeline_start": output_cursor,
+                    "timeline_duration": target_dur,
+                    "attenuate_dialog": True
+                })
+                output_cursor += target_dur
             except ffmpeg.Error as e:
                  print(f"Seg generation error {i}: {e.stderr.decode() if e.stderr else str(e)}")
             
@@ -568,6 +948,14 @@ def merge_video_advanced(video_path, audio_segments, output_path, strategy):
                     .run(overwrite_output=True, quiet=True)
                 )
                 clips_list.append(v_chunk)
+                background_specs.append({
+                    "source_start": source_cursor,
+                    "source_duration": tail_dur,
+                    "timeline_start": output_cursor,
+                    "timeline_duration": tail_dur,
+                    "attenuate_dialog": False
+                })
+                output_cursor += tail_dur
             except Exception as e:
                 print(f"Tail error: {e}")
 
@@ -594,10 +982,28 @@ def merge_video_advanced(video_path, audio_segments, output_path, strategy):
         except ffmpeg.Error as e:
             print(f"Concat error: {e.stderr.decode() if e.stderr else str(e)}")
             return False
+
+        if audio_mix_mode == 'preserve_background':
+            final_duration = output_cursor if output_cursor > 0 else get_audio_duration(output_path)
+            if not final_duration:
+                final_duration = get_audio_duration(output_path) or 0.0
+            if final_duration <= 0:
+                print("[AdvancedMerge] Unable to determine final duration for preserve-background mix.")
+                return False
+
+            if not _finalize_mix(
+                video_path,
+                audio_segments,
+                output_path,
+                final_duration,
+                audio_mix_mode,
+                background_specs=background_specs
+            ):
+                return False
             
         try:
             shutil.rmtree(chunk_dir)
-        except: 
+        except Exception:
             pass
             
     except Exception as e:

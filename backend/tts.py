@@ -5,6 +5,7 @@ import soundfile as sf
 import traceback
 import json
 import subprocess
+from audio_validation import validate_generated_audio
 
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 if BACKEND_DIR not in sys.path:
@@ -35,6 +36,63 @@ else:
     DEFAULT_MODEL_DIR = PATH_DEV
     
 DEFAULT_CONFIG_PATH = os.path.join(DEFAULT_MODEL_DIR, "config.yaml")
+INDEXTTS_ALLOWED_INFER_KWARGS = {
+    "do_sample",
+    "top_k",
+    "top_p",
+    "temperature",
+    "repetition_penalty"
+}
+
+
+def _build_indextts_kwargs(text, kwargs):
+    valid_kwargs = {
+        key: value for key, value in (kwargs or {}).items()
+        if key in INDEXTTS_ALLOWED_INFER_KWARGS
+    }
+
+    if 'do_sample' not in valid_kwargs:
+        valid_kwargs['do_sample'] = True
+    if 'top_k' not in valid_kwargs:
+        valid_kwargs['top_k'] = 50
+    if 'top_p' not in valid_kwargs:
+        valid_kwargs['top_p'] = 1.0
+    if 'temperature' not in valid_kwargs:
+        valid_kwargs['temperature'] = 0.9
+
+    text_len = len((text or '').strip())
+    if text_len <= 12:
+        valid_kwargs['top_k'] = min(int(valid_kwargs.get('top_k', 50)), 20)
+        valid_kwargs['top_p'] = min(float(valid_kwargs.get('top_p', 1.0)), 0.85)
+        valid_kwargs['temperature'] = min(float(valid_kwargs.get('temperature', 0.9)), 0.65)
+        valid_kwargs['repetition_penalty'] = max(float(valid_kwargs.get('repetition_penalty', 1.0)), 1.12)
+    elif text_len <= 32:
+        valid_kwargs['top_k'] = min(int(valid_kwargs.get('top_k', 50)), 35)
+        valid_kwargs['top_p'] = min(float(valid_kwargs.get('top_p', 1.0)), 0.92)
+        valid_kwargs['temperature'] = min(float(valid_kwargs.get('temperature', 0.9)), 0.78)
+        valid_kwargs['repetition_penalty'] = max(float(valid_kwargs.get('repetition_penalty', 1.0)), 1.08)
+
+    return valid_kwargs
+
+
+def _validate_indextts_duration(audio_path, text):
+    info = sf.info(audio_path)
+    dur = info.duration
+    text_len = len((text or '').strip())
+
+    if 29.8 < dur < 30.2 and text_len < 50:
+        raise Exception(f"Generated audio is suspiciously long ({dur:.2f}s) for short text '{text[:20]}...'. Likely timeout/hallucination.")
+
+    if dur > 60:
+        raise Exception(f"Generated audio too long ({dur:.2f}s).")
+
+    if text_len < 10 and dur > 15.0:
+        raise Exception(f"Generated audio too long ({dur:.2f}s) for very short text '{text[:20]}...'.")
+
+    if text_len < 24 and dur > 18.0:
+        raise Exception(f"Generated audio too long ({dur:.2f}s) for short text '{text[:20]}...'.")
+
+    return dur
 
 def trim_silence(audio_path, output_path=None):
     """
@@ -110,15 +168,7 @@ def run_tts(text, ref_audio_path, output_path, model_dir=None, config_path=None,
         
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
         
-        # Filter out arguments not supported by IndexTTS/HF Generate
-        ignore_keys = {'batch_size', 'qwen_mode', 'voice_instruct', 'preset_voice', 'qwen_model_size', 'qwen_ref_text', 'tts_service', 'action', 'json', 'cfg_scale', 'num_beams', 'length_penalty', 'max_new_tokens', 'ref_audio'}
-        valid_kwargs = {k: v for k, v in kwargs.items() if k not in ignore_keys}
-        
-        # Add IndexTTS specific defaults (User specified to remove subtalker_ prefix)
-        if 'do_sample' not in valid_kwargs: valid_kwargs['do_sample'] = True
-        if 'top_k' not in valid_kwargs: valid_kwargs['top_k'] = 50
-        if 'top_p' not in valid_kwargs: valid_kwargs['top_p'] = 1.0
-        if 'temperature' not in valid_kwargs: valid_kwargs['temperature'] = 0.9
+        valid_kwargs = _build_indextts_kwargs(text, kwargs)
 
         # Explicitly pass advanced params if present in kwargs
         # (Though they are auto-passed by kwargs filter, we just ensure they are valid)
@@ -130,6 +180,18 @@ def run_tts(text, ref_audio_path, output_path, model_dir=None, config_path=None,
             verbose=True,
             **valid_kwargs
         )
+
+        _validate_indextts_duration(output_path, text)
+
+        is_valid, validation_info = validate_generated_audio(output_path)
+        if not is_valid:
+            print(f"[TTS] Generated audio rejected: {validation_info}")
+            try:
+                if os.path.exists(output_path):
+                    os.remove(output_path)
+            except Exception:
+                pass
+            return False
         
         print(f"TTS complete. Saved to {output_path}")
         return True
@@ -190,19 +252,7 @@ def run_batch_tts(tasks, model_dir=None, config_path=None, language="English", *
             os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
             
             try:
-                # Enable repetition_penalty and cfg_scale by NOT ignoring them
-                # Filter out arguments not supported by IndexTTS/HF Generate
-                ignore_keys = {'batch_size', 'qwen_mode', 'voice_instruct', 'preset_voice', 'qwen_model_size', 'qwen_ref_text', 'tts_service', 'action', 'json', 'cfg_scale', 'num_beams', 'length_penalty', 'max_new_tokens', 'ref_audio'}
-                
-                valid_kwargs = {k: v for k, v in kwargs.items() if k not in ignore_keys}
-                
-                # Add IndexTTS specific defaults
-                # User request: Do not use 'subtalker_' prefix for IndexTTS.
-                # Map standard kwargs to what IndexTTS (infer_v2) likely expects if missing
-                if 'do_sample' not in valid_kwargs: valid_kwargs['do_sample'] = True
-                if 'top_k' not in valid_kwargs: valid_kwargs['top_k'] = 50
-                if 'top_p' not in valid_kwargs: valid_kwargs['top_p'] = 1.0
-                if 'temperature' not in valid_kwargs: valid_kwargs['temperature'] = 0.9
+                valid_kwargs = _build_indextts_kwargs(text, kwargs)
                 
                 tts.infer(
                     spk_audio_prompt=ref, 
@@ -214,28 +264,14 @@ def run_batch_tts(tasks, model_dir=None, config_path=None, language="English", *
 
                 
                 try:
-                    info = sf.info(out)
-                    dur = info.duration
-                    if 29.8 < dur < 30.2 and len(text) < 50:
-                        raise Exception(f"Generated audio is suspiciously long ({dur:.2f}s) for short text '{text[:20]}...'. Likely timeout/hallucination.")
-                    
-                    # Sanity check: excessive length
-                    if dur > 60:
-                         raise Exception(f"Generated audio too long ({dur:.2f}s).")
-                    
-                    # Hard limit for short text: if text < 10 chars and dur > 15s, it's garbage
-                    if len(text) < 10 and dur > 15.0:
-                         print(f"[BatchTTS] Warning: Short text '{text}' generated {dur:.2f}s audio. Truncating to 5s.")
-                         # Truncate
-                         trim_cmd = ['ffmpeg', '-y', '-i', out, '-t', '5', '-c', 'copy', out + "_trunc.wav"]
-                         subprocess.run(trim_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                         os.remove(out)
-                         os.rename(out + "_trunc.wav", out)
-                         dur = 5.0
-                         
+                    dur = _validate_indextts_duration(out, text)
                 except Exception as e_valid:
                      print(f"[BatchTTS] Validation failed for {out}: {e_valid}")
                      raise e_valid
+
+                is_valid, validation_info = validate_generated_audio(out)
+                if not is_valid:
+                    raise Exception(f"Generated audio rejected: {validation_info}")
 
                 # Emit Partial Result for UI to enable playback immediately
                 partial_data = {
@@ -246,7 +282,12 @@ def run_batch_tts(tasks, model_dir=None, config_path=None, language="English", *
                 }
                 print(f"[PARTIAL] {json.dumps(partial_data)}", flush=True)
                 
-                yield {"success": True, "audio_path": out}
+                yield {
+                    "index": task.get('index', i),
+                    "success": True,
+                    "audio_path": out,
+                    "duration": dur
+                }
 
             except Exception as e:
                 print(f"Failed task {i}: {e}")

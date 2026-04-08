@@ -8,6 +8,15 @@ import traceback
 os.environ['HF_HUB_OFFLINE'] = '1'
 os.environ['TRANSFORMERS_OFFLINE'] = '1'
 
+# Setup FFmpeg path for portable environment
+current_dir = os.path.dirname(os.path.abspath(__file__))
+ffmpeg_bin = os.path.join(current_dir, "ffmpeg", "bin")
+if os.path.exists(os.path.join(ffmpeg_bin, "ffmpeg.exe")):
+    if ffmpeg_bin not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = ffmpeg_bin + os.pathsep + os.environ.get("PATH", "")
+        print(f"[QwenASR] Added FFmpeg to PATH: {ffmpeg_bin}")
+
+
 # Ensure environment requirements
 try:
     from dependency_manager import ensure_transformers_version

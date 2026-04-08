@@ -1,90 +1,169 @@
-
 import React from 'react';
+import type { AudioMixMode } from '../hooks/useVideoProject';
 
 interface MergeConfigProps {
     themeMode?: 'light' | 'dark' | 'gradient';
     videoStrategy: string;
+    audioMixMode: AudioMixMode;
     setVideoStrategy: (strategy: string) => void;
+    setAudioMixMode: (mode: AudioMixMode) => void;
 }
 
-const MergeConfig: React.FC<MergeConfigProps> = ({ themeMode, videoStrategy, setVideoStrategy }) => {
-    const isLightMode = themeMode === 'gradient' || themeMode === 'light';
+interface OptionCard {
+    value: string;
+    label: string;
+    description: string;
+    badge?: string;
+}
 
-    // Strategy options with detailed descriptions
-    const strategyOptions = [
-        {
-            value: 'auto_speedup',
-            label: '自动加速 (默认)',
-            description: '自动调整音频播放速度以匹配视频画面时长。适合大多数对口型要求不高的场景，处理速度快。'
-        },
-        {
-            value: 'frame_blend',
-            label: '帧混合 (Frame Blending)',
-            description: '通过混合相邻帧来平滑过渡。适合只需微调时长的情况，可能会产生轻微的重影。'
-        },
-        {
-            value: 'freeze_frame',
-            label: '冻结帧 (Freeze Frame)',
-            description: '通过重复最后一帧来延长视频画面。适合PPT讲解或静态画面较多的视频。'
-        },
-        {
-            value: 'rife',
-            label: 'RIFE 智能补帧',
-            description: '使用 AI 模型生成中间帧，实现流畅的慢动作效果。画质最好，但处理速度最慢，需要较好的显卡。'
-        },
-    ];
+const audioMixOptions: Array<OptionCard & { value: AudioMixMode }> = [
+    {
+        value: 'preserve_background',
+        label: '保留背景音',
+        description: '尽量保留原视频中的背景音乐、环境声和氛围音，同时压低原旁白后再叠加新配音。',
+        badge: '默认'
+    },
+    {
+        value: 'replace_original',
+        label: '完全替换原音轨',
+        description: '只保留新生成的配音，不再保留原视频中的背景音和原始人声。适合需要纯净配音的场景。'
+    }
+];
+
+const strategyOptions: OptionCard[] = [
+    {
+        value: 'auto_speedup',
+        label: '自动加速',
+        description: '当配音略长时自动加速音频，处理速度快，适合大多数批处理场景。',
+        badge: '推荐'
+    },
+    {
+        value: 'frame_blend',
+        label: '帧混合',
+        description: '通过补间和平滑过渡延长画面，适合只需要轻微拉长视频时长的内容。'
+    },
+    {
+        value: 'freeze_frame',
+        label: '冻结尾帧',
+        description: '在必要时停留最后一帧来换取更长的配音空间，适合讲解类、PPT 类画面。'
+    },
+    {
+        value: 'rife',
+        label: 'RIFE 智能补帧',
+        description: '用 AI 方式生成中间帧，画面更顺滑，但速度最慢，对硬件要求也更高。'
+    }
+];
+
+const sectionCardStyle = (isLightMode: boolean): React.CSSProperties => ({
+    padding: '20px',
+    marginBottom: '20px',
+    borderRadius: '16px',
+    background: isLightMode ? 'rgba(255, 255, 255, 0.72)' : 'rgba(15, 23, 42, 0.68)',
+    border: isLightMode ? '1px solid rgba(15, 23, 42, 0.08)' : '1px solid rgba(148, 163, 184, 0.18)',
+    boxShadow: isLightMode
+        ? '0 18px 40px rgba(15, 23, 42, 0.08)'
+        : '0 18px 40px rgba(2, 6, 23, 0.28)'
+});
+
+function renderOption(
+    option: OptionCard,
+    selectedValue: string,
+    isLightMode: boolean,
+    onSelect: () => void
+) {
+    const selected = selectedValue === option.value;
 
     return (
-        <div style={{
-            height: '100%',
-            overflowY: 'auto',
-            paddingRight: '10px',
-            color: isLightMode ? '#333' : '#fff'
-        }}>
-            <h2 style={{ fontSize: '1.5em', fontWeight: 'bold', marginBottom: '20px' }}>合并配置</h2>
+        <button
+            key={option.value}
+            type="button"
+            onClick={onSelect}
+            style={{
+                width: '100%',
+                textAlign: 'left',
+                padding: '16px 18px',
+                borderRadius: '14px',
+                border: selected
+                    ? '2px solid #22c55e'
+                    : (isLightMode ? '1px solid rgba(15, 23, 42, 0.12)' : '1px solid rgba(148, 163, 184, 0.2)'),
+                background: selected
+                    ? (isLightMode ? 'rgba(34, 197, 94, 0.12)' : 'rgba(34, 197, 94, 0.18)')
+                    : (isLightMode ? 'rgba(255, 255, 255, 0.88)' : 'rgba(30, 41, 59, 0.55)'),
+                color: isLightMode ? '#0f172a' : '#e2e8f0',
+                cursor: 'pointer',
+                transition: 'all 0.2s ease'
+            }}
+        >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '6px' }}>
+                <div
+                    style={{
+                        width: '18px',
+                        height: '18px',
+                        borderRadius: '50%',
+                        border: selected ? '5px solid #22c55e' : '2px solid rgba(148, 163, 184, 0.7)',
+                        flexShrink: 0
+                    }}
+                />
+                <span style={{ fontWeight: 700, fontSize: '1rem' }}>{option.label}</span>
+                {option.badge && (
+                    <span
+                        style={{
+                            marginLeft: 'auto',
+                            fontSize: '0.76rem',
+                            padding: '2px 8px',
+                            borderRadius: '999px',
+                            background: selected ? '#16a34a' : 'rgba(148, 163, 184, 0.18)',
+                            color: selected ? '#f8fafc' : (isLightMode ? '#334155' : '#cbd5e1')
+                        }}
+                    >
+                        {option.badge}
+                    </span>
+                )}
+            </div>
+            <div style={{ marginLeft: '28px', fontSize: '0.92rem', lineHeight: 1.6, color: isLightMode ? '#475569' : '#94a3b8' }}>
+                {option.description}
+            </div>
+        </button>
+    );
+}
 
-            {/* Strategy Card */}
-            <div className={`glass-card ${isLightMode ? 'light-mode' : ''}`} style={{ padding: '20px', marginBottom: '20px' }}>
-                <h3 style={{ fontSize: '1.1em', fontWeight: 'bold', marginBottom: '15px' }}>视频对齐策略</h3>
-                <div style={{ fontSize: '0.9em', color: isLightMode ? '#666' : '#aaa', marginBottom: '15px' }}>
-                    选择在音频时长与视频画面不一致时，如何调整视频以保持同步。
+const MergeConfig: React.FC<MergeConfigProps> = ({
+    themeMode,
+    videoStrategy,
+    audioMixMode,
+    setVideoStrategy,
+    setAudioMixMode
+}) => {
+    const isLightMode = themeMode === 'gradient' || themeMode === 'light';
+
+    return (
+        <div
+            style={{
+                height: '100%',
+                overflowY: 'auto',
+                paddingRight: '10px',
+                color: isLightMode ? '#0f172a' : '#e2e8f0'
+            }}
+        >
+            <h2 style={{ fontSize: '1.6rem', fontWeight: 800, marginBottom: '18px' }}>合成配置</h2>
+
+            <div style={sectionCardStyle(isLightMode)}>
+                <h3 style={{ fontSize: '1.08rem', fontWeight: 700, marginBottom: '10px' }}>音频合成方式</h3>
+                <p style={{ margin: '0 0 16px 0', lineHeight: 1.7, color: isLightMode ? '#475569' : '#94a3b8' }}>
+                    决定最终成片是保留原视频背景音，还是直接用新配音替换原始音轨。默认推荐保留背景音。
+                </p>
+                <div style={{ display: 'grid', gap: '14px' }}>
+                    {audioMixOptions.map((option) => renderOption(option, audioMixMode, isLightMode, () => setAudioMixMode(option.value)))}
                 </div>
+            </div>
 
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
-                    {strategyOptions.map((option) => (
-                        <div
-                            key={option.value}
-                            onClick={() => setVideoStrategy(option.value)}
-                            style={{
-                                padding: '15px',
-                                borderRadius: '12px',
-                                background: videoStrategy === option.value
-                                    ? (isLightMode ? 'rgba(99, 102, 241, 0.1)' : 'rgba(99, 102, 241, 0.2)')
-                                    : (isLightMode ? 'rgba(255, 255, 255, 0.5)' : 'rgba(30, 41, 59, 0.4)'),
-                                border: videoStrategy === option.value
-                                    ? '2px solid #6366f1'
-                                    : (isLightMode ? '1px solid rgba(0,0,0,0.1)' : '1px solid rgba(255,255,255,0.1)'),
-                                cursor: 'pointer',
-                                transition: 'all 0.2s ease'
-                            }}
-                        >
-                            <div style={{ display: 'flex', alignItems: 'center', marginBottom: '5px' }}>
-                                <div style={{
-                                    width: '18px',
-                                    height: '18px',
-                                    borderRadius: '50%',
-                                    border: videoStrategy === option.value ? '5px solid #6366f1' : '2px solid #ccc',
-                                    marginRight: '10px',
-                                    background: 'transparent',
-                                    flexShrink: 0
-                                }} />
-                                <span style={{ fontWeight: 'bold', fontSize: '1em' }}>{option.label}</span>
-                            </div>
-                            <div style={{ marginLeft: '28px', fontSize: '0.9em', color: isLightMode ? '#666' : '#aaa' }}>
-                                {option.description}
-                            </div>
-                        </div>
-                    ))}
+            <div style={sectionCardStyle(isLightMode)}>
+                <h3 style={{ fontSize: '1.08rem', fontWeight: 700, marginBottom: '10px' }}>视频对齐策略</h3>
+                <p style={{ margin: '0 0 16px 0', lineHeight: 1.7, color: isLightMode ? '#475569' : '#94a3b8' }}>
+                    当配音长度与原视频片段不一致时，决定如何调整视频时长来保持音画同步。
+                </p>
+                <div style={{ display: 'grid', gap: '14px' }}>
+                    {strategyOptions.map((option) => renderOption(option, videoStrategy, isLightMode, () => setVideoStrategy(option.value)))}
                 </div>
             </div>
         </div>

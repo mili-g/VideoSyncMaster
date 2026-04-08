@@ -129,11 +129,11 @@ const QwenTTSConfig: React.FC<QwenTTSConfigProps> = ({ themeMode, isActive, onAc
         setGeneratedPaths(prev => ({ ...prev, [mode]: null }));
 
         try {
-            const paths = await (window as any).ipcRenderer.invoke('get-paths');
+            const paths = await window.api.getPaths();
             // Distinct output paths for each mode
             const outputPath = `${paths.projectRoot}\\.cache\\preview_qwen_${mode}.wav`;
 
-            await (window as any).ipcRenderer.invoke('ensure-dir', `${paths.projectRoot}\\.cache`);
+            await window.api.ensureDir(`${paths.projectRoot}\\.cache`);
 
             const args = [
                 '--action', 'test_tts',
@@ -158,7 +158,7 @@ const QwenTTSConfig: React.FC<QwenTTSConfigProps> = ({ themeMode, isActive, onAc
                 args.push('--preset_voice', presetVoice);
             }
 
-            const result = await (window as any).ipcRenderer.invoke('run-backend', args);
+            const result = await window.api.runBackend(args);
 
             if (result && result.success) {
                 setGeneratedPaths(prev => ({ ...prev, [mode]: outputPath }));
@@ -227,7 +227,7 @@ const QwenTTSConfig: React.FC<QwenTTSConfigProps> = ({ themeMode, isActive, onAc
 
     const handleSelectFile = async () => {
         try {
-            const result = await (window as any).ipcRenderer.invoke('dialog:openFile', {
+            const result = await window.api.openFileDialog({
                 filters: [{ name: 'Audio Files', extensions: ['wav', 'mp3', 'flac', 'm4a'] }]
             });
             if (result && !result.canceled && result.filePaths.length > 0) {
@@ -240,7 +240,7 @@ const QwenTTSConfig: React.FC<QwenTTSConfigProps> = ({ themeMode, isActive, onAc
 
     const handleStopPreview = async () => {
         try {
-            await (window as any).ipcRenderer.invoke('kill-backend');
+            await window.api.killBackend();
             setPreviewLoading(false);
             setFeedback({ title: '已停止', message: '预览生成已停止。', type: 'error' });
         } catch (e) {

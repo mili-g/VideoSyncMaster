@@ -17,7 +17,7 @@ const CompensationStrategy: React.FC<CompensationStrategyProps> = ({ themeMode }
             // We can check via IPC if model exists, reuse logic or cache
             // For now assume true or check again
             try {
-                const result = await (window as any).ipcRenderer.invoke('check-model-status');
+                const result = await window.api.checkModelStatus();
                 if (result && result.status && result.status.rife) {
                     setHasRife(true);
                 }

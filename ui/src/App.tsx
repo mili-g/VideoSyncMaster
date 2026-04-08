@@ -13,7 +13,9 @@ import StepBar from './components/StepBar';
 import ConfirmDialog from './components/ConfirmDialog';
 import AboutView from './components/AboutView';
 import MergeConfig from './components/MergeConfig';
+import BatchQueuePanel from './components/BatchQueuePanel';
 import { useVideoProject } from './hooks/useVideoProject';
+import { useBatchQueue } from './hooks/useBatchQueue';
 import { segmentsToSRT } from './utils/srt';
 
 
@@ -25,6 +27,7 @@ function App() {
     segments, setSegments,
     translatedSegments, setTranslatedSegments,
     videoStrategy, setVideoStrategy,
+    audioMixMode, setAudioMixMode,
     status, setStatus,
     loading, setLoading,
     dubbingLoading,
@@ -56,11 +59,24 @@ function App() {
     handleStop,
     hasErrors
   } = useVideoProject();
+  const {
+    items: batchQueueItems,
+    summary: batchQueueSummary,
+    isRunning: isBatchQueueRunning,
+    addAssets: addBatchQueueAssets,
+    removeItem: removeBatchQueueItem,
+    clearCompleted: clearCompletedBatchQueue,
+    retryFailed: retryFailedBatchQueue,
+    openOutput: openBatchQueueOutput,
+    startQueue: startBatchQueue,
+    stopQueue: stopBatchQueue
+  } = useBatchQueue();
 
   const [playingAudioIndex, setPlayingAudioIndex] = useState<number | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [playingVideoIndex, setPlayingVideoIndex] = useState<number | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const [mergedVideoSrc, setMergedVideoSrc] = useState('');
   const [currentTime, setCurrentTime] = useState(0)
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const timeIndex = segments.findIndex((seg: Segment) => currentTime >= seg.start && currentTime < seg.end);
@@ -78,12 +94,13 @@ function App() {
   const [repairConfirmMessage, setRepairConfirmMessage] = useState('');
   const [repairResult, setRepairResult] = useState<{ success: boolean; message: string } | null>(null);
   const [missingDeps, setMissingDeps] = useState<string[]>([]);
-  const [currentView, setCurrentView] = useState<'home' | 'models' | 'asr' | 'tts' | 'translation' | 'merge' | 'about'>(() => (localStorage.getItem('currentView') as any) || 'home');
+  const [currentView, setCurrentView] = useState<'home' | 'batch' | 'models' | 'asr' | 'tts' | 'translation' | 'merge' | 'about'>(() => (localStorage.getItem('currentView') as any) || 'home');
+  const backendBusy = loading || dubbingLoading || generatingSegmentId !== null || isBatchQueueRunning;
 
   useEffect(() => {
     const checkEnv = async () => {
       try {
-        const result = await (window as any).ipcRenderer.invoke('check-python-env');
+        const result = await window.api.checkPythonEnv();
 
         if (result && !result.success) {
           if (result.status === 'missing_python') {
@@ -173,6 +190,34 @@ function App() {
       setPlayingAudioIndex(null);
     }
   }, [currentView]);
+
+  useEffect(() => {
+    let active = true;
+
+    const loadMergedVideo = async () => {
+      if (!mergedVideoPath) {
+        if (active) setMergedVideoSrc('');
+        return;
+      }
+
+      try {
+        const fileUrl = await window.api.getFileUrl(mergedVideoPath);
+        if (active) {
+          // Only refresh the preview URL when the merged output path changes.
+          setMergedVideoSrc(`${fileUrl}?v=${Date.now()}`);
+        }
+      } catch (error) {
+        console.error('Failed to load merged video preview:', error);
+        if (active) setMergedVideoSrc('');
+      }
+    };
+
+    loadMergedVideo();
+
+    return () => {
+      active = false;
+    };
+  }, [mergedVideoPath]);
 
 
 
@@ -283,7 +328,7 @@ function App() {
     }
 
     try {
-      const url = await (window as any).ipcRenderer.invoke('get-file-url', audioPath);
+      const url = await window.api.getFileUrl(audioPath);
       audioEl.src = `${url}?t=${Date.now()}`;
       audioEl.play().catch(e => {
         console.error("Audio play failed", e);
@@ -338,7 +383,7 @@ function App() {
 
   const handleOpenLog = async () => {
     try {
-      const result = await (window as any).ipcRenderer.invoke('open-backend-log');
+      const result = await window.api.openBackendLog();
       if (!result.success) {
         setStatus(`无法打开日志: ${result.error}`);
       }
@@ -352,14 +397,14 @@ function App() {
     if (segments.length === 0) return;
     try {
       const srtContent = segmentsToSRT(segments);
-      const result = await (window as any).ipcRenderer.invoke('dialog:showSaveDialog', {
+      const result = await window.api.showSaveDialog({
         title: '导出原始字幕',
         defaultPath: 'subtitle.srt',
         filters: [{ name: 'Subtitle Files', extensions: ['srt'] }]
       });
 
       if (!result.canceled && result.filePath) {
-        await (window as any).ipcRenderer.invoke('save-file', result.filePath, srtContent);
+        await window.api.saveFile(result.filePath, srtContent);
         setStatus(`字幕已成功导出至: ${result.filePath}`);
       }
     } catch (e) {
@@ -372,14 +417,14 @@ function App() {
     if (translatedSegments.length === 0) return;
     try {
       const srtContent = segmentsToSRT(translatedSegments);
-      const result = await (window as any).ipcRenderer.invoke('dialog:showSaveDialog', {
+      const result = await window.api.showSaveDialog({
         title: '导出翻译字幕',
         defaultPath: 'translated_subtitle.srt',
         filters: [{ name: 'Subtitle Files', extensions: ['srt'] }]
       });
 
       if (!result.canceled && result.filePath) {
-        await (window as any).ipcRenderer.invoke('save-file', result.filePath, srtContent);
+        await window.api.saveFile(result.filePath, srtContent);
         setStatus(`翻译字幕已成功导出至: ${result.filePath}`);
       }
     } catch (e) {
@@ -410,7 +455,7 @@ function App() {
     // setIsIndeterminate(true); // Redundant with overlay
 
     try {
-      const result = await (window as any).ipcRenderer.invoke('fix-python-env');
+      const result = await window.api.fixPythonEnv();
       if (result && result.success) {
         setStatus("环境修复完成！请重启软件以生效。");
         setRepairResult({ success: true, message: "修复完成！建议重启软件。" });
@@ -517,7 +562,7 @@ function App() {
           <div style={{ position: 'absolute', left: 0, top: '50%', transform: 'translateY(-50%)' }}>
             <button
               onClick={handleOneClickRun}
-              disabled={loading || dubbingLoading || generatingSegmentId !== null || !originalVideoPath}
+              disabled={backendBusy || !originalVideoPath}
               title={!originalVideoPath ? "请先选择视频" : "自动执行所有步骤"}
               style={{
                 padding: '8px 40px',
@@ -527,8 +572,8 @@ function App() {
                 borderRadius: '24px',
                 fontSize: '0.9em',
                 fontWeight: 'bold',
-                cursor: (loading || dubbingLoading || generatingSegmentId !== null || !originalVideoPath) ? 'not-allowed' : 'pointer',
-                opacity: (loading || dubbingLoading || generatingSegmentId !== null || !originalVideoPath) ? 0.6 : 1,
+                cursor: (backendBusy || !originalVideoPath) ? 'not-allowed' : 'pointer',
+                opacity: (backendBusy || !originalVideoPath) ? 0.6 : 1,
                 backdropFilter: 'blur(10px)',
                 transition: 'all 0.2s',
                 zIndex: 10
@@ -711,7 +756,7 @@ function App() {
                   playUntilTime={playUntilTime}
                   videoRef={videoRef}
                   onVideoPause={() => setPlayingVideoIndex(null)}
-                  disabled={loading || dubbingLoading || generatingSegmentId !== null}
+                  disabled={backendBusy}
                   onUserSeek={() => setPlayUntilTime(null)}
                 />
 
@@ -720,10 +765,10 @@ function App() {
                   <h3 style={{ marginTop: 0, marginBottom: '10px', color: 'var(--text-primary)' }}>4. 合并后的视频</h3>
 
                   {/* Merged Video Player */}
-                  {mergedVideoPath && (
+                  {mergedVideoPath && mergedVideoSrc && (
                     <div style={{ marginBottom: '15px', position: 'relative', background: 'black', borderRadius: '4px', overflow: 'hidden' }}>
                       <video
-                        src={(mergedVideoPath.startsWith('file:') ? mergedVideoPath : `file:///${encodeURI(mergedVideoPath.replace(/\\/g, '/'))}`) + `?v=${Date.now()}`}
+                        src={mergedVideoSrc}
                         controls
                         style={{ width: '100%', display: 'block' }}
                       />
@@ -736,7 +781,7 @@ function App() {
                           wordBreak: 'break-all',
                           cursor: 'pointer'
                         }}
-                        onClick={() => (window as any).ipcRenderer.invoke('open-external', mergedVideoPath)}
+                        onClick={() => window.api.openExternal(mergedVideoPath)}
                         title="点击调用系统播放器打开"
                       >
                         {mergedVideoPath.split(/[\\/]/).pop()} <span style={{ color: '#6366f1' }}>(点击打开)</span>
@@ -761,7 +806,7 @@ function App() {
                   {/* Action Buttons */}
                   <button
                     onClick={() => handleMergeVideo()}
-                    disabled={loading || dubbingLoading || !videoPath || translatedSegments.length === 0}
+                    disabled={backendBusy || !videoPath || translatedSegments.length === 0}
                     className="btn"
                     style={{
                       width: '100%',
@@ -775,7 +820,7 @@ function App() {
                     {dubbingLoading ? '处理中...' : '开始合并'}
                   </button>
                   <button
-                    onClick={() => (window as any).ipcRenderer.invoke('open-folder', mergedVideoPath)}
+                    onClick={() => window.api.openFolder(mergedVideoPath)}
                     disabled={!mergedVideoPath}
                     className="btn"
                     style={{
@@ -860,6 +905,33 @@ function App() {
             </div>
           )}
 
+          {currentView === 'batch' && (
+            <BatchQueuePanel
+              items={batchQueueItems}
+              summary={batchQueueSummary}
+              isRunning={isBatchQueueRunning}
+              onAddAssets={addBatchQueueAssets}
+              onRemoveItem={removeBatchQueueItem}
+              onClearCompleted={clearCompletedBatchQueue}
+              onRetryFailed={retryFailedBatchQueue}
+              onOpenOutput={openBatchQueueOutput}
+              onStart={() => startBatchQueue({
+                targetLang,
+                asrService,
+                ttsService,
+                asrOriLang,
+                videoStrategy,
+                audioMixMode,
+                batchSize,
+                cloneBatchSize,
+                maxNewTokens,
+                setStatus
+              })}
+              canStart={!loading && !dubbingLoading && generatingSegmentId === null && !isBatchQueueRunning && batchQueueItems.length > 0}
+              onStop={() => stopBatchQueue(setStatus)}
+            />
+          )}
+
           {currentView === 'asr' && (
             <div style={{ flex: 1, margin: '10px', overflow: 'auto' }}>
               <ASRHub asrService={asrService} onServiceChange={handleAsrServiceChange} themeMode={'dark'} />
@@ -891,7 +963,9 @@ function App() {
               <MergeConfig
                 themeMode={'dark'}
                 videoStrategy={videoStrategy}
+                audioMixMode={audioMixMode}
                 setVideoStrategy={setVideoStrategy}
+                setAudioMixMode={setAudioMixMode}
               />
             </div>
           )}

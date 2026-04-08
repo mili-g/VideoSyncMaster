@@ -4,6 +4,7 @@ import torch
 import soundfile as sf
 import traceback
 import json
+from audio_validation import validate_generated_audio
 
 # Ensure environment requirements
 try:
@@ -23,6 +24,93 @@ except ImportError:
 # { 'model_type': model_instance }
 # types: 'VoiceDesign', 'Base', 'CustomVoice'
 _loaded_models = {}
+QWEN_ALLOWED_GENERATION_KWARGS = {
+    "pad_token_id",
+    "max_new_tokens",
+    "temperature",
+    "top_p",
+    "repetition_penalty",
+    "do_sample"
+}
+
+
+def _preview_text(text, limit=48):
+    text = str(text or "").replace("\n", " ").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "..."
+
+
+def _compute_adaptive_max_new_tokens(text, requested_max_new_tokens, duration=None):
+    requested = int(requested_max_new_tokens or 4096)
+    text_len = len(str(text or "").strip())
+
+    if duration is not None:
+        try:
+            duration = float(duration)
+        except Exception:
+            duration = None
+
+    if text_len <= 12:
+        adaptive_cap = 768
+    elif text_len <= 32:
+        adaptive_cap = 1024
+    elif text_len <= 80:
+        adaptive_cap = 1536
+    elif text_len <= 160:
+        adaptive_cap = 2048
+    else:
+        adaptive_cap = 2560
+
+    if duration is not None:
+        if duration <= 2.5:
+            adaptive_cap = min(adaptive_cap, 1024)
+        elif duration <= 5.0:
+            adaptive_cap = min(adaptive_cap, 1536)
+        elif duration <= 8.0:
+            adaptive_cap = min(adaptive_cap, 2048)
+
+    return max(512, min(requested, adaptive_cap))
+
+
+def _build_qwen_generation_kwargs(kwargs, *, text="", duration=None, adaptive_max_new_tokens=False):
+    gen_kwargs = {}
+    real_model = kwargs.get("_real_model")
+    pad_id = 2150
+
+    if real_model:
+        if hasattr(real_model, "generation_config") and getattr(real_model.generation_config, "pad_token_id", None) is not None:
+            pad_id = real_model.generation_config.pad_token_id
+        elif hasattr(real_model, "config") and getattr(real_model.config, "pad_token_id", None) is not None:
+            pad_id = real_model.config.pad_token_id
+
+    gen_kwargs["pad_token_id"] = int(pad_id)
+
+    requested_max_new_tokens = int(kwargs.get("max_new_tokens", 4096))
+    if adaptive_max_new_tokens:
+        gen_kwargs["max_new_tokens"] = _compute_adaptive_max_new_tokens(text, requested_max_new_tokens, duration)
+    else:
+        gen_kwargs["max_new_tokens"] = requested_max_new_tokens
+
+    if "temperature" in kwargs:
+        gen_kwargs["temperature"] = float(kwargs["temperature"])
+    else:
+        gen_kwargs["temperature"] = 0.7
+
+    if "top_p" in kwargs:
+        gen_kwargs["top_p"] = float(kwargs["top_p"])
+    else:
+        gen_kwargs["top_p"] = 0.8
+
+    if "repetition_penalty" in kwargs:
+        gen_kwargs["repetition_penalty"] = float(kwargs["repetition_penalty"])
+    else:
+        gen_kwargs["repetition_penalty"] = 1.0
+
+    if kwargs.get("do_sample"):
+        gen_kwargs["do_sample"] = True
+
+    return {key: value for key, value in gen_kwargs.items() if key in QWEN_ALLOWED_GENERATION_KWARGS}
 
 def get_model(model_type, model_size="1.7B", device="cuda"):
     """
@@ -150,6 +238,30 @@ def run_qwen_tts(text, ref_audio_path, output_path, language="Auto", **kwargs):
     model_size = kwargs.get('qwen_model_size', '1.7B')
     print(f"[QwenTTS] Mode: {mode}, Size: {model_size}, Text: {text[:20]}...")
     
+    def _validate_or_cleanup(path):
+        is_valid, validation_info = validate_generated_audio(path)
+        if not is_valid:
+            print(f"[QwenTTS] Generated audio rejected: {validation_info}")
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except Exception:
+                pass
+            return False
+        return True
+
+    def _generate_preset_fallback():
+        speaker = kwargs.get('preset_voice', 'Vivian')
+        print(f"[QwenTTS] Falling back to preset voice: {speaker}")
+        model = get_model("CustomVoice", model_size=model_size)
+        wavs, sr = model.generate_custom_voice(
+            text=text,
+            language=language,
+            speaker=speaker
+        )
+        sf.write(output_path, wavs[0], sr)
+        return _validate_or_cleanup(output_path)
+
     try:
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
         
@@ -172,6 +284,8 @@ def run_qwen_tts(text, ref_audio_path, output_path, language="Auto", **kwargs):
             
             # Save
             sf.write(output_path, wavs[0], sr)
+            if not _validate_or_cleanup(output_path):
+                return False
             print(f"[QwenTTS] Saved to {output_path}")
             return True
 
@@ -190,6 +304,8 @@ def run_qwen_tts(text, ref_audio_path, output_path, language="Auto", **kwargs):
             )
             
             sf.write(output_path, wavs[0], sr)
+            if not _validate_or_cleanup(output_path):
+                return False
             print(f"[QwenTTS] Saved to {output_path}")
             return True
 
@@ -207,34 +323,20 @@ def run_qwen_tts(text, ref_audio_path, output_path, language="Auto", **kwargs):
             
             if not ref_audio_path or not os.path.exists(ref_audio_path):
                 print(f"[QwenTTS] Error: Ref audio not found: {ref_audio_path}")
-                return False
+                return _generate_preset_fallback()
                 
             model = get_model("Base", model_size=model_size)
             
             print(f"[QwenTTS] Cloning voice from {os.path.basename(ref_audio_path)}...")
             
-            # Ensure we have a valid pad_token_id to prevent open-end generation hangs
-            gen_kwargs = {}
-            
-            real_model = getattr(model, 'model', None)
-            pad_id = 2150 # Default fallback
-            
-            if real_model:
-                 if hasattr(real_model, 'generation_config') and getattr(real_model.generation_config, 'pad_token_id', None) is not None:
-                      pad_id = real_model.generation_config.pad_token_id
-                 elif hasattr(real_model, 'config') and getattr(real_model.config, 'pad_token_id', None) is not None:
-                      pad_id = real_model.config.pad_token_id
-            
-            gen_kwargs['pad_token_id'] = int(pad_id)
-            
-            # Use user provided parameters
-            gen_kwargs['max_new_tokens'] = int(kwargs.get('max_new_tokens', 4096))
-            # Removed safety cap as requested
-
-            gen_kwargs['temperature'] = float(kwargs.get('temperature', 0.7))
-            gen_kwargs['top_p'] = float(kwargs.get('top_p', 0.8))
-            gen_kwargs['repetition_penalty'] = float(kwargs.get('repetition_penalty', 1.0))
-            if kwargs.get('do_sample'): gen_kwargs['do_sample'] = True
+            gen_kwargs = _build_qwen_generation_kwargs(
+                {
+                    **kwargs,
+                    "_real_model": getattr(model, "model", None)
+                },
+                text=text,
+                adaptive_max_new_tokens=True
+            )
             
             # Pass other kwargs directly if needed or filter?
             # generate_voice_clone handles them via **kwargs usually
@@ -250,6 +352,8 @@ def run_qwen_tts(text, ref_audio_path, output_path, language="Auto", **kwargs):
             )
             
             sf.write(output_path, wavs[0], sr)
+            if not _validate_or_cleanup(output_path):
+                return _generate_preset_fallback()
             print(f"[QwenTTS] Saved to {output_path}")
             return True
             
@@ -275,6 +379,44 @@ def run_batch_qwen_tts(tasks, language="Auto", **kwargs):
         target_model_type = "Base" # Default for Design-based cloning or pure cloning
         if mode == 'preset':
              target_model_type = "CustomVoice"
+
+        def generate_preset_fallback_for_task(task, reason):
+            output_path = task['output_path']
+            original_idx = task.get('index')
+            speaker = kwargs.get('preset_voice', 'Vivian')
+            print(f"[QwenTTS] Task {original_idx} falling back to preset voice '{speaker}': {reason}")
+            try:
+                fallback_model = get_model("CustomVoice", model_size=model_size)
+                wavs, sr = fallback_model.generate_custom_voice(
+                    text=task['text'],
+                    language=language,
+                    speaker=speaker
+                )
+                sf.write(output_path, wavs[0], sr)
+                is_valid, validation_info = validate_generated_audio(output_path)
+                if not is_valid:
+                    try:
+                        if os.path.exists(output_path):
+                            os.remove(output_path)
+                    except Exception:
+                        pass
+                    return {
+                        "index": original_idx,
+                        "success": False,
+                        "error": f"Preset fallback rejected: {validation_info}"
+                    }
+                return {
+                    "index": original_idx,
+                    "success": True,
+                    "audio_path": output_path
+                }
+            except Exception as fallback_error:
+                traceback.print_exc()
+                return {
+                    "index": original_idx,
+                    "success": False,
+                    "error": f"Preset fallback failed: {fallback_error}"
+                }
         
         model = get_model(target_model_type, model_size=model_size)
         
@@ -306,28 +448,15 @@ def run_batch_qwen_tts(tasks, language="Auto", **kwargs):
             batch_texts = [t['text'] for t in batch_tasks]
             batch_outs = [t['output_path'] for t in batch_tasks]
             
-            # Ensure we have a valid pad_token_id (Critical for hang fix)
-            gen_kwargs = {}
-            # Re-fetch from model state or use fallback
-            real_model = getattr(model, 'model', None)
-            pad_id = 2150 # Default fallback
-            
-            if real_model:
-                 if hasattr(real_model, 'generation_config') and getattr(real_model.generation_config, 'pad_token_id', None) is not None:
-                      pad_id = real_model.generation_config.pad_token_id
-                 elif hasattr(real_model, 'config') and getattr(real_model.config, 'pad_token_id', None) is not None:
-                      pad_id = real_model.config.pad_token_id
-            
-            gen_kwargs['pad_token_id'] = int(pad_id)
-            
-            # Restore user parameters
-            gen_kwargs['max_new_tokens'] = int(kwargs.get('max_new_tokens', 4096))
-            # if gen_kwargs['max_new_tokens'] > 2048: gen_kwargs['max_new_tokens'] = 2048
-
-            gen_kwargs['temperature'] = float(kwargs.get('temperature', 0.7))
-            gen_kwargs['top_p'] = float(kwargs.get('top_p', 0.8))
-            gen_kwargs['repetition_penalty'] = float(kwargs.get('repetition_penalty', 1.0))
-            if kwargs.get('do_sample'): gen_kwargs['do_sample'] = True
+            gen_kwargs = _build_qwen_generation_kwargs(
+                {
+                    **kwargs,
+                    "_real_model": getattr(model, "model", None)
+                },
+                text=batch_tasks[0].get('text', '') if len(batch_tasks) == 1 else "",
+                duration=batch_tasks[0].get('duration') if len(batch_tasks) == 1 else None,
+                adaptive_max_new_tokens=(len(batch_tasks) == 1)
+            )
 
             try:
                 wavs = []
@@ -344,20 +473,44 @@ def run_batch_qwen_tts(tasks, language="Auto", **kwargs):
                     else:
                         current_batch_refs = [t['ref_audio_path'] for t in batch_tasks]
                         if all(r == current_batch_refs[0] for r in current_batch_refs):
+                             task_ref_texts = [str(t.get('ref_text') or '') for t in batch_tasks]
+                             unique_task_ref_texts = {text for text in task_ref_texts if text}
                              batch_ref_text = kwargs.get('qwen_ref_text', '')
-                             batch_x_vec = False
-                             if not batch_ref_text:
-                                 batch_x_vec = True
-                                 
-                             # model.generate_voice_clone likely handles single ref + list of text.
-                             wavs, sr = model.generate_voice_clone(
-                                text=batch_texts,
-                                language=language,
-                                ref_audio=current_batch_refs[0],
-                                ref_text=batch_ref_text,
-                                x_vector_only_mode=batch_x_vec,
-                                **gen_kwargs
-                            )
+                             if not batch_ref_text and len(unique_task_ref_texts) == 1:
+                                 batch_ref_text = next(iter(unique_task_ref_texts))
+                             if not batch_ref_text and len(unique_task_ref_texts) > 1:
+                                 print(f"[QwenTTS] Mixed reference texts detected for shared ref audio in batch {batch_index_start}. Processing sequentially.")
+                                 local_wavs = []
+                                 for bt in batch_tasks:
+                                     t_ref_text = bt.get('ref_text') or kwargs.get('qwen_ref_text', '')
+                                     t_x_vec = False
+                                     if not t_ref_text:
+                                         t_x_vec = True
+                                     w, s = model.generate_voice_clone(
+                                        text=bt['text'],
+                                        language=language,
+                                        ref_audio=bt['ref_audio_path'],
+                                        ref_text=t_ref_text,
+                                        x_vector_only_mode=t_x_vec,
+                                        **gen_kwargs
+                                    )
+                                     local_wavs.append(w[0])
+                                     sr = s
+                                 wavs = local_wavs
+                             else:
+                                 batch_x_vec = False
+                                 if not batch_ref_text:
+                                     batch_x_vec = True
+
+                                 # model.generate_voice_clone likely handles single ref + list of text.
+                                 wavs, sr = model.generate_voice_clone(
+                                    text=batch_texts,
+                                    language=language,
+                                    ref_audio=current_batch_refs[0],
+                                    ref_text=batch_ref_text,
+                                    x_vector_only_mode=batch_x_vec,
+                                    **gen_kwargs
+                                )
                         else:
                             # Mixed refs. Must process one by one.
                             # We shouldn't have entered this batched block ideally, strict fallback:
@@ -365,10 +518,7 @@ def run_batch_qwen_tts(tasks, language="Auto", **kwargs):
                             print(f"[QwenTTS] Batch {batch_index_start} has mixed refs. Processing sequentially.")
                             local_wavs = []
                             for bt in batch_tasks:
-                                # Determine per-task x-vector mode? 
-                                # Currently we only support Global ref text via kwargs. Not per-task ref text.
-                                # So assumes global ref text applies or is empty.
-                                t_ref_text = kwargs.get('qwen_ref_text', '') 
+                                t_ref_text = bt.get('ref_text') or kwargs.get('qwen_ref_text', '')
                                 t_x_vec = False
                                 if not t_ref_text: t_x_vec = True
 
@@ -395,30 +545,65 @@ def run_batch_qwen_tts(tasks, language="Auto", **kwargs):
                 # Write outputs
                 results = []
                 for i, wav in enumerate(wavs):
-                     out_p = batch_outs[i]
-                     sf.write(out_p, wav, sr)
-                     
-                     # Original task index
-                     original_idx = batch_tasks[i].get('index', batch_index_start + i)
-                     
-                     results.append({
-                         "index": original_idx,
-                         "success": True, 
-                         "audio_path": out_p
-                     })
-                     print(f"[PARTIAL] {json.dumps({'index': original_idx, 'success': True, 'audio_path': out_p})}", flush=True)
+                    out_p = batch_outs[i]
+                    sf.write(out_p, wav, sr)
+                    is_valid, validation_info = validate_generated_audio(out_p)
+
+                    # Original task index
+                    original_idx = batch_tasks[i].get('index', batch_index_start + i)
+
+                    if not is_valid:
+                        try:
+                            if os.path.exists(out_p):
+                                os.remove(out_p)
+                        except Exception:
+                            pass
+                        if mode == 'clone':
+                            fallback_result = generate_preset_fallback_for_task(
+                                batch_tasks[i],
+                                f"Generated audio rejected: {validation_info}"
+                            )
+                            results.append(fallback_result)
+                            print(f"[PARTIAL] {json.dumps(fallback_result)}", flush=True)
+                        else:
+                            error_result = {
+                                "index": original_idx,
+                                "success": False,
+                                "error": f"Generated audio rejected: {validation_info}"
+                            }
+                            results.append(error_result)
+                            print(f"[PARTIAL] {json.dumps(error_result)}", flush=True)
+                        continue
+
+                    results.append({
+                        "index": original_idx,
+                        "success": True,
+                        "audio_path": out_p
+                    })
+                    print(f"[PARTIAL] {json.dumps({'index': original_idx, 'success': True, 'audio_path': out_p})}", flush=True)
 
                 return results
 
             except Exception as batch_e:
                 print(f"[QwenTTS] Batch failed: {batch_e}")
                 traceback.print_exc()
-                # Fail all in batch
                 rets = []
                 for i, task in enumerate(batch_tasks):
                     original_idx = task.get('index', batch_index_start + i)
-                    print(f"[PARTIAL] {json.dumps({'index': original_idx, 'success': False, 'error': str(batch_e)})}", flush=True)
-                    rets.append({"success": False, "error": str(batch_e)})
+                    if mode == 'clone':
+                        fallback_result = generate_preset_fallback_for_task(task, str(batch_e))
+                        if fallback_result.get("index") is None:
+                            fallback_result["index"] = original_idx
+                        rets.append(fallback_result)
+                        print(f"[PARTIAL] {json.dumps(fallback_result)}", flush=True)
+                    else:
+                        error_result = {
+                            "index": original_idx,
+                            "success": False,
+                            "error": str(batch_e)
+                        }
+                        print(f"[PARTIAL] {json.dumps(error_result)}", flush=True)
+                        rets.append(error_result)
                 return rets
 
         # Main Loop
@@ -427,6 +612,19 @@ def run_batch_qwen_tts(tasks, language="Auto", **kwargs):
             end_idx = min(i + batch_size, total_tasks)
             batch_tasks = tasks[i : end_idx]
             print(f"[PROGRESS] {int((i) / total_tasks * 100)}", flush=True)
+            if len(batch_tasks) == 1:
+                task = batch_tasks[0]
+                print(
+                    f"[QwenTTS] Synthesizing index {task.get('index', i)} "
+                    f"(max_new_tokens={_compute_adaptive_max_new_tokens(task.get('text', ''), kwargs.get('max_new_tokens', 4096), task.get('duration'))}): "
+                    f"'{_preview_text(task.get('text', ''))}'",
+                    flush=True
+                )
+            else:
+                print(
+                    f"[QwenTTS] Synthesizing batch {i}-{end_idx - 1} ({len(batch_tasks)} items)",
+                    flush=True
+                )
             
             # Process
             batch_results = process_batch(batch_tasks, i)

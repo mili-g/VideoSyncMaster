@@ -7,7 +7,7 @@ process.on('uncaughtException', (error) => {
 import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import path from 'node:path'
-import { spawn, exec, ChildProcess } from 'child_process'
+import { spawn, exec, execFile, ChildProcess } from 'child_process'
 import fs from 'fs'
 
 const activeDownloads = new Map<string, ChildProcess>();
@@ -26,6 +26,100 @@ process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, 
 
 let win: BrowserWindow | null
 let activeBackendProcess: any = null
+
+const utf8Decoder = new TextDecoder('utf-8', { fatal: false })
+const gbkDecoder = new TextDecoder('gbk', { fatal: false })
+
+function countReplacementChars(value: string) {
+  return (value.match(/\uFFFD/g) || []).length
+}
+
+function decodeProcessChunk(data: any) {
+  const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data)
+  const utf8Text = utf8Decoder.decode(buffer)
+
+  if (process.platform !== 'win32') {
+    return utf8Text
+  }
+
+  const gbkText = gbkDecoder.decode(buffer)
+  const utf8Bad = countReplacementChars(utf8Text)
+  const gbkBad = countReplacementChars(gbkText)
+
+  if (utf8Bad === 0) {
+    return utf8Text
+  }
+
+  if (gbkBad < utf8Bad) {
+    return gbkText
+  }
+
+  if ((utf8Text.includes('����') || utf8Bad > 0) && /sox/i.test(gbkText)) {
+    return gbkText
+  }
+
+  return utf8Text
+}
+
+function normalizeKnownProcessMessage(message: string) {
+  if (!message) return message
+
+  if (
+    process.platform === 'win32' &&
+    /'sox'.*不是内部或外部命令，也不是可运行的程序或批处理文件。?/i.test(message)
+  ) {
+    return `'sox' is not recognized as an internal or external command, operable program or batch file.`
+  }
+
+  return message
+}
+
+function isBenignTaskkillMessage(message: string) {
+  const text = message.toLowerCase()
+  return (
+    text.includes('not found') ||
+    text.includes('no running instance') ||
+    text.includes('not running') ||
+    text.includes('没有运行的任务') ||
+    text.includes('没有找到进程')
+  )
+}
+
+function terminateProcessTree(proc: ChildProcess | null): Promise<boolean> {
+  if (!proc || !proc.pid) {
+    return Promise.resolve(true)
+  }
+
+  if (proc.exitCode !== null || proc.killed) {
+    return Promise.resolve(true)
+  }
+
+  if (process.platform === 'win32') {
+    return new Promise((resolve) => {
+      execFile('taskkill', ['/pid', String(proc.pid), '/T', '/F'], { windowsHide: true }, (error, stdout, stderr) => {
+        const combinedOutput = `${stdout || ''}\n${stderr || ''}`.trim()
+
+        if (error && !isBenignTaskkillMessage(combinedOutput)) {
+          console.error(`[KillBackend] taskkill failed for PID ${proc.pid}:`, combinedOutput || error.message)
+          resolve(false)
+          return
+        }
+
+        resolve(true)
+      })
+    })
+  }
+
+  return new Promise((resolve) => {
+    try {
+      proc.kill('SIGKILL')
+      resolve(true)
+    } catch (error) {
+      console.error('[KillBackend] Failed to terminate backend:', error)
+      resolve(false)
+    }
+  })
+}
 
 
 function createWindow() {
@@ -64,9 +158,86 @@ app.on('window-all-closed', () => {
   }
 })
 
-app.whenReady().then(() => {
-  console.log("App is ready, creating window...");
+// Check if VC++ Runtime is installed by looking for common DLLs
+async function checkVCRuntimeInstalled(): Promise<boolean> {
+  // Check for vcruntime140.dll in System32
+  const systemRoot = process.env.SYSTEMROOT || 'C:\\Windows';
+  const dllPath = path.join(systemRoot, 'System32', 'vcruntime140.dll');
+  return fs.existsSync(dllPath);
+}
+
+// Install VC++ Runtime from bundled installer
+async function installVCRuntime(projectRoot: string): Promise<boolean> {
+  const vcRedistPath = path.join(projectRoot, 'VC_redist.x64.exe');
+
+  if (!fs.existsSync(vcRedistPath)) {
+    console.log('[VCRuntime] VC_redist.x64.exe not found, skipping installation.');
+    return false;
+  }
+
+  console.log('[VCRuntime] Installing VC++ Runtime...');
+
+  return new Promise((resolve) => {
+    const installProcess = spawn(vcRedistPath, ['/install', '/quiet', '/norestart'], {
+      stdio: 'ignore'
+    });
+
+    installProcess.on('close', (code) => {
+      if (code === 0 || code === 3010) { // 3010 = success, reboot required
+        console.log('[VCRuntime] Installation successful.');
+        resolve(true);
+      } else {
+        console.error('[VCRuntime] Installation failed with code:', code);
+        resolve(false);
+      }
+    });
+
+    installProcess.on('error', (err) => {
+      console.error('[VCRuntime] Installation error:', err);
+      resolve(false);
+    });
+  });
+}
+
+// Check and install VC++ Runtime if needed
+async function checkAndInstallVCRuntime(): Promise<void> {
+  const isInstalled = await checkVCRuntimeInstalled();
+
+  if (isInstalled) {
+    console.log('[VCRuntime] VC++ Runtime is already installed.');
+    return;
+  }
+
+  console.log('[VCRuntime] VC++ Runtime not detected, attempting installation...');
+
+  // Determine project root
+  const projectRoot = app.isPackaged
+    ? path.dirname(process.resourcesPath)
+    : path.resolve(__dirname, '..', '..');
+
+  const success = await installVCRuntime(projectRoot);
+
+  if (!success) {
+    // Show a dialog to inform the user
+    const { dialog: earlyDialog } = require('electron');
+    earlyDialog.showMessageBoxSync({
+      type: 'warning',
+      title: '运行时组件缺失',
+      message: 'Microsoft Visual C++ 运行时库安装失败。\n\n如果程序无法正常运行，请手动运行程序目录下的 VC_redist.x64.exe 进行安装。',
+      buttons: ['确定']
+    });
+  }
+}
+
+app.whenReady().then(async () => {
+  console.log("App is ready, checking VC++ Runtime...");
+
+  // Check and install VC++ Runtime before creating window
+  await checkAndInstallVCRuntime();
+
+  console.log("Creating window...");
   createWindow()
+
 
   // IPC Handler for converting path to file URL (robust encoding)
   ipcMain.handle('get-file-url', async (_event, filePath: string) => {
@@ -102,6 +273,16 @@ app.whenReady().then(() => {
         else resolve(true)
       })
     })
+  })
+
+  ipcMain.handle('delete-path', async (_event: any, targetPath: string) => {
+    try {
+      await fs.promises.rm(targetPath, { recursive: true, force: true })
+      return true
+    } catch (error) {
+      console.error('Failed to delete path:', targetPath, error)
+      return false
+    }
   })
 
   // IPC Handler to get paths
@@ -153,7 +334,7 @@ app.whenReady().then(() => {
 
       if (backendProcess) {
         backendProcess.stdout.on('data', (data: any) => {
-          const str = data.toString()
+          const str = normalizeKnownProcessMessage(decodeProcessChunk(data))
 
           const lines = str.split('\n');
           lines.forEach((line: string) => {
@@ -194,7 +375,7 @@ app.whenReady().then(() => {
         })
 
         backendProcess.stderr.on('data', (data: any) => {
-          const str = data.toString()
+          const str = normalizeKnownProcessMessage(decodeProcessChunk(data))
           console.error('[Py Stderr]:', str)
           errorData += str
         })
@@ -351,26 +532,20 @@ app.whenReady().then(() => {
 
   // IPC Handler to kill backend
   ipcMain.handle('kill-backend', async () => {
-    if (activeBackendProcess) {
-      try {
-        const pid = activeBackendProcess.pid;
-        console.log(`Killing python process ${pid}...`);
-
-        if (process.platform === 'win32') {
-          // Force kill tree
-          const { exec } = await import('child_process');
-          exec(`taskkill /pid ${pid} /T /F`);
-        } else {
-          activeBackendProcess.kill('SIGKILL');
-        }
-        activeBackendProcess = null;
-        return true;
-      } catch (e) {
-        console.error("Failed to kill backend:", e);
-        return false;
-      }
+    if (!activeBackendProcess) {
+      return true;
     }
-    return true; // No process running, technically success
+
+    const processToKill = activeBackendProcess as ChildProcess;
+    activeBackendProcess = null;
+
+    try {
+      console.log(`Killing python process ${processToKill.pid}...`);
+      return await terminateProcessTree(processToKill);
+    } catch (e) {
+      console.error("Failed to kill backend:", e);
+      return false;
+    }
   })
   // IPC Handler to open backend log
   ipcMain.handle('open-backend-log', async () => {

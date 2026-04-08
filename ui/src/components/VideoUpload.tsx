@@ -41,7 +41,7 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFileSelected, onTimeUpdate,
             }
 
             try {
-                const url = await (window as any).ipcRenderer.invoke('get-file-url', currentPath);
+                const url = await window.api.getFileUrl(currentPath);
                 if (active) {
                     setVideoSrc(url);
                 }
@@ -61,12 +61,12 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFileSelected, onTimeUpdate,
 
         try {
             console.log("Caching file...");
-            const cachedPath = await (window as any).ipcRenderer.invoke('cache-video', file.path);
+            const cachedPath = await window.api.cacheVideo(file.path);
             console.log("Cached path:", cachedPath);
             onFileSelected(cachedPath);
 
             console.log("Analyzing video codec...");
-            const analysis = await (window as any).ipcRenderer.invoke('run-backend', [
+            const analysis = await window.api.runBackend([
                 '--action', 'analyze_video',
                 '--input', cachedPath
             ]);
@@ -84,7 +84,7 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFileSelected, onTimeUpdate,
 
                     const transcodedPath = cachedPath.replace(/\.(\w+)$/, '_transcoded.mp4');
 
-                    const transcodeResult = await (window as any).ipcRenderer.invoke('run-backend', [
+                    const transcodeResult = await window.api.runBackend([
                         '--action', 'transcode_video',
                         '--input', cachedPath,
                         '--output', transcodedPath
@@ -93,7 +93,7 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFileSelected, onTimeUpdate,
                     if (transcodeResult && transcodeResult.success) {
                         setStatusText("");
                         console.log("Transcoding complete. Reloading video...");
-                        const newUrl = await (window as any).ipcRenderer.invoke('get-file-url', transcodedPath);
+                        const newUrl = await window.api.getFileUrl(transcodedPath);
                         setVideoSrc(newUrl);
                         onFileSelected(transcodedPath);
                     } else {

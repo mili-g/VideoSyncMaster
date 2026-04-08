@@ -109,7 +109,7 @@ const TTSConfig: React.FC<TTSConfigProps> = ({ themeMode, activeService, onServi
 
     const handleSelectFile = async () => {
         try {
-            const result = await (window as any).ipcRenderer.invoke('dialog:openFile', {
+            const result = await window.api.openFileDialog({
                 filters: [{ name: 'Audio Files', extensions: ['wav', 'mp3', 'flac', 'm4a'] }]
             });
             if (result && !result.canceled && result.filePaths.length > 0) {
@@ -131,7 +131,7 @@ const TTSConfig: React.FC<TTSConfigProps> = ({ themeMode, activeService, onServi
         setSwitchStatus('正在配置环境...');
 
         try {
-            await (window as any).ipcRenderer.invoke('run-backend', [
+            await window.api.runBackend([
                 '--action', 'generate_single_tts',
                 '--tts_service', target,
                 '--input', 'dummy', '--output', 'dummy', '--text', 'dummy'
