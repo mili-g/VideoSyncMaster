@@ -176,7 +176,7 @@ print(log_location)
 
 os.environ["HF_HOME"] = MODELS_HUB_DIR
 os.environ["HF_HUB_CACHE"] = MODELS_HUB_DIR
-# 绂佺敤HuggingFace鑷姩涓嬭浇
+# 禁用 HuggingFace 自动下载
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 

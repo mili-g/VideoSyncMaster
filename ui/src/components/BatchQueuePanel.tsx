@@ -2,7 +2,7 @@ import React, { useRef } from 'react';
 import type { BatchQueueItem } from '../hooks/useBatchQueue';
 import type { BatchInputAsset } from '../utils/batchAssets';
 
-const suspiciousMojibakePattern = /[ÃÐ]/;
+const suspiciousMojibakePattern = /[\uFFFD\u00C3\u00E2\u00D0\u00CF]/;
 
 interface BatchQueueSummary {
     total: number;

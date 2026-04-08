@@ -63,10 +63,12 @@ function App() {
     items: batchQueueItems,
     summary: batchQueueSummary,
     isRunning: isBatchQueueRunning,
+    shouldResume: shouldResumeBatchQueue,
     addAssets: addBatchQueueAssets,
     removeItem: removeBatchQueueItem,
     clearCompleted: clearCompletedBatchQueue,
     clearAll: clearAllBatchQueue,
+    acknowledgeResume: acknowledgeBatchQueueResume,
     retryFailed: retryFailedBatchQueue,
     openOutput: openBatchQueueOutput,
     startQueue: startBatchQueue,
@@ -97,6 +99,43 @@ function App() {
   const [missingDeps, setMissingDeps] = useState<string[]>([]);
   const [currentView, setCurrentView] = useState<'home' | 'batch' | 'models' | 'asr' | 'tts' | 'translation' | 'merge' | 'about'>(() => (localStorage.getItem('currentView') as any) || 'home');
   const backendBusy = loading || dubbingLoading || generatingSegmentId !== null || isBatchQueueRunning;
+  const batchResumeStartedRef = useRef(false);
+  useEffect(() => {
+    if (!shouldResumeBatchQueue || backendBusy || batchResumeStartedRef.current) return;
+    if (!batchQueueItems.some(item => item.status === 'pending')) return;
+
+    batchResumeStartedRef.current = true;
+    acknowledgeBatchQueueResume();
+    setStatus('检测到上次未完成的批量任务，正在自动继续...');
+    void startBatchQueue({
+      targetLang,
+      asrService,
+      ttsService,
+      asrOriLang,
+      videoStrategy,
+      audioMixMode,
+      batchSize,
+      cloneBatchSize,
+      maxNewTokens,
+      setStatus
+    });
+  }, [
+    acknowledgeBatchQueueResume,
+    asrOriLang,
+    asrService,
+    audioMixMode,
+    backendBusy,
+    batchQueueItems,
+    batchSize,
+    cloneBatchSize,
+    maxNewTokens,
+    setStatus,
+    shouldResumeBatchQueue,
+    startBatchQueue,
+    targetLang,
+    ttsService,
+    videoStrategy
+  ]);
 
   useEffect(() => {
     const checkEnv = async () => {

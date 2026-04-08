@@ -54,7 +54,7 @@ function decodeProcessChunk(data: any) {
     return gbkText
   }
 
-  if ((utf8Text.includes('����') || utf8Bad > 0) && /sox/i.test(gbkText)) {
+  if ((utf8Text.includes('\uFFFD\uFFFD\uFFFD\uFFFD') || utf8Bad > 0) && /sox/i.test(gbkText)) {
     return gbkText
   }
 

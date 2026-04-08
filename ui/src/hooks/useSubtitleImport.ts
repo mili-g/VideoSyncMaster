@@ -1,7 +1,7 @@
 import type { Dispatch, SetStateAction } from 'react';
 import type { Segment } from './useVideoProject';
 
-const suspiciousMojibakePattern = /[�ÃâÐÏ]/;
+const suspiciousMojibakePattern = /[\uFFFD\u00C3\u00E2\u00D0\u00CF]/;
 
 interface SubtitleImportOptions {
     originalVideoPath: string;

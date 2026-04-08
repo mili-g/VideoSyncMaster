@@ -548,7 +548,7 @@ function buildTtsExtraArgs(
 
     if (ttsService === 'qwen') {
         const qwenMode = localStorage.getItem('qwen_mode') || 'clone';
-        const qwenTtsModel = localStorage.getItem('qwen_tts_model') || '1.7b';
+        const qwenTtsModel = localStorage.getItem('qwen_tts_model') || '1.7B';
 
         if (qwenMode === 'design') {
             const designRef = localStorage.getItem('qwen_design_ref_audio');

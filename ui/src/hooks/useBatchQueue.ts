@@ -46,6 +46,12 @@ interface BatchQueuePersistedMeta {
     queueFinishedElapsedMs: number;
 }
 
+interface BatchQueueBootstrapState {
+    items: BatchQueueItem[];
+    meta: BatchQueuePersistedMeta;
+    shouldResume: boolean;
+}
+
 function readStoredQueueItems(): BatchQueueItem[] {
     try {
         const raw = localStorage.getItem(BATCH_QUEUE_ITEMS_STORAGE_KEY);
@@ -85,17 +91,54 @@ function readStoredQueueMeta(): BatchQueuePersistedMeta {
     }
 }
 
+function readBootstrapState(): BatchQueueBootstrapState {
+    const storedItems = readStoredQueueItems();
+    const storedMeta = readStoredQueueMeta();
+    const hadInterruptedRun = storedMeta.isRunning;
+
+    const normalizedItems = hadInterruptedRun
+        ? storedItems.map(item => {
+            if (item.status === 'processing') {
+                return {
+                    ...item,
+                    status: 'pending' as const,
+                    stage: '等待处理',
+                    finishedAt: undefined,
+                    elapsedMs: undefined
+                };
+            }
+            return item;
+        })
+        : storedItems;
+
+    return {
+        items: normalizedItems,
+        meta: hadInterruptedRun
+            ? {
+                ...storedMeta,
+                isRunning: false,
+                activeItemId: null
+            }
+            : storedMeta,
+        shouldResume: hadInterruptedRun && normalizedItems.some(item => item.status === 'pending')
+    };
+}
+
 export function useBatchQueue() {
-    const persistedMetaRef = useRef<BatchQueuePersistedMeta>(readStoredQueueMeta());
-    const [items, setItems] = useState<BatchQueueItem[]>(() => readStoredQueueItems());
-    const itemsRef = useRef<BatchQueueItem[]>(readStoredQueueItems());
+    const bootstrapRef = useRef<BatchQueueBootstrapState>(readBootstrapState());
+    const persistedMetaRef = useRef<BatchQueuePersistedMeta>(bootstrapRef.current.meta);
+    const [items, setItems] = useState<BatchQueueItem[]>(() => bootstrapRef.current.items);
+    const itemsRef = useRef<BatchQueueItem[]>(bootstrapRef.current.items);
     const [isRunning, setIsRunning] = useState(() => persistedMetaRef.current.isRunning);
     const [activeItemId, setActiveItemId] = useState<string | null>(() => persistedMetaRef.current.activeItemId);
+    const activeItemIdRef = useRef<string | null>(persistedMetaRef.current.activeItemId);
     const [now, setNow] = useState(() => Date.now());
     const stopRequestedRef = useRef(false);
+    const runLockRef = useRef(false);
     const pendingSubtitleAssetsRef = useRef<BatchInputAsset[]>([]);
     const [queueStartedAt, setQueueStartedAt] = useState<number | null>(() => persistedMetaRef.current.queueStartedAt);
     const [queueFinishedElapsedMs, setQueueFinishedElapsedMs] = useState(() => persistedMetaRef.current.queueFinishedElapsedMs);
+    const [shouldResume, setShouldResume] = useState(() => bootstrapRef.current.shouldResume);
 
     useEffect(() => {
         if (!isRunning) return;
@@ -110,6 +153,10 @@ export function useBatchQueue() {
     useEffect(() => {
         itemsRef.current = items;
     }, [items]);
+
+    useEffect(() => {
+        activeItemIdRef.current = activeItemId;
+    }, [activeItemId]);
 
     useEffect(() => {
         try {
@@ -242,9 +289,12 @@ export function useBatchQueue() {
     const clearAll = () => {
         pendingSubtitleAssetsRef.current = [];
         setItems([]);
+        itemsRef.current = [];
         setActiveItemId(null);
+        activeItemIdRef.current = null;
         setQueueStartedAt(null);
         setQueueFinishedElapsedMs(0);
+        setShouldResume(false);
         setNow(Date.now());
     };
 
@@ -276,17 +326,50 @@ export function useBatchQueue() {
 
     const stopQueue = async (setStatus: (value: string) => void) => {
         stopRequestedRef.current = true;
-        setStatus('正在停止批量任务...');
+        setShouldResume(false);
+        const stoppedAt = Date.now();
+
+        const nextItems = itemsRef.current.map(item => {
+            if (item.status === 'processing' || item.status === 'pending') {
+                return {
+                    ...item,
+                    status: 'canceled' as const,
+                    stage: '已停止',
+                    finishedAt: item.finishedAt ?? stoppedAt,
+                    elapsedMs: item.startedAt ? Math.max(0, stoppedAt - item.startedAt) : item.elapsedMs
+                };
+            }
+            return item;
+        });
+
+        itemsRef.current = nextItems;
+        setItems(nextItems);
+        setActiveItemId(null);
+        activeItemIdRef.current = null;
+        setIsRunning(false);
+        runLockRef.current = false;
+        if (queueStartedAt) {
+            setQueueFinishedElapsedMs(Math.max(0, stoppedAt - queueStartedAt));
+        }
+        setNow(stoppedAt);
+        setStatus('批量任务正在停止...');
+
         try {
             await window.api.killBackend();
         } catch (error) {
             console.error('Failed to stop queue backend process:', error);
         }
+
+        setStatus('批量任务已停止');
     };
 
     const startQueue = async (options: BatchQueueOptions) => {
-        const queue = items.filter(item => item.status === 'pending');
+        if (runLockRef.current) return;
+
+        const queue = itemsRef.current.filter(item => item.status === 'pending');
         if (queue.length === 0 || isRunning) return;
+
+        runLockRef.current = true;
 
         const queueStartTime = Date.now();
         setIsRunning(true);
@@ -348,12 +431,17 @@ export function useBatchQueue() {
                 }
             }
         } finally {
+            const wasStopped = stopRequestedRef.current;
             setQueueFinishedElapsedMs(Math.max(0, Date.now() - queueStartTime));
             setActiveItemId(null);
+            activeItemIdRef.current = null;
             setIsRunning(false);
             setNow(Date.now());
             stopRequestedRef.current = false;
-            options.setStatus('批量任务已结束');
+            runLockRef.current = false;
+            if (!wasStopped) {
+                options.setStatus('批量任务已结束');
+            }
         }
     };
 
@@ -361,11 +449,13 @@ export function useBatchQueue() {
         items,
         summary,
         isRunning,
+        shouldResume,
         activeItemId,
         addAssets,
         removeItem,
         clearCompleted,
         clearAll,
+        acknowledgeResume: () => setShouldResume(false),
         retryFailed,
         openOutput,
         startQueue,
