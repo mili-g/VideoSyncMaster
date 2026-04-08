@@ -66,6 +66,7 @@ function App() {
     addAssets: addBatchQueueAssets,
     removeItem: removeBatchQueueItem,
     clearCompleted: clearCompletedBatchQueue,
+    clearAll: clearAllBatchQueue,
     retryFailed: retryFailedBatchQueue,
     openOutput: openBatchQueueOutput,
     startQueue: startBatchQueue,
@@ -913,6 +914,7 @@ function App() {
               onAddAssets={addBatchQueueAssets}
               onRemoveItem={removeBatchQueueItem}
               onClearCompleted={clearCompletedBatchQueue}
+              onClearAll={clearAllBatchQueue}
               onRetryFailed={retryFailedBatchQueue}
               onOpenOutput={openBatchQueueOutput}
               onStart={() => startBatchQueue({

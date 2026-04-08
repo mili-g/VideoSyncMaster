@@ -24,6 +24,7 @@ interface BatchQueuePanelProps {
     onAddAssets: (assets: BatchInputAsset[]) => void | Promise<void>;
     onRemoveItem: (id: string) => void;
     onClearCompleted: () => void;
+    onClearAll: () => void;
     onRetryFailed: () => void;
     onOpenOutput: (item: BatchQueueItem) => void;
     onStart: () => void;
@@ -62,6 +63,7 @@ export default function BatchQueuePanel({
     onAddAssets,
     onRemoveItem,
     onClearCompleted,
+    onClearAll,
     onRetryFailed,
     onOpenOutput,
     onStart,
@@ -110,6 +112,9 @@ export default function BatchQueuePanel({
                         </button>
                         <button onClick={onClearCompleted} style={buttonStyle('rgba(255,255,255,0.12)')}>
                             清理已完成
+                        </button>
+                        <button onClick={onClearAll} disabled={isRunning || items.length === 0} style={buttonStyle('rgba(255,255,255,0.08)', isRunning || items.length === 0)}>
+                            清空队列
                         </button>
                         {!isRunning ? (
                             <button onClick={onStart} disabled={!canStart} style={buttonStyle('#059669', !canStart)}>

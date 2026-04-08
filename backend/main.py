@@ -260,7 +260,6 @@ try:
     import soundfile as sf
 except ImportError:
     pass # Will handle later or assume installed, get_audio_duration
-from llm import LLMTranslator
 import ffmpeg
 import json
 import shutil
@@ -273,6 +272,15 @@ from tts_action_handlers import generate_batch_tts_results, handle_generate_batc
 _run_tts = None
 _run_batch_tts = None
 _loaded_tts_service = None
+_llm_translator_class = None
+
+
+def get_llm_translator_class():
+    global _llm_translator_class
+    if _llm_translator_class is None:
+        from llm import LLMTranslator
+        _llm_translator_class = LLMTranslator
+    return _llm_translator_class
 
 def get_tts_runner(service="indextts", check_deps=True):
     global _run_tts, _run_batch_tts, _loaded_tts_service
@@ -356,6 +364,7 @@ def translate_text(input_text_or_json, target_lang, **kwargs):
     """
     Translates text or a list of segments (JSON string).
     """
+    LLMTranslator = get_llm_translator_class()
     translator = LLMTranslator(**kwargs)
     
     try:
@@ -448,6 +457,7 @@ def dub_video(input_path, target_lang, output_path, asr_service="whisperx", vad_
         "base_url": kwargs.get("base_url"),
         "model": kwargs.get("model")
     }
+    LLMTranslator = get_llm_translator_class()
     translator = LLMTranslator(**translator_kwargs)
     
     # 2. Run ASR
@@ -668,10 +678,6 @@ def dub_video(input_path, target_lang, output_path, asr_service="whisperx", vad_
 def main():
     # Setup GPU paths early to prevent DLL load errors
     setup_gpu_paths()
-    
-    # Lazy import torch now that paths are set
-    global torch
-    import torch
 
     parser = build_parser()
     args = parser.parse_args()

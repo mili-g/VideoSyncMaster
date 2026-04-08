@@ -88,6 +88,7 @@ function readStoredQueueMeta(): BatchQueuePersistedMeta {
 export function useBatchQueue() {
     const persistedMetaRef = useRef<BatchQueuePersistedMeta>(readStoredQueueMeta());
     const [items, setItems] = useState<BatchQueueItem[]>(() => readStoredQueueItems());
+    const itemsRef = useRef<BatchQueueItem[]>(readStoredQueueItems());
     const [isRunning, setIsRunning] = useState(() => persistedMetaRef.current.isRunning);
     const [activeItemId, setActiveItemId] = useState<string | null>(() => persistedMetaRef.current.activeItemId);
     const [now, setNow] = useState(() => Date.now());
@@ -105,6 +106,10 @@ export function useBatchQueue() {
 
         return () => window.clearInterval(timer);
     }, [isRunning]);
+
+    useEffect(() => {
+        itemsRef.current = items;
+    }, [items]);
 
     useEffect(() => {
         try {
@@ -158,73 +163,72 @@ export function useBatchQueue() {
     const addAssets = async (assets: BatchInputAsset[]) => {
         if (assets.length === 0) return;
 
-        const durationMap = new Map<string, number>();
-        await Promise.all(
-            assets.map(async (asset) => {
-                if (!asset.path || classifyBatchAsset(asset) !== 'video') return;
-                try {
-                    const result = await window.api.runBackend([
-                        '--action', 'analyze_video',
-                        '--input', asset.path,
-                        '--json'
-                    ]);
-                    if (result?.success && result.info?.duration) {
-                        durationMap.set(asset.path.toLowerCase(), Number(result.info.duration) || 0);
-                    }
-                } catch (error) {
-                    console.error('Failed to analyze batch video duration:', asset.path, error);
-                }
-            })
-        );
+        const newlyAddedVideos: Array<{ id: string; path: string }> = [];
+        const next = [...itemsRef.current];
+        const bySource = new Map(next.map(item => [item.sourcePath.toLowerCase(), item]));
+        const byMatchKey = new Map(next.map(item => [buildBatchMatchKey(item.fileName), item]));
+        const subtitleAssets = [...pendingSubtitleAssetsRef.current];
 
-        setItems(prev => {
-            const next = [...prev];
-            const bySource = new Map(next.map(item => [item.sourcePath.toLowerCase(), item]));
-            const byMatchKey = new Map(next.map(item => [buildBatchMatchKey(item.fileName), item]));
-            const subtitleAssets = [...pendingSubtitleAssetsRef.current];
+        for (const asset of assets) {
+            const kind = classifyBatchAsset(asset);
+            if (kind === 'video') {
+                if (bySource.has(asset.path.toLowerCase())) continue;
 
-            for (const asset of assets) {
-                const kind = classifyBatchAsset(asset);
-                if (kind === 'video') {
-                    if (bySource.has(asset.path.toLowerCase())) continue;
+                const item: BatchQueueItem = {
+                    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                    sourcePath: asset.path,
+                    fileName: asset.name,
+                    status: 'pending',
+                    stage: '等待处理'
+                };
+                next.push(item);
+                newlyAddedVideos.push({ id: item.id, path: item.sourcePath });
+                bySource.set(asset.path.toLowerCase(), item);
+                byMatchKey.set(buildBatchMatchKey(asset.name), item);
+            } else if (kind === 'subtitle-original' || kind === 'subtitle-translated') {
+                subtitleAssets.push(asset);
+            }
+        }
 
-                    const item: BatchQueueItem = {
-                        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-                        sourcePath: asset.path,
-                        fileName: asset.name,
-                        sourceDurationSec: durationMap.get(asset.path.toLowerCase()),
-                        status: 'pending',
-                        stage: '等待处理'
-                    };
-                    next.push(item);
-                    bySource.set(asset.path.toLowerCase(), item);
-                    byMatchKey.set(buildBatchMatchKey(asset.name), item);
-                } else if (kind === 'subtitle-original' || kind === 'subtitle-translated') {
-                    subtitleAssets.push(asset);
-                }
+        const unresolved: BatchInputAsset[] = [];
+        for (const asset of subtitleAssets) {
+            const kind = classifyBatchAsset(asset);
+            const matchedItem = byMatchKey.get(buildBatchMatchKey(asset.name));
+            if (!matchedItem) {
+                unresolved.push(asset);
+                continue;
             }
 
-            const unresolved: BatchInputAsset[] = [];
-            for (const asset of subtitleAssets) {
-                const kind = classifyBatchAsset(asset);
-                const matchedItem = byMatchKey.get(buildBatchMatchKey(asset.name));
-                if (!matchedItem) {
-                    unresolved.push(asset);
-                    continue;
-                }
-
-                if (kind === 'subtitle-original') {
-                    matchedItem.originalSubtitlePath = asset.path;
-                    matchedItem.originalSubtitleContent = asset.textContent;
-                } else if (kind === 'subtitle-translated') {
-                    matchedItem.translatedSubtitlePath = asset.path;
-                    matchedItem.translatedSubtitleContent = asset.textContent;
-                }
+            if (kind === 'subtitle-original') {
+                matchedItem.originalSubtitlePath = asset.path;
+                matchedItem.originalSubtitleContent = asset.textContent;
+            } else if (kind === 'subtitle-translated') {
+                matchedItem.translatedSubtitlePath = asset.path;
+                matchedItem.translatedSubtitleContent = asset.textContent;
             }
-            pendingSubtitleAssetsRef.current = unresolved;
+        }
 
-            return [...next];
-        });
+        pendingSubtitleAssetsRef.current = unresolved;
+        itemsRef.current = next;
+        setItems([...next]);
+
+        for (const asset of newlyAddedVideos) {
+            try {
+                const result = await window.api.runBackend([
+                    '--action', 'analyze_video',
+                    '--input', asset.path,
+                    '--json'
+                ]);
+                if (result?.success && result.info?.duration) {
+                    updateItem(asset.id, current => ({
+                        ...current,
+                        sourceDurationSec: Number(result.info.duration) || 0
+                    }));
+                }
+            } catch (error) {
+                console.error('Failed to analyze batch video duration:', asset.path, error);
+            }
+        }
     };
 
     const removeItem = (id: string) => {
@@ -233,6 +237,15 @@ export function useBatchQueue() {
 
     const clearCompleted = () => {
         setItems(prev => prev.filter(item => item.status === 'pending' || item.status === 'processing'));
+    };
+
+    const clearAll = () => {
+        pendingSubtitleAssetsRef.current = [];
+        setItems([]);
+        setActiveItemId(null);
+        setQueueStartedAt(null);
+        setQueueFinishedElapsedMs(0);
+        setNow(Date.now());
     };
 
     const retryFailed = () => {
@@ -352,6 +365,7 @@ export function useBatchQueue() {
         addAssets,
         removeItem,
         clearCompleted,
+        clearAll,
         retryFailed,
         openOutput,
         startQueue,

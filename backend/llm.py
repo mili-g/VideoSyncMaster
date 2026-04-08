@@ -1,5 +1,4 @@
 import os
-import torch
 import sys
 
 class LLMTranslator:
@@ -29,6 +28,7 @@ class LLMTranslator:
             self._init_local_model(model_dir)
 
     def _init_local_model(self, model_dir=None):
+        import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
         if model_dir is None:
             # Path Logic
