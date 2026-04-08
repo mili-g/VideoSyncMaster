@@ -14,6 +14,7 @@ interface DubbingWorkflowOptions {
     originalVideoPath: string;
     sourceSegments: Segment[];
     translatedSegments: Segment[];
+    targetLang: string;
     ttsService: 'indextts' | 'qwen';
     batchSize: number;
     cloneBatchSize: number;
@@ -36,6 +37,7 @@ export function useDubbingWorkflow({
     originalVideoPath,
     sourceSegments,
     translatedSegments,
+    targetLang,
     ttsService,
     batchSize,
     cloneBatchSize,
@@ -85,6 +87,7 @@ export function useDubbingWorkflow({
 
             const result = await window.api.runBackend(
                 buildSingleTtsArgs(originalVideoPath, outputPath, segment, {
+                    targetLang,
                     ttsService,
                     batchSize,
                     cloneBatchSize,
@@ -177,7 +180,10 @@ export function useDubbingWorkflow({
                 '--ref', tempJsonPath,
                 '--batch_size', effectiveBatchSize.toString(),
                 '--max_new_tokens', maxNewTokens.toString(),
+                '--lang', targetLang,
                 '--strategy', videoStrategy,
+                '--audio_mix_mode', audioMixMode,
+                '--dub_retry_attempts', '3',
                 ...extraArgs
             ]);
 
@@ -271,6 +277,7 @@ export function useDubbingWorkflow({
                 const outputPath = `${cacheDir}\\segment_retry_${index}.wav`;
                 const result = await window.api.runBackend(
                     buildSingleTtsArgs(originalVideoPath, outputPath, segment, {
+                        targetLang,
                         ttsService,
                         batchSize,
                         cloneBatchSize,
@@ -412,6 +419,7 @@ function buildSingleTtsArgs(
     outputPath: string,
     segment: Segment,
     options: {
+        targetLang: string;
         ttsService: 'indextts' | 'qwen';
         batchSize: number;
         cloneBatchSize: number;
@@ -430,6 +438,7 @@ function buildSingleTtsArgs(
         '--input', sourcePath,
         '--output', outputPath,
         '--text', segment.text,
+        '--lang', options.targetLang,
         '--start', segment.start.toString(),
         '--duration', String(Math.max(segment.end - segment.start, 0.1)),
         '--strategy', options.videoStrategy,

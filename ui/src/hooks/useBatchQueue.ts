@@ -491,6 +491,7 @@ function buildBatchTtsArgs(sourcePath: string, outputDir: string, refJsonPath: s
         '--audio_mix_mode', options.audioMixMode,
         '--batch_size', String(options.ttsService === 'qwen' ? options.cloneBatchSize : options.batchSize),
         '--max_new_tokens', String(options.maxNewTokens),
+        '--dub_retry_attempts', '3',
         '--lang', options.targetLang,
         '--json'
     ];

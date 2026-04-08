@@ -267,7 +267,7 @@ import shutil
 from action_handlers import dispatch_basic_action
 from cli_options import build_parser, build_tts_kwargs, build_translation_kwargs
 from dependency_manager import ensure_transformers_version, check_gpu_deps
-from tts_action_handlers import handle_generate_batch_tts, handle_generate_single_tts, handle_prepare_reference_audio, prepare_global_reference_audio
+from tts_action_handlers import generate_batch_tts_results, handle_generate_batch_tts, handle_generate_single_tts, handle_prepare_reference_audio
 
 # Global TTS entry points (lazy loaded)
 _run_tts = None
@@ -529,215 +529,61 @@ def dub_video(input_path, target_lang, output_path, asr_service="whisperx", vad_
     del translator
     
     print(f"Step 3: Cloning Voice for {len(tts_tasks)} segments using {tts_service}...", flush=True)
-    max_retry_attempts = int(kwargs.get("dub_retry_attempts", 3))
-    
-    global_ref_override = kwargs.get('ref_audio')
-    shared_ref_path = None
-    shared_ref_should_clean = False
-    shared_ref_meta = None
-    if tts_tasks and not global_ref_override:
-        try:
-            shared_ref_path, shared_ref_should_clean, shared_ref_meta = prepare_global_reference_audio(
-                video_path=input_path,
-                work_dir=segments_dir,
-                segments=[{
-                    "start": item["start"],
-                    "end": item["start"] + item["duration"],
-                    "text": item["original_seg"].get("text", "")
-                } for item in tts_tasks],
-                ref_audio_override=global_ref_override,
-                ffmpeg=ffmpeg,
-                librosa=librosa,
-                sf=sf
-            )
-            if shared_ref_path:
-                print(
-                    f"[DubVideo] Using shared reference audio from segment "
-                    f"{shared_ref_meta.get('index')} ({shared_ref_meta.get('start', 0.0):.2f}s, "
-                    f"{shared_ref_meta.get('duration', 0.0):.2f}s)"
-                )
-        except Exception as shared_ref_error:
-            print(f"[DubVideo] Failed to prepare shared reference audio: {shared_ref_error}")
-            shared_ref_path = None
-            shared_ref_should_clean = False
 
-    batch_ready_tasks = []
+    tts_segments = [
+        {
+            "original_index": item["idx"],
+            "start": item["start"],
+            "end": item["start"] + item["duration"],
+            "text": item["translated_text"],
+            "source_text": item["original_seg"].get("text", ""),
+            "audioPath": os.path.join(segments_dir, f"dub_{item['idx']}.wav")
+        }
+        for item in tts_tasks
+    ]
+
+    batch_runtime_kwargs = dict(kwargs)
+    batch_runtime_kwargs["batch_size"] = int(batch_runtime_kwargs.get("batch_size") or 1)
+    batch_tts_result = generate_batch_tts_results(
+        video_path=input_path,
+        segments=tts_segments,
+        work_dir=segments_dir,
+        target_lang=target_lang,
+        tts_service_name=tts_service,
+        tts_kwargs=batch_runtime_kwargs,
+        args_ref_audio=kwargs.get("ref_audio"),
+        explicit_qwen_ref_text=kwargs.get("qwen_ref_text", "") or "",
+        max_retry_attempts=int(kwargs.get("dub_retry_attempts", 3) or 3),
+        get_tts_runner=get_tts_runner,
+        get_audio_duration=get_audio_duration,
+        ffmpeg=ffmpeg,
+        librosa=librosa,
+        sf=sf,
+        log_prefix="[DubVideo]"
+    )
+
+    if not batch_tts_result.get("success"):
+        return batch_tts_result
+
     for item in tts_tasks:
-        idx = item['idx']
-        start = item['start']
-        duration = item['duration']
-        ref_clip_path = os.path.join(segments_dir, f"ref_{idx}.wav")
-        tts_output_path = os.path.join(segments_dir, f"dub_{idx}.wav")
-
-        effective_ref_audio = global_ref_override or ref_clip_path
-        fallback_ref_audio = shared_ref_path if (shared_ref_path and shared_ref_path != effective_ref_audio) else None
-        if not global_ref_override:
-            try:
-                (
-                    ffmpeg
-                    .input(input_path, ss=start, t=duration)
-                    .output(ref_clip_path, acodec='pcm_s16le', ac=1, ar=24000, loglevel="error")
-                    .run(overwrite_output=True)
-                )
-            except Exception as e:
-                print(f"    Failed to extract ref audio for segment {idx}: {e}")
-                result_segments.append({
-                    "index": idx,
-                    "start": start,
-                    "end": start + duration,
-                    "original_text": item["original_seg"].get("text", ""),
-                    "text": item["translated_text"],
-                    "audio_path": None,
-                    "duration": duration,
-                    "success": False,
-                    "error": f"Failed to extract ref audio: {e}"
-                })
-                continue
-
-        batch_ready_tasks.append({
-            **item,
-            "ref_clip_path": ref_clip_path,
-            "effective_ref_audio": effective_ref_audio,
-            "fallback_ref_audio": fallback_ref_audio,
-            "fallback_ref_text": (shared_ref_meta or {}).get("text", ""),
-            "tts_output_path": tts_output_path
-        })
-
-    batch_results_by_index = {}
-    if batch_ready_tasks and run_batch_tts_func:
-        try:
-            batch_payload = [
-                {
-                    "index": item["idx"],
-                    "text": item["translated_text"],
-                    "ref_audio_path": item["effective_ref_audio"],
-                    "output_path": item["tts_output_path"],
-                    "ref_text": (kwargs.get("qwen_ref_text", "") or "") if global_ref_override else item["original_seg"].get("text", "")
-                }
-                for item in batch_ready_tasks
-            ]
-            for batch_result in run_batch_tts_func(batch_payload, language=target_lang, **kwargs):
-                if not isinstance(batch_result, dict):
-                    continue
-                result_index = batch_result.get("index")
-                if result_index is None:
-                    continue
-                batch_results_by_index[int(result_index)] = batch_result
-        except Exception as e:
-            print(f"[DubVideo] Batch TTS failed, falling back to single-segment retries: {e}")
-
-    nearby_success_map = {}
-    task_lookup = {int(item["idx"]): item for item in batch_ready_tasks}
-    for result_index, batch_result in batch_results_by_index.items():
-        audio_path = batch_result.get("audio_path") if isinstance(batch_result, dict) else None
-        if batch_result.get("success") and audio_path and os.path.exists(audio_path):
-            nearby_success_map[int(result_index)] = {
-                "audio_path": audio_path,
-                "ref_text": task_lookup.get(int(result_index), {}).get("translated_text", "")
-            }
-
-    for item in batch_ready_tasks:
-        idx = item['idx']
-        translated_text = item['translated_text']
-        start = item['start']
-        duration = item['duration']
-        original_seg = item['original_seg']
-        ref_clip_path = item['ref_clip_path']
-        effective_ref_audio = item['effective_ref_audio']
-        fallback_ref_audio = item.get('fallback_ref_audio')
-        tts_output_path = item['tts_output_path']
-
-        batch_result = batch_results_by_index.get(idx)
-        success = bool(batch_result and batch_result.get("success") and batch_result.get("audio_path"))
-        last_error = batch_result.get("error") if isinstance(batch_result, dict) else None
-        nearby_ref_candidates = []
-        if nearby_success_map:
-            nearby_ref_candidates = [
-                candidate for _, candidate in sorted(
-                    (
-                        (
-                            abs(int(candidate_idx) - int(idx)),
-                            {
-                                "audio_path": candidate_info.get("audio_path") if isinstance(candidate_info, dict) else candidate_info,
-                                "ref_text": candidate_info.get("ref_text", "") if isinstance(candidate_info, dict) else ""
-                            }
-                        )
-                        for candidate_idx, candidate_info in nearby_success_map.items()
-                        if candidate_idx != idx
-                        and (
-                            (isinstance(candidate_info, dict) and candidate_info.get("audio_path") and os.path.exists(candidate_info.get("audio_path")))
-                            or (isinstance(candidate_info, str) and os.path.exists(candidate_info))
-                        )
-                    ),
-                    key=lambda item: item[0]
-                )
-            ][:4]
-
-        if success and batch_result.get("audio_path") != tts_output_path:
-            tts_output_path = batch_result.get("audio_path")
-        elif not success:
-            if nearby_ref_candidates:
-                for nearby_idx, nearby_ref in enumerate(nearby_ref_candidates, start=1):
-                    try:
-                        print(f"    [DubVideo] Segment {idx} trying nearby successful reference {nearby_idx}/{len(nearby_ref_candidates)}...")
-                        attempt_kwargs = dict(kwargs)
-                        if not attempt_kwargs.get("qwen_ref_text"):
-                            attempt_kwargs["qwen_ref_text"] = nearby_ref.get("ref_text", "")
-                        success = run_tts_func(translated_text, nearby_ref.get("audio_path"), tts_output_path, language=target_lang, **attempt_kwargs)
-                        if success:
-                            last_error = None
-                            break
-                        last_error = "Nearby fallback TTS runner returned False"
-                    except Exception as e:
-                        last_error = str(e)
-                        print(f"    [DubVideo] Segment {idx} nearby successful reference failed: {e}")
-                        success = False
-
-            for attempt in range(1, max_retry_attempts + 1):
-                if success:
-                    break
-                try:
-                    print(f"    [DubVideo] Retrying segment {idx} ({attempt}/{max_retry_attempts})...")
-                    attempt_kwargs = dict(kwargs)
-                    if not attempt_kwargs.get("qwen_ref_text"):
-                        attempt_kwargs["qwen_ref_text"] = original_seg.get("text", "")
-                    success = run_tts_func(translated_text, effective_ref_audio, tts_output_path, language=target_lang, **attempt_kwargs)
-                    if success:
-                        last_error = None
-                        break
-                    last_error = "TTS runner returned False"
-                except Exception as e:
-                    last_error = str(e)
-                    print(f"    [DubVideo] Segment {idx} TTS attempt failed: {e}")
-                    success = False
-
-            if not success and fallback_ref_audio:
-                try:
-                    print(f"    [DubVideo] Segment {idx} switching to shared fallback reference audio...")
-                    attempt_kwargs = dict(kwargs)
-                    if not attempt_kwargs.get("qwen_ref_text"):
-                        attempt_kwargs["qwen_ref_text"] = item.get("fallback_ref_text", "")
-                    success = run_tts_func(translated_text, fallback_ref_audio, tts_output_path, language=target_lang, **attempt_kwargs)
-                    if success:
-                        last_error = None
-                except Exception as e:
-                    last_error = str(e)
-                    print(f"    [DubVideo] Segment {idx} shared fallback reference failed: {e}")
-                    success = False
+        idx = item["idx"]
+        start = item["start"]
+        duration = item["duration"]
+        translated_text = item["translated_text"]
+        original_seg = item["original_seg"]
+        result = next((segment for segment in batch_tts_result.get("results", []) if segment.get("index") == idx), None)
+        tts_output_path = result.get("audio_path") if isinstance(result, dict) else None
+        success = bool(result and result.get("success") and tts_output_path and os.path.exists(tts_output_path))
+        last_error = result.get("error") if isinstance(result, dict) else None
 
         if success:
-            if tts_output_path and os.path.exists(tts_output_path):
-                nearby_success_map[idx] = {
-                    "audio_path": tts_output_path,
-                    "ref_text": translated_text
-                }
             should_align = True
             strategy = kwargs.get('strategy', 'auto_speedup')
             if strategy in ['frame_blend', 'freeze_frame', 'rife']:
                 should_align = False
                 print(f"    [DubVideo] Strategy is {strategy}, skipping audio alignment.")
 
-            if duration > 0 and should_align:
+            if duration > 0 and should_align and tts_output_path:
                 try:
                     current_dur = get_audio_duration(tts_output_path)
                     if current_dur and current_dur > duration + 0.1:
@@ -777,28 +623,11 @@ def dub_video(input_path, target_lang, output_path, asr_service="whisperx", vad_
                 "end": start + duration,
                 "original_text": original_seg.get("text", ""),
                 "text": translated_text,
-                "audio_path": None,
+                "audio_path": tts_output_path,
                 "duration": duration,
                 "success": False,
                 "error": last_error or "TTS generation failed after retries"
             })
-            try:
-                if os.path.exists(tts_output_path):
-                    os.remove(tts_output_path)
-            except:
-                pass
-
-        try:
-            if not global_ref_override and os.path.exists(ref_clip_path):
-                os.remove(ref_clip_path)
-        except:
-            pass
-
-    try:
-        if shared_ref_should_clean and shared_ref_path and os.path.exists(shared_ref_path):
-            os.remove(shared_ref_path)
-    except Exception:
-        pass
 
     failed_segments = [seg for seg in result_segments if seg.get("success") is False]
     if failed_segments:

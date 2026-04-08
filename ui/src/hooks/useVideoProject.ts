@@ -152,6 +152,7 @@ export function useVideoProject() {
         originalVideoPath,
         sourceSegments: segments,
         translatedSegments,
+        targetLang,
         ttsService,
         batchSize,
         cloneBatchSize,

@@ -153,6 +153,506 @@ def _with_qwen_reference_text(base_kwargs, tts_service_name, ref_text):
     return adjusted_kwargs
 
 
+def _build_batch_tts_tasks(
+    *,
+    video_path,
+    segments,
+    work_dir,
+    args_ref_audio,
+    explicit_qwen_ref_text,
+    shared_ref_path,
+    shared_ref_meta,
+    ffmpeg,
+    librosa,
+    sf,
+    get_audio_duration,
+    log_prefix
+):
+    tasks = []
+
+    for i, seg in enumerate(segments):
+        final_idx = seg.get("original_index", i)
+        text = seg.get("text", "")
+        start = float(seg.get("start", 0))
+        end = float(seg.get("end", 0))
+        duration = end - start
+        segment_trim_dur = None
+
+        extract_start = start
+        extract_duration = duration
+        if duration < 2.0:
+            padding = (2.0 - duration) / 2
+            extract_start = max(0, start - padding)
+            extract_duration = duration + (padding * 2)
+
+        out_path = (
+            seg.get("audioPath")
+            or seg.get("audio_path")
+            or seg.get("output_path")
+            or os.path.join(work_dir, f"segment_{i}.wav")
+        )
+
+        if args_ref_audio and os.path.exists(args_ref_audio):
+            ref_path = args_ref_audio
+        else:
+            raw_dir = os.path.join(work_dir, ".cache", "raw")
+            os.makedirs(raw_dir, exist_ok=True)
+
+            raw_ref_path = os.path.join(raw_dir, f"ref_raw_{i}_{start}.wav")
+            ref_path = os.path.join(work_dir, f"ref_{i}_{start}.wav")
+
+            try:
+                ffmpeg.input(video_path, ss=extract_start, t=extract_duration).output(
+                    raw_ref_path, acodec="pcm_s16le", ac=1, ar=24000, loglevel="error"
+                ).run(overwrite_output=True)
+
+                try:
+                    raw_dur = get_audio_duration(raw_ref_path)
+                    print(f"  [Ref Check] Segment {i} ({start}-{end}): raw duration {raw_dur}s", flush=True)
+                except Exception:
+                    pass
+
+                try:
+                    y, sr = librosa.load(raw_ref_path, sr=None)
+                    y_trim, _ = librosa.effects.trim(y, top_db=20)
+                    trim_dur = len(y_trim) / sr
+                    segment_trim_dur = trim_dur
+
+                    if trim_dur < 0.1:
+                        print(f"  [Ref Check] Segment {i} warning: trimmed duration {trim_dur:.2f}s is very short.")
+                    else:
+                        print(f"  [Ref Check] Segment {i} trimmed {len(y)/sr:.2f}s -> {trim_dur:.2f}s")
+
+                    if len(y_trim) > 0:
+                        sf.write(ref_path, y_trim, sr)
+                    else:
+                        shutil.copy(raw_ref_path, ref_path)
+                except Exception as trim_err:
+                    print(f"  [Ref Check] Segment {i} trim failed: {trim_err}")
+                    shutil.copy(raw_ref_path, ref_path)
+            except Exception as e:
+                print(f"{log_prefix} Segment {i} failed to extract reference audio: {e}")
+                continue
+
+        tasks.append({
+            "text": text,
+            "ref_audio_path": ref_path,
+            "output_path": out_path,
+            "index": final_idx,
+            "ref_text": (
+                str(explicit_qwen_ref_text or "")
+                if (args_ref_audio and os.path.exists(args_ref_audio))
+                else str(seg.get("source_text") or seg.get("original_text") or "")
+            ),
+            "duration": max(duration, 0.1),
+            "skip_segment_retry": bool(segment_trim_dur is not None and segment_trim_dur < 0.5),
+            "fallback_ref_audio": shared_ref_path if (shared_ref_path and shared_ref_path != ref_path) else None,
+            "fallback_ref_text": str((shared_ref_meta or {}).get("text", "")),
+            "start": start,
+            "end": end
+        })
+
+    return tasks
+
+
+def _finalize_batch_tts_results(
+    *,
+    segments,
+    tasks,
+    batch_results,
+    run_tts_func,
+    tts_kwargs,
+    tts_service_name,
+    target_lang,
+    max_retry_attempts,
+    get_audio_duration,
+    log_prefix
+):
+    final_output_list = []
+    task_result_map = {}
+    task_lookup = {int(task["index"]): task for task in tasks}
+    nearby_success_map = {}
+
+    for result in batch_results:
+        if not isinstance(result, dict):
+            continue
+        result_index = result.get("index")
+        if result_index is None:
+            continue
+        task_result_map[int(result_index)] = result
+
+    for i, seg in enumerate(segments):
+        final_idx = seg.get("original_index", i)
+        task = next((item for item in tasks if item.get("index") == final_idx), None)
+
+        if final_idx in task_result_map:
+            res = task_result_map[final_idx]
+            res["index"] = final_idx
+
+            if res["success"]:
+                start = float(seg.get("start", 0))
+                end = float(seg.get("end", 0))
+                target_dur = end - start
+                output_audio = res.get("audio_path")
+
+                if not output_audio:
+                    print(f"{log_prefix} Segment {final_idx} missing audio_path in success result.")
+                    res["success"] = False
+                    res["error"] = "Missing audio_path in result"
+                    final_output_list.append(res)
+                    continue
+
+                current_dur = get_audio_duration(output_audio)
+                res["duration"] = current_dur or target_dur
+                if output_audio and os.path.exists(output_audio):
+                    nearby_success_map[final_idx] = {
+                        "audio_path": output_audio,
+                        "ref_text": task_lookup.get(final_idx, {}).get("text", "")
+                    }
+
+            if (not res["success"] or not res.get("audio_path")) and task and run_tts_func:
+                retry_output = task["output_path"]
+                retry_success = False
+                retry_error = res.get("error") or "Batch TTS failed"
+                nearby_refs = _collect_nearby_success_refs(final_idx, nearby_success_map)
+
+                if nearby_refs:
+                    for nearby_idx, nearby_ref in enumerate(nearby_refs, start=1):
+                        try:
+                            print(f"{log_prefix} Segment {final_idx} trying nearby successful reference {nearby_idx}/{len(nearby_refs)}...")
+                            nearby_kwargs = _build_retry_tts_kwargs(
+                                tts_kwargs,
+                                tts_service_name=tts_service_name,
+                                attempt=max_retry_attempts + nearby_idx,
+                                use_fallback_reference=True
+                            )
+                            nearby_kwargs = _with_qwen_reference_text(
+                                nearby_kwargs,
+                                tts_service_name,
+                                nearby_ref.get("ref_text", "")
+                            )
+                            retry_success = run_tts_func(
+                                task["text"],
+                                nearby_ref.get("audio_path"),
+                                retry_output,
+                                language=target_lang,
+                                **nearby_kwargs
+                            )
+                            if retry_success:
+                                retry_error = None
+                                break
+                            retry_error = "Nearby fallback TTS runner returned False"
+                        except Exception as nearby_exc:
+                            retry_error = str(nearby_exc)
+                            print(f"{log_prefix} Segment {final_idx} nearby successful reference failed: {nearby_exc}")
+                            retry_success = False
+
+                if not retry_success and not task.get("skip_segment_retry"):
+                    for attempt in range(1, max_retry_attempts + 1):
+                        try:
+                            print(f"{log_prefix} Retrying segment {final_idx} ({attempt}/{max_retry_attempts}) with segment reference...")
+                            attempt_kwargs = _build_retry_tts_kwargs(
+                                tts_kwargs,
+                                tts_service_name=tts_service_name,
+                                attempt=attempt,
+                                use_fallback_reference=False
+                            )
+                            attempt_kwargs = _with_qwen_reference_text(
+                                attempt_kwargs,
+                                tts_service_name,
+                                task.get("ref_text", "")
+                            )
+                            retry_success = run_tts_func(
+                                task["text"],
+                                task["ref_audio_path"],
+                                retry_output,
+                                language=target_lang,
+                                **attempt_kwargs
+                            )
+                            if retry_success:
+                                retry_error = None
+                                break
+                            retry_error = "TTS runner returned False"
+                        except Exception as retry_exc:
+                            retry_error = str(retry_exc)
+                            print(f"{log_prefix} Segment {final_idx} retry failed: {retry_exc}")
+                            retry_success = False
+                elif not retry_success:
+                    print(f"{log_prefix} Segment {final_idx} reference too short after trim, skipping direct segment retries.")
+
+                if not retry_success and task.get("fallback_ref_audio"):
+                    try:
+                        print(f"{log_prefix} Segment {final_idx} switching to shared fallback reference audio...")
+                        fallback_kwargs = _build_retry_tts_kwargs(
+                            tts_kwargs,
+                            tts_service_name=tts_service_name,
+                            attempt=max_retry_attempts + 1,
+                            use_fallback_reference=True
+                        )
+                        fallback_kwargs = _with_qwen_reference_text(
+                            fallback_kwargs,
+                            tts_service_name,
+                            task.get("fallback_ref_text", "")
+                        )
+                        retry_success = run_tts_func(
+                            task["text"],
+                            task["fallback_ref_audio"],
+                            retry_output,
+                            language=target_lang,
+                            **fallback_kwargs
+                        )
+                        if retry_success:
+                            retry_error = None
+                        else:
+                            retry_error = "Fallback TTS runner returned False"
+                    except Exception as fallback_exc:
+                        retry_error = str(fallback_exc)
+                        print(f"{log_prefix} Segment {final_idx} shared fallback retry failed: {fallback_exc}")
+                        retry_success = False
+
+                if retry_success and os.path.exists(retry_output):
+                    res = {
+                        "index": final_idx,
+                        "success": True,
+                        "audio_path": retry_output,
+                        "duration": get_audio_duration(retry_output) or max(float(seg.get("end", 0)) - float(seg.get("start", 0)), 0.1)
+                    }
+                    nearby_success_map[final_idx] = {
+                        "audio_path": retry_output,
+                        "ref_text": task.get("text", "")
+                    }
+                else:
+                    res["success"] = False
+                    res["error"] = retry_error or res.get("error") or "TTS generation failed after retries"
+                    if not res.get("audio_path") and os.path.exists(retry_output):
+                        res["audio_path"] = retry_output
+
+            final_output_list.append(res)
+        else:
+            retry_result = {
+                "index": final_idx,
+                "success": False,
+                "error": "TTS Task Failed (No result returned). Check logs for details."
+            }
+
+            if task and run_tts_func:
+                retry_output = task["output_path"]
+                retry_success = False
+                retry_error = retry_result["error"]
+                nearby_refs = _collect_nearby_success_refs(final_idx, nearby_success_map)
+
+                if nearby_refs:
+                    for nearby_idx, nearby_ref in enumerate(nearby_refs, start=1):
+                        try:
+                            print(f"{log_prefix} Missing segment {final_idx} trying nearby successful reference {nearby_idx}/{len(nearby_refs)}...")
+                            nearby_kwargs = _build_retry_tts_kwargs(
+                                tts_kwargs,
+                                tts_service_name=tts_service_name,
+                                attempt=max_retry_attempts + nearby_idx,
+                                use_fallback_reference=True
+                            )
+                            nearby_kwargs = _with_qwen_reference_text(
+                                nearby_kwargs,
+                                tts_service_name,
+                                nearby_ref.get("ref_text", "")
+                            )
+                            retry_success = run_tts_func(
+                                task["text"],
+                                nearby_ref.get("audio_path"),
+                                retry_output,
+                                language=target_lang,
+                                **nearby_kwargs
+                            )
+                            if retry_success:
+                                retry_error = None
+                                break
+                            retry_error = "Nearby fallback TTS runner returned False"
+                        except Exception as nearby_exc:
+                            retry_error = str(nearby_exc)
+                            print(f"{log_prefix} Missing segment {final_idx} nearby successful reference failed: {nearby_exc}")
+                            retry_success = False
+
+                if not retry_success and not task.get("skip_segment_retry"):
+                    for attempt in range(1, max_retry_attempts + 1):
+                        try:
+                            print(f"{log_prefix} Retrying missing segment {final_idx} ({attempt}/{max_retry_attempts}) with segment reference...")
+                            attempt_kwargs = _build_retry_tts_kwargs(
+                                tts_kwargs,
+                                tts_service_name=tts_service_name,
+                                attempt=attempt,
+                                use_fallback_reference=False
+                            )
+                            attempt_kwargs = _with_qwen_reference_text(
+                                attempt_kwargs,
+                                tts_service_name,
+                                task.get("ref_text", "")
+                            )
+                            retry_success = run_tts_func(
+                                task["text"],
+                                task["ref_audio_path"],
+                                retry_output,
+                                language=target_lang,
+                                **attempt_kwargs
+                            )
+                            if retry_success:
+                                retry_error = None
+                                break
+                            retry_error = "TTS runner returned False"
+                        except Exception as retry_exc:
+                            retry_error = str(retry_exc)
+                            print(f"{log_prefix} Missing segment {final_idx} retry failed: {retry_exc}")
+                            retry_success = False
+                elif not retry_success:
+                    print(f"{log_prefix} Missing segment {final_idx} reference too short after trim, skipping direct segment retries.")
+
+                if not retry_success and task.get("fallback_ref_audio"):
+                    try:
+                        print(f"{log_prefix} Missing segment {final_idx} switching to shared fallback reference audio...")
+                        fallback_kwargs = _build_retry_tts_kwargs(
+                            tts_kwargs,
+                            tts_service_name=tts_service_name,
+                            attempt=max_retry_attempts + 1,
+                            use_fallback_reference=True
+                        )
+                        fallback_kwargs = _with_qwen_reference_text(
+                            fallback_kwargs,
+                            tts_service_name,
+                            task.get("fallback_ref_text", "")
+                        )
+                        retry_success = run_tts_func(
+                            task["text"],
+                            task["fallback_ref_audio"],
+                            retry_output,
+                            language=target_lang,
+                            **fallback_kwargs
+                        )
+                        if retry_success:
+                            retry_error = None
+                        else:
+                            retry_error = "Fallback TTS runner returned False"
+                    except Exception as fallback_exc:
+                        retry_error = str(fallback_exc)
+                        print(f"{log_prefix} Missing segment {final_idx} shared fallback retry failed: {fallback_exc}")
+                        retry_success = False
+
+                if retry_success and os.path.exists(retry_output):
+                    retry_result = {
+                        "index": final_idx,
+                        "success": True,
+                        "audio_path": retry_output,
+                        "duration": get_audio_duration(retry_output) or max(float(seg.get("end", 0)) - float(seg.get("start", 0)), 0.1)
+                    }
+                    nearby_success_map[final_idx] = {
+                        "audio_path": retry_output,
+                        "ref_text": task.get("text", "")
+                    }
+                else:
+                    retry_result["error"] = retry_error or retry_result["error"]
+                    if os.path.exists(retry_output):
+                        retry_result["audio_path"] = retry_output
+
+            final_output_list.append(retry_result)
+
+    return final_output_list
+
+
+def generate_batch_tts_results(
+    *,
+    video_path,
+    segments,
+    work_dir,
+    target_lang,
+    tts_service_name,
+    tts_kwargs,
+    args_ref_audio,
+    explicit_qwen_ref_text,
+    max_retry_attempts,
+    get_tts_runner,
+    get_audio_duration,
+    ffmpeg,
+    librosa,
+    sf,
+    log_prefix="[BatchTTS]"
+):
+    run_tts_func, run_batch_tts_func = get_tts_runner(tts_service_name)
+    if not run_batch_tts_func:
+        return {"success": False, "error": f"Failed to init Batch TTS: {tts_service_name}"}
+
+    shared_ref_path = None
+    shared_ref_should_clean = False
+    shared_ref_meta = None
+
+    try:
+        if not (args_ref_audio and os.path.exists(args_ref_audio)):
+            try:
+                shared_ref_path, shared_ref_should_clean, shared_ref_meta = prepare_global_reference_audio(
+                    video_path=video_path,
+                    work_dir=work_dir,
+                    segments=segments,
+                    ref_audio_override=args_ref_audio,
+                    ffmpeg=ffmpeg,
+                    librosa=librosa,
+                    sf=sf
+                )
+            except Exception as shared_ref_error:
+                print(f"{log_prefix} Failed to prepare shared fallback reference audio: {shared_ref_error}")
+                shared_ref_path = None
+                shared_ref_should_clean = False
+
+        tasks = _build_batch_tts_tasks(
+            video_path=video_path,
+            segments=segments,
+            work_dir=work_dir,
+            args_ref_audio=args_ref_audio,
+            explicit_qwen_ref_text=explicit_qwen_ref_text,
+            shared_ref_path=shared_ref_path,
+            shared_ref_meta=shared_ref_meta,
+            ffmpeg=ffmpeg,
+            librosa=librosa,
+            sf=sf,
+            get_audio_duration=get_audio_duration,
+            log_prefix=log_prefix
+        )
+
+        print(f"\n[Stage 2] Running TTS for {len(tasks)} tasks (skipped {len(segments) - len(tasks)} invalid items)...")
+
+        if not tasks:
+            print("No valid tasks available.")
+            return {"success": True, "results": []}
+
+        batch_runtime_kwargs = dict(tts_kwargs)
+        batch_runtime_kwargs["batch_size"] = int(batch_runtime_kwargs.get("batch_size") or 1)
+        batch_results = list(run_batch_tts_func(tasks, language=target_lang, **batch_runtime_kwargs))
+
+        final_output_list = _finalize_batch_tts_results(
+            segments=segments,
+            tasks=tasks,
+            batch_results=batch_results,
+            run_tts_func=run_tts_func,
+            tts_kwargs=tts_kwargs,
+            tts_service_name=tts_service_name,
+            target_lang=target_lang,
+            max_retry_attempts=max_retry_attempts,
+            get_audio_duration=get_audio_duration,
+            log_prefix=log_prefix
+        )
+
+        return {"success": True, "results": final_output_list}
+    finally:
+        try:
+            cache_dir_to_remove = os.path.join(work_dir, ".cache")
+            if os.path.exists(cache_dir_to_remove):
+                shutil.rmtree(cache_dir_to_remove)
+        except Exception:
+            pass
+
+        try:
+            if shared_ref_should_clean and shared_ref_path and os.path.exists(shared_ref_path):
+                os.remove(shared_ref_path)
+        except Exception:
+            pass
+
+
 def _select_reference_candidate(segments):
     best = None
     best_score = float("-inf")
@@ -466,10 +966,6 @@ def handle_generate_batch_tts(
     sf
 ):
     tts_service_name = getattr(args, "tts_service", "indextts")
-    run_tts_func, run_batch_tts_func = get_tts_runner(tts_service_name)
-    if not run_batch_tts_func:
-        return {"success": False, "error": f"Failed to init Batch TTS: {tts_service_name}"}
-
     if not (args.input and args.ref):
         print("Usage: --action generate_batch_tts --input video.mp4 --ref segments.json")
         return None
@@ -484,410 +980,26 @@ def handle_generate_batch_tts(
         work_dir = os.path.dirname(json_path)
         print(f"Using {tts_service_name} to generate {len(segments)} segments in batch...")
         print(f"\n[Stage 1] Extracting reference audio to {os.path.join(work_dir, '.cache', 'raw')} ...")
-
-        tasks = []
-        max_retry_attempts = int(getattr(args, "dub_retry_attempts", 3) or 3)
-        shared_ref_path = None
-        shared_ref_should_clean = False
-        shared_ref_meta = None
-        nearby_success_map = {}
-
-        if not (args.ref_audio and os.path.exists(args.ref_audio)):
-            try:
-                shared_ref_path, shared_ref_should_clean, shared_ref_meta = prepare_global_reference_audio(
-                    video_path=video_path,
-                    work_dir=work_dir,
-                    segments=segments,
-                    ref_audio_override=args.ref_audio,
-                    ffmpeg=ffmpeg,
-                    librosa=librosa,
-                    sf=sf
-                )
-            except Exception as shared_ref_error:
-                print(f"[BatchTTS] Failed to prepare shared fallback reference audio: {shared_ref_error}")
-                shared_ref_path = None
-                shared_ref_should_clean = False
-
-        for i, seg in enumerate(segments):
-            final_idx = seg.get("original_index", i)
-            text = seg.get("text", "")
-            start = float(seg.get("start", 0))
-            end = float(seg.get("end", 0))
-            duration = end - start
-            segment_trim_dur = None
-
-            extract_start = start
-            extract_duration = duration
-            if duration < 2.0:
-                padding = (2.0 - duration) / 2
-                extract_start = max(0, start - padding)
-                extract_duration = duration + (padding * 2)
-
-            out_path = seg.get("audioPath") or os.path.join(work_dir, f"segment_{i}.wav")
-
-            if args.ref_audio and os.path.exists(args.ref_audio):
-                ref_path = args.ref_audio
-                should_clean_ref = False
-            else:
-                raw_dir = os.path.join(work_dir, ".cache", "raw")
-                os.makedirs(raw_dir, exist_ok=True)
-
-                raw_ref_path = os.path.join(raw_dir, f"ref_raw_{i}_{start}.wav")
-                ref_path = os.path.join(work_dir, f"ref_{i}_{start}.wav")
-                should_clean_ref = True
-
-                try:
-                    ffmpeg.input(video_path, ss=extract_start, t=extract_duration).output(
-                        raw_ref_path, acodec="pcm_s16le", ac=1, ar=24000, loglevel="error"
-                    ).run(overwrite_output=True)
-
-                    try:
-                        raw_dur = get_audio_duration(raw_ref_path)
-                        print(f"  [Ref Check] Segment {i} ({start}-{end}): raw duration {raw_dur}s", flush=True)
-                    except Exception:
-                        pass
-
-                    try:
-                        y, sr = librosa.load(raw_ref_path, sr=None)
-                        y_trim, _ = librosa.effects.trim(y, top_db=20)
-                        trim_dur = len(y_trim) / sr
-                        segment_trim_dur = trim_dur
-
-                        if trim_dur < 0.1:
-                            print(f"  [Ref Check] Segment {i} warning: trimmed duration {trim_dur:.2f}s is very short.")
-                        else:
-                            print(f"  [Ref Check] Segment {i} trimmed {len(y)/sr:.2f}s -> {trim_dur:.2f}s")
-
-                        if len(y_trim) > 0:
-                            sf.write(ref_path, y_trim, sr)
-                        else:
-                            shutil.copy(raw_ref_path, ref_path)
-                    except Exception as trim_err:
-                        print(f"  [Ref Check] Segment {i} trim failed: {trim_err}")
-                        shutil.copy(raw_ref_path, ref_path)
-                except Exception as e:
-                    print(f"Segment {i} failed to extract reference audio: {e}")
-                    continue
-
-            tasks.append({
-                "text": text,
-                "ref_audio_path": ref_path,
-                "output_path": out_path,
-                "index": final_idx,
-                "ref_text": (getattr(args, "qwen_ref_text", "") or "") if (args.ref_audio and os.path.exists(args.ref_audio)) else (seg.get("source_text") or seg.get("original_text") or ""),
-                "duration": max(duration, 0.1),
-                "skip_segment_retry": bool(segment_trim_dur is not None and segment_trim_dur < 0.5),
-                "fallback_ref_audio": shared_ref_path if (shared_ref_path and shared_ref_path != ref_path) else None,
-                "fallback_ref_text": (shared_ref_meta or {}).get("text", "")
-            })
-
-        print(f"\n[Stage 2] Running TTS for {len(tasks)} tasks (skipped {len(segments) - len(tasks)} invalid items)...")
-
-        if not tasks:
-            print("No valid tasks available.")
-            return {"success": True, "results": []}
-
         target_lang = args.lang if args.lang else "English"
-        batch_size = args.batch_size if args.batch_size else 1
-        batch_results = list(run_batch_tts_func(tasks, language=target_lang, batch_size=batch_size, **tts_kwargs))
-
-        final_output_list = []
-        task_result_map = {}
-        task_lookup = {int(task["index"]): task for task in tasks}
-        for result in batch_results:
-            if not isinstance(result, dict):
-                continue
-            result_index = result.get("index")
-            if result_index is None:
-                continue
-            task_result_map[int(result_index)] = result
-
-        for i, seg in enumerate(segments):
-            final_idx = seg.get("original_index", i)
-            task = next((item for item in tasks if item.get("index") == final_idx), None)
-
-            if final_idx in task_result_map:
-                res = task_result_map[final_idx]
-                res["index"] = final_idx
-
-                if res["success"]:
-                    start = float(seg.get("start", 0))
-                    end = float(seg.get("end", 0))
-                    target_dur = end - start
-                    output_audio = res.get("audio_path")
-
-                    if not output_audio:
-                        print(f"[BatchTTS] Segment {final_idx} missing audio_path in success result.")
-                        res["success"] = False
-                        res["error"] = "Missing audio_path in result"
-                        final_output_list.append(res)
-                        continue
-
-                    current_dur = get_audio_duration(output_audio)
-                    res["duration"] = current_dur or target_dur
-                    if output_audio and os.path.exists(output_audio):
-                        nearby_success_map[final_idx] = {
-                            "audio_path": output_audio,
-                            "ref_text": task_lookup.get(final_idx, {}).get("text", "")
-                        }
-
-                if (not res["success"] or not res.get("audio_path")) and task and run_tts_func:
-                    retry_output = task["output_path"]
-                    retry_success = False
-                    retry_error = res.get("error") or "Batch TTS failed"
-                    nearby_refs = _collect_nearby_success_refs(final_idx, nearby_success_map)
-
-                    if nearby_refs:
-                        for nearby_idx, nearby_ref in enumerate(nearby_refs, start=1):
-                            try:
-                                print(f"[BatchTTS] Segment {final_idx} trying nearby successful reference {nearby_idx}/{len(nearby_refs)}...")
-                                nearby_kwargs = _build_retry_tts_kwargs(
-                                    tts_kwargs,
-                                    tts_service_name=tts_service_name,
-                                    attempt=max_retry_attempts + nearby_idx,
-                                    use_fallback_reference=True
-                                )
-                                nearby_kwargs = _with_qwen_reference_text(
-                                    nearby_kwargs,
-                                    tts_service_name,
-                                    nearby_ref.get("ref_text", "")
-                                )
-                                retry_success = run_tts_func(
-                                    task["text"],
-                                    nearby_ref.get("audio_path"),
-                                    retry_output,
-                                    language=args.lang if args.lang else "English",
-                                    **nearby_kwargs
-                                )
-                                if retry_success:
-                                    retry_error = None
-                                    break
-                                retry_error = "Nearby fallback TTS runner returned False"
-                            except Exception as nearby_exc:
-                                retry_error = str(nearby_exc)
-                                print(f"[BatchTTS] Segment {final_idx} nearby successful reference failed: {nearby_exc}")
-                                retry_success = False
-
-                    if not retry_success and not task.get("skip_segment_retry"):
-                        for attempt in range(1, max_retry_attempts + 1):
-                            try:
-                                print(f"[BatchTTS] Retrying segment {final_idx} ({attempt}/{max_retry_attempts}) with segment reference...")
-                                attempt_kwargs = _build_retry_tts_kwargs(
-                                    tts_kwargs,
-                                    tts_service_name=tts_service_name,
-                                    attempt=attempt,
-                                    use_fallback_reference=False
-                                )
-                                attempt_kwargs = _with_qwen_reference_text(
-                                    attempt_kwargs,
-                                    tts_service_name,
-                                    task.get("ref_text", "")
-                                )
-                                retry_success = run_tts_func(
-                                    task["text"],
-                                    task["ref_audio_path"],
-                                    retry_output,
-                                    language=args.lang if args.lang else "English",
-                                    **attempt_kwargs
-                                )
-                                if retry_success:
-                                    retry_error = None
-                                    break
-                                retry_error = "TTS runner returned False"
-                            except Exception as retry_exc:
-                                retry_error = str(retry_exc)
-                                print(f"[BatchTTS] Segment {final_idx} retry failed: {retry_exc}")
-                                retry_success = False
-                    elif not retry_success:
-                        print(f"[BatchTTS] Segment {final_idx} reference too short after trim, skipping direct segment retries.")
-
-                    if not retry_success and task.get("fallback_ref_audio"):
-                        try:
-                            print(f"[BatchTTS] Segment {final_idx} switching to shared fallback reference audio...")
-                            fallback_kwargs = _build_retry_tts_kwargs(
-                                tts_kwargs,
-                                tts_service_name=tts_service_name,
-                                attempt=max_retry_attempts + 1,
-                                use_fallback_reference=True
-                            )
-                            fallback_kwargs = _with_qwen_reference_text(
-                                fallback_kwargs,
-                                tts_service_name,
-                                task.get("fallback_ref_text", "")
-                            )
-                            retry_success = run_tts_func(
-                                task["text"],
-                                task["fallback_ref_audio"],
-                                retry_output,
-                                language=args.lang if args.lang else "English",
-                                **fallback_kwargs
-                            )
-                            if retry_success:
-                                retry_error = None
-                            else:
-                                retry_error = "Fallback TTS runner returned False"
-                        except Exception as fallback_exc:
-                            retry_error = str(fallback_exc)
-                            print(f"[BatchTTS] Segment {final_idx} shared fallback retry failed: {fallback_exc}")
-                            retry_success = False
-
-                    if retry_success and os.path.exists(retry_output):
-                        res = {
-                            "index": final_idx,
-                            "success": True,
-                            "audio_path": retry_output,
-                            "duration": get_audio_duration(retry_output) or target_dur
-                        }
-                        nearby_success_map[final_idx] = {
-                            "audio_path": retry_output,
-                            "ref_text": task.get("text", "")
-                        }
-                    else:
-                        res["success"] = False
-                        res["error"] = retry_error or res.get("error") or "TTS generation failed after retries"
-                        if not res.get("audio_path") and os.path.exists(retry_output):
-                            res["audio_path"] = retry_output
-
-                final_output_list.append(res)
-            else:
-                retry_result = {
-                    "index": final_idx,
-                    "success": False,
-                    "error": "TTS Task Failed (No result returned). Check logs for details."
-                }
-
-                if task and run_tts_func:
-                    retry_output = task["output_path"]
-                    retry_success = False
-                    retry_error = retry_result["error"]
-                    nearby_refs = _collect_nearby_success_refs(final_idx, nearby_success_map)
-
-                    if nearby_refs:
-                        for nearby_idx, nearby_ref in enumerate(nearby_refs, start=1):
-                            try:
-                                print(f"[BatchTTS] Missing segment {final_idx} trying nearby successful reference {nearby_idx}/{len(nearby_refs)}...")
-                                nearby_kwargs = _build_retry_tts_kwargs(
-                                    tts_kwargs,
-                                    tts_service_name=tts_service_name,
-                                    attempt=max_retry_attempts + nearby_idx,
-                                    use_fallback_reference=True
-                                )
-                                nearby_kwargs = _with_qwen_reference_text(
-                                    nearby_kwargs,
-                                    tts_service_name,
-                                    nearby_ref.get("ref_text", "")
-                                )
-                                retry_success = run_tts_func(
-                                    task["text"],
-                                    nearby_ref.get("audio_path"),
-                                    retry_output,
-                                    language=args.lang if args.lang else "English",
-                                    **nearby_kwargs
-                                )
-                                if retry_success:
-                                    retry_error = None
-                                    break
-                                retry_error = "Nearby fallback TTS runner returned False"
-                            except Exception as nearby_exc:
-                                retry_error = str(nearby_exc)
-                                print(f"[BatchTTS] Missing segment {final_idx} nearby successful reference failed: {nearby_exc}")
-                                retry_success = False
-
-                    if not retry_success and not task.get("skip_segment_retry"):
-                        for attempt in range(1, max_retry_attempts + 1):
-                            try:
-                                print(f"[BatchTTS] Retrying missing segment {final_idx} ({attempt}/{max_retry_attempts}) with segment reference...")
-                                attempt_kwargs = _build_retry_tts_kwargs(
-                                    tts_kwargs,
-                                    tts_service_name=tts_service_name,
-                                    attempt=attempt,
-                                    use_fallback_reference=False
-                                )
-                                attempt_kwargs = _with_qwen_reference_text(
-                                    attempt_kwargs,
-                                    tts_service_name,
-                                    task.get("ref_text", "")
-                                )
-                                retry_success = run_tts_func(
-                                    task["text"],
-                                    task["ref_audio_path"],
-                                    retry_output,
-                                    language=args.lang if args.lang else "English",
-                                    **attempt_kwargs
-                                )
-                                if retry_success:
-                                    retry_error = None
-                                    break
-                                retry_error = "TTS runner returned False"
-                            except Exception as retry_exc:
-                                retry_error = str(retry_exc)
-                                print(f"[BatchTTS] Missing segment {final_idx} retry failed: {retry_exc}")
-                                retry_success = False
-                    elif not retry_success:
-                        print(f"[BatchTTS] Missing segment {final_idx} reference too short after trim, skipping direct segment retries.")
-
-                    if not retry_success and task.get("fallback_ref_audio"):
-                        try:
-                            print(f"[BatchTTS] Missing segment {final_idx} switching to shared fallback reference audio...")
-                            fallback_kwargs = _build_retry_tts_kwargs(
-                                tts_kwargs,
-                                tts_service_name=tts_service_name,
-                                attempt=max_retry_attempts + 1,
-                                use_fallback_reference=True
-                            )
-                            fallback_kwargs = _with_qwen_reference_text(
-                                fallback_kwargs,
-                                tts_service_name,
-                                task.get("fallback_ref_text", "")
-                            )
-                            retry_success = run_tts_func(
-                                task["text"],
-                                task["fallback_ref_audio"],
-                                retry_output,
-                                language=args.lang if args.lang else "English",
-                                **fallback_kwargs
-                            )
-                            if retry_success:
-                                retry_error = None
-                            else:
-                                retry_error = "Fallback TTS runner returned False"
-                        except Exception as fallback_exc:
-                            retry_error = str(fallback_exc)
-                            print(f"[BatchTTS] Missing segment {final_idx} shared fallback retry failed: {fallback_exc}")
-                            retry_success = False
-
-                    if retry_success and os.path.exists(retry_output):
-                        retry_result = {
-                            "index": final_idx,
-                            "success": True,
-                            "audio_path": retry_output,
-                            "duration": get_audio_duration(retry_output) or max(float(seg.get("end", 0)) - float(seg.get("start", 0)), 0.1)
-                        }
-                        nearby_success_map[final_idx] = {
-                            "audio_path": retry_output,
-                            "ref_text": task.get("text", "")
-                        }
-                    else:
-                        retry_result["error"] = retry_error or retry_result["error"]
-                        if os.path.exists(retry_output):
-                            retry_result["audio_path"] = retry_output
-
-                final_output_list.append(retry_result)
-
-        try:
-            cache_dir_to_remove = os.path.join(work_dir, ".cache")
-            if os.path.exists(cache_dir_to_remove):
-                shutil.rmtree(cache_dir_to_remove)
-        except Exception:
-            pass
-
-        try:
-            if shared_ref_should_clean and shared_ref_path and os.path.exists(shared_ref_path):
-                os.remove(shared_ref_path)
-        except Exception:
-            pass
-
-        return {"success": True, "results": final_output_list}
+        batch_runtime_kwargs = dict(tts_kwargs)
+        batch_runtime_kwargs["batch_size"] = int(batch_runtime_kwargs.get("batch_size") or args.batch_size or 1)
+        return generate_batch_tts_results(
+            video_path=video_path,
+            segments=segments,
+            work_dir=work_dir,
+            target_lang=target_lang,
+            tts_service_name=tts_service_name,
+            tts_kwargs=batch_runtime_kwargs,
+            args_ref_audio=args.ref_audio,
+            explicit_qwen_ref_text=getattr(args, "qwen_ref_text", "") or "",
+            max_retry_attempts=int(getattr(args, "dub_retry_attempts", 3) or 3),
+            get_tts_runner=get_tts_runner,
+            get_audio_duration=get_audio_duration,
+            ffmpeg=ffmpeg,
+            librosa=librosa,
+            sf=sf,
+            log_prefix="[BatchTTS]"
+        )
     except Exception as e:
         print(f"Batch TTS Error: {e}")
         traceback.print_exc()
