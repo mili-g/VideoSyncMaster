@@ -1,8 +1,8 @@
 import React, { useRef } from 'react';
-import type { BatchInputAsset } from '../utils/batchAssets';
 import type { BatchQueueItem } from '../hooks/useBatchQueue';
+import type { BatchInputAsset } from '../utils/batchAssets';
 
-const suspiciousMojibakePattern = /[�ÃâÐÏ]/;
+const suspiciousMojibakePattern = /[ÃÐ]/;
 
 interface BatchQueueSummary {
     total: number;
@@ -11,6 +11,9 @@ interface BatchQueueSummary {
     success: number;
     error: number;
     canceled: number;
+    totalSourceDurationSec: number;
+    totalElapsedMs: number;
+    nowEpochMs: number;
 }
 
 interface BatchQueuePanelProps {
@@ -18,7 +21,7 @@ interface BatchQueuePanelProps {
     summary: BatchQueueSummary;
     isRunning: boolean;
     canStart: boolean;
-    onAddAssets: (assets: BatchInputAsset[]) => void;
+    onAddAssets: (assets: BatchInputAsset[]) => void | Promise<void>;
     onRemoveItem: (id: string) => void;
     onClearCompleted: () => void;
     onRetryFailed: () => void;
@@ -76,7 +79,7 @@ export default function BatchQueuePanel({
                 return { path, name, textContent };
             })
         );
-        onAddAssets(assets.filter(asset => asset.path));
+        await onAddAssets(assets.filter(asset => asset.path));
     };
 
     return (
@@ -120,13 +123,15 @@ export default function BatchQueuePanel({
                     </div>
                 </div>
 
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, minmax(100px, 1fr))', gap: '12px', marginBottom: '20px' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(8, minmax(100px, 1fr))', gap: '12px', marginBottom: '20px' }}>
                     <SummaryCard label="总数" value={summary.total} color="#e2e8f0" />
                     <SummaryCard label="待处理" value={summary.pending} color="#94a3b8" />
                     <SummaryCard label="处理中" value={summary.processing} color="#60a5fa" />
                     <SummaryCard label="成功" value={summary.success} color="#34d399" />
                     <SummaryCard label="失败" value={summary.error} color="#f87171" />
                     <SummaryCard label="已取消" value={summary.canceled} color="#fbbf24" />
+                    <SummaryCard label="总视频时长" value={formatDuration(summary.totalSourceDurationSec)} color="#c4b5fd" />
+                    <SummaryCard label="总运行时长" value={formatElapsed(summary.totalElapsedMs)} color="#f9a8d4" />
                 </div>
 
                 <div
@@ -159,7 +164,7 @@ export default function BatchQueuePanel({
                             key={item.id}
                             style={{
                                 display: 'grid',
-                                gridTemplateColumns: '1.2fr 1fr 1fr 0.7fr 1fr auto',
+                                gridTemplateColumns: '1.2fr 1fr 1fr 0.7fr 0.9fr 1fr auto',
                                 gap: '12px',
                                 alignItems: 'center',
                                 padding: '14px 16px',
@@ -183,6 +188,10 @@ export default function BatchQueuePanel({
                                 }}>
                                     {statusLabel(item.status)}
                                 </span>
+                            </div>
+                            <div style={{ color: 'rgba(255,255,255,0.72)', fontSize: '0.9em' }}>
+                                <div>视频: {formatDuration(item.sourceDurationSec)}</div>
+                                <div style={{ marginTop: '6px' }}>耗时: {formatItemElapsed(item, summary.nowEpochMs)}</div>
                             </div>
                             <div style={{ color: 'rgba(255,255,255,0.72)', fontSize: '0.9em' }}>
                                 <div>{item.stage}</div>
@@ -211,7 +220,7 @@ export default function BatchQueuePanel({
     );
 }
 
-function SummaryCard({ label, value, color }: { label: string; value: number; color: string }) {
+function SummaryCard({ label, value, color }: { label: string; value: number | string; color: string }) {
     return (
         <div style={{
             padding: '14px',
@@ -244,6 +253,46 @@ function Cell({ title, primary, secondary, emptyText }: { title: string; primary
 function displayName(filePath?: string) {
     if (!filePath) return '';
     return filePath.split(/[\\/]/).pop() || filePath;
+}
+
+function formatDuration(seconds?: number) {
+    if (!seconds || !Number.isFinite(seconds) || seconds <= 0) return '--';
+    const totalSeconds = Math.round(seconds);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const secs = totalSeconds % 60;
+
+    if (hours > 0) {
+        return `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+    }
+    return `${minutes}:${String(secs).padStart(2, '0')}`;
+}
+
+function formatElapsed(milliseconds?: number) {
+    if (!milliseconds || !Number.isFinite(milliseconds) || milliseconds <= 0) return '0s';
+
+    const totalSeconds = Math.floor(milliseconds / 1000);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+
+    if (hours > 0) {
+        return `${hours}h ${minutes}m ${seconds}s`;
+    }
+    if (minutes > 0) {
+        return `${minutes}m ${seconds}s`;
+    }
+    return `${seconds}s`;
+}
+
+function formatItemElapsed(item: BatchQueueItem, nowEpochMs: number) {
+    if (typeof item.elapsedMs === 'number' && item.elapsedMs >= 0) {
+        return formatElapsed(item.elapsedMs);
+    }
+    if (item.startedAt) {
+        return formatElapsed(Math.max(0, nowEpochMs - item.startedAt));
+    }
+    return '--';
 }
 
 function buttonStyle(background: string, disabled = false): React.CSSProperties {

@@ -1,7 +1,10 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { buildBatchMatchKey, classifyBatchAsset, type BatchInputAsset } from '../utils/batchAssets';
 import { parseSRTContent, type SrtSegment } from '../utils/srt';
 import { cleanupOutputArtifacts, saveSubtitleArtifacts } from '../utils/outputArtifacts';
+
+const BATCH_QUEUE_ITEMS_STORAGE_KEY = 'batchQueue.items.v1';
+const BATCH_QUEUE_META_STORAGE_KEY = 'batchQueue.meta.v1';
 
 export type BatchQueueStatus = 'pending' | 'processing' | 'success' | 'error' | 'canceled';
 
@@ -9,6 +12,7 @@ export interface BatchQueueItem {
     id: string;
     sourcePath: string;
     fileName: string;
+    sourceDurationSec?: number;
     originalSubtitlePath?: string;
     originalSubtitleContent?: string;
     translatedSubtitlePath?: string;
@@ -17,6 +21,9 @@ export interface BatchQueueItem {
     stage: string;
     outputPath?: string;
     error?: string;
+    startedAt?: number;
+    finishedAt?: number;
+    elapsedMs?: number;
 }
 
 interface BatchQueueOptions {
@@ -32,12 +39,94 @@ interface BatchQueueOptions {
     setStatus: (value: string) => void;
 }
 
+interface BatchQueuePersistedMeta {
+    isRunning: boolean;
+    activeItemId: string | null;
+    queueStartedAt: number | null;
+    queueFinishedElapsedMs: number;
+}
+
+function readStoredQueueItems(): BatchQueueItem[] {
+    try {
+        const raw = localStorage.getItem(BATCH_QUEUE_ITEMS_STORAGE_KEY);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+    } catch {
+        return [];
+    }
+}
+
+function readStoredQueueMeta(): BatchQueuePersistedMeta {
+    try {
+        const raw = localStorage.getItem(BATCH_QUEUE_META_STORAGE_KEY);
+        if (!raw) {
+            return {
+                isRunning: false,
+                activeItemId: null,
+                queueStartedAt: null,
+                queueFinishedElapsedMs: 0
+            };
+        }
+        const parsed = JSON.parse(raw);
+        return {
+            isRunning: Boolean(parsed?.isRunning),
+            activeItemId: typeof parsed?.activeItemId === 'string' ? parsed.activeItemId : null,
+            queueStartedAt: typeof parsed?.queueStartedAt === 'number' ? parsed.queueStartedAt : null,
+            queueFinishedElapsedMs: typeof parsed?.queueFinishedElapsedMs === 'number' ? parsed.queueFinishedElapsedMs : 0
+        };
+    } catch {
+        return {
+            isRunning: false,
+            activeItemId: null,
+            queueStartedAt: null,
+            queueFinishedElapsedMs: 0
+        };
+    }
+}
+
 export function useBatchQueue() {
-    const [items, setItems] = useState<BatchQueueItem[]>([]);
-    const [isRunning, setIsRunning] = useState(false);
-    const [activeItemId, setActiveItemId] = useState<string | null>(null);
+    const persistedMetaRef = useRef<BatchQueuePersistedMeta>(readStoredQueueMeta());
+    const [items, setItems] = useState<BatchQueueItem[]>(() => readStoredQueueItems());
+    const [isRunning, setIsRunning] = useState(() => persistedMetaRef.current.isRunning);
+    const [activeItemId, setActiveItemId] = useState<string | null>(() => persistedMetaRef.current.activeItemId);
+    const [now, setNow] = useState(() => Date.now());
     const stopRequestedRef = useRef(false);
     const pendingSubtitleAssetsRef = useRef<BatchInputAsset[]>([]);
+    const [queueStartedAt, setQueueStartedAt] = useState<number | null>(() => persistedMetaRef.current.queueStartedAt);
+    const [queueFinishedElapsedMs, setQueueFinishedElapsedMs] = useState(() => persistedMetaRef.current.queueFinishedElapsedMs);
+
+    useEffect(() => {
+        if (!isRunning) return;
+
+        const timer = window.setInterval(() => {
+            setNow(Date.now());
+        }, 1000);
+
+        return () => window.clearInterval(timer);
+    }, [isRunning]);
+
+    useEffect(() => {
+        try {
+            localStorage.setItem(BATCH_QUEUE_ITEMS_STORAGE_KEY, JSON.stringify(items));
+        } catch (error) {
+            console.error('Failed to persist batch queue items:', error);
+        }
+    }, [items]);
+
+    useEffect(() => {
+        try {
+            const meta: BatchQueuePersistedMeta = {
+                isRunning,
+                activeItemId,
+                queueStartedAt,
+                queueFinishedElapsedMs
+            };
+            localStorage.setItem(BATCH_QUEUE_META_STORAGE_KEY, JSON.stringify(meta));
+        } catch (error) {
+            console.error('Failed to persist batch queue meta:', error);
+        }
+    }, [activeItemId, isRunning, queueFinishedElapsedMs, queueStartedAt]);
 
     const summary = useMemo(() => {
         const pending = items.filter(item => item.status === 'pending').length;
@@ -45,15 +134,48 @@ export function useBatchQueue() {
         const success = items.filter(item => item.status === 'success').length;
         const error = items.filter(item => item.status === 'error').length;
         const canceled = items.filter(item => item.status === 'canceled').length;
-        return { total: items.length, pending, processing, success, error, canceled };
-    }, [items]);
+        const totalSourceDurationSec = items.reduce((sum, item) => sum + (item.sourceDurationSec || 0), 0);
+        const totalElapsedMs = queueStartedAt && isRunning
+            ? Math.max(0, now - queueStartedAt)
+            : queueFinishedElapsedMs;
+        return {
+            total: items.length,
+            pending,
+            processing,
+            success,
+            error,
+            canceled,
+            totalSourceDurationSec,
+            totalElapsedMs,
+            nowEpochMs: now
+        };
+    }, [isRunning, items, now, queueFinishedElapsedMs, queueStartedAt]);
 
     const updateItem = (id: string, updater: (item: BatchQueueItem) => BatchQueueItem) => {
         setItems(prev => prev.map(item => item.id === id ? updater(item) : item));
     };
 
-    const addAssets = (assets: BatchInputAsset[]) => {
+    const addAssets = async (assets: BatchInputAsset[]) => {
         if (assets.length === 0) return;
+
+        const durationMap = new Map<string, number>();
+        await Promise.all(
+            assets.map(async (asset) => {
+                if (!asset.path || classifyBatchAsset(asset) !== 'video') return;
+                try {
+                    const result = await window.api.runBackend([
+                        '--action', 'analyze_video',
+                        '--input', asset.path,
+                        '--json'
+                    ]);
+                    if (result?.success && result.info?.duration) {
+                        durationMap.set(asset.path.toLowerCase(), Number(result.info.duration) || 0);
+                    }
+                } catch (error) {
+                    console.error('Failed to analyze batch video duration:', asset.path, error);
+                }
+            })
+        );
 
         setItems(prev => {
             const next = [...prev];
@@ -70,6 +192,7 @@ export function useBatchQueue() {
                         id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
                         sourcePath: asset.path,
                         fileName: asset.name,
+                        sourceDurationSec: durationMap.get(asset.path.toLowerCase()),
                         status: 'pending',
                         stage: '等待处理'
                     };
@@ -119,7 +242,10 @@ export function useBatchQueue() {
                     ...item,
                     status: 'pending',
                     stage: '等待重试',
-                    error: undefined
+                    error: undefined,
+                    startedAt: undefined,
+                    finishedAt: undefined,
+                    elapsedMs: undefined
                 };
             }
             return item;
@@ -149,7 +275,11 @@ export function useBatchQueue() {
         const queue = items.filter(item => item.status === 'pending');
         if (queue.length === 0 || isRunning) return;
 
+        const queueStartTime = Date.now();
         setIsRunning(true);
+        setNow(queueStartTime);
+        setQueueStartedAt(queueStartTime);
+        setQueueFinishedElapsedMs(0);
         stopRequestedRef.current = false;
         options.setStatus(`批量任务启动，共 ${queue.length} 个文件待处理`);
 
@@ -160,7 +290,14 @@ export function useBatchQueue() {
                     continue;
                 }
 
+                const itemStartedAt = Date.now();
                 setActiveItemId(item.id);
+                updateItem(item.id, current => ({
+                    ...current,
+                    startedAt: itemStartedAt,
+                    finishedAt: undefined,
+                    elapsedMs: undefined
+                }));
                 updateItem(item.id, current => ({ ...current, status: 'processing', stage: '准备处理中', error: undefined }));
 
                 try {
@@ -177,7 +314,9 @@ export function useBatchQueue() {
                             status: 'success',
                             stage: '处理完成',
                             outputPath,
-                            error: undefined
+                            error: undefined,
+                            finishedAt: Date.now(),
+                            elapsedMs: current.startedAt ? Math.max(0, Date.now() - current.startedAt) : current.elapsedMs
                         }));
                     }
                 } catch (error: any) {
@@ -188,14 +327,18 @@ export function useBatchQueue() {
                             ...current,
                             status: 'error',
                             stage: '处理失败',
-                            error: error?.message || String(error)
+                            error: error?.message || String(error),
+                            finishedAt: Date.now(),
+                            elapsedMs: current.startedAt ? Math.max(0, Date.now() - current.startedAt) : current.elapsedMs
                         }));
                     }
                 }
             }
         } finally {
+            setQueueFinishedElapsedMs(Math.max(0, Date.now() - queueStartTime));
             setActiveItemId(null);
             setIsRunning(false);
+            setNow(Date.now());
             stopRequestedRef.current = false;
             options.setStatus('批量任务已结束');
         }
