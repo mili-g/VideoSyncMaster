@@ -8,6 +8,7 @@ if os.path.exists(site_packages) and site_packages not in sys.path:
 
 # Lazy Imports
 import json
+import re
 import traceback
 
 from jianying import JianYingASR
@@ -26,10 +27,50 @@ PATH_PROD_2 = os.path.join(BACKEND_DIR, "..", "..", "models", "faster-whisper-la
 
 DEFAULT_MODEL_ID = "large-v3-turbo" 
 
+_COMMON_ABBREVIATIONS = {
+    "mr.", "mrs.", "ms.", "dr.", "prof.", "sr.", "jr.", "vs.", "etc.",
+    "e.g.", "i.e.", "u.s.", "u.k.", "p.s."
+}
+
+_CODE_SUFFIX_RE = re.compile(r"^[a-z0-9_+-]+\.(js|ts|tsx|jsx|py|java|go|rs|cpp|c|cs|php|rb|swift|kt|scala|net|ai|io)$", re.IGNORECASE)
+_ACRONYM_RE = re.compile(r"^(?:[a-z]\.){2,}[a-z]?$", re.IGNORECASE)
+
+
+def _is_non_terminal_period(words, index):
+    word_text = words[index].get("word", "")
+    if not word_text.endswith("."):
+        return False
+
+    token_text = word_text.strip("()[]{}<>\"'")
+    token_lower = token_text.lower()
+
+    if _CODE_SUFFIX_RE.match(token_text):
+        return True
+    if token_lower in _COMMON_ABBREVIATIONS:
+        return True
+    if _ACRONYM_RE.match(token_lower):
+        return True
+    if re.search(r"\d\.\d", token_text):
+        return True
+
+    suffix = token_text[:-1]
+    if suffix.isalpha() and len(suffix) <= 3:
+        next_index = index + 1
+        while next_index < len(words):
+            next_text = words[next_index].get("word", "").strip()
+            if not next_text:
+                next_index += 1
+                continue
+            if next_text[:1].isupper():
+                return True
+            break
+
+    return False
+
 def split_into_subtitles(segments, max_chars=35, max_gap=0.5):
     new_segments = []
     
-    PUNCTUATION = {'?', '!', '。', '？', '！', '…', '；', ';', ',', '，'}
+    PUNCTUATION = {'.', '?', '!', '。', '？', '！', '…', '；', ';', ',', '，'}
     
     if max_chars is None:
         max_chars = 30
@@ -144,12 +185,9 @@ def split_into_subtitles(segments, max_chars=35, max_gap=0.5):
             current_len += len(w_text)
             
             if w_text and w_text[-1] in PUNCTUATION:
-                if w_text[-1] == '.':
-                    if i + 1 < len(merged_words):
-                        next_w_text = merged_words[i+1]["word"].strip()
-                        if next_w_text and next_w_text[0].isdigit():
-                            continue
-                             
+                if w_text[-1] == '.' and _is_non_terminal_period(merged_words, i):
+                    continue
+
                 seg_chunks.append(current_chunk_words)
                 current_chunk_words = []
                 current_len = 0

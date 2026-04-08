@@ -3,6 +3,7 @@ import os
 import sys
 import torch
 import traceback
+import re
 
 # Force strict offline mode
 os.environ['HF_HUB_OFFLINE'] = '1'
@@ -38,6 +39,182 @@ try:
 except ImportError as e:
     print(f"[QwenASR] Warning: Could not import qwen_asr: {e}")
     Qwen3ASRModel = None
+
+
+_COMMON_ABBREVIATIONS = {
+    "mr.", "mrs.", "ms.", "dr.", "prof.", "sr.", "jr.", "vs.", "etc.",
+    "e.g.", "i.e.", "u.s.", "u.k.", "p.s."
+}
+
+_CODE_SUFFIX_RE = re.compile(r"^[a-z0-9_+-]+\.(js|ts|tsx|jsx|py|java|go|rs|cpp|c|cs|php|rb|swift|kt|scala|net|ai|io)$", re.IGNORECASE)
+_ACRONYM_RE = re.compile(r"^(?:[a-z]\.){2,}[a-z]?$", re.IGNORECASE)
+
+
+def _normalize_text(value):
+    return re.sub(r"[^\w\u4e00-\u9fff]", "", value).lower()
+
+
+def _join_token_texts(token_texts):
+    joined = "".join(token_texts)
+    has_cjk = any('\u4e00' <= char <= '\u9fff' for char in joined)
+    return joined if has_cjk else " ".join(token_texts)
+
+
+def _estimate_text_length(token_slice):
+    return len(_join_token_texts([token.text.strip() for token in token_slice if token.text.strip()]))
+
+
+def _extract_dot_token(text, index):
+    start = index
+    end = index
+    while start > 0 and not text[start - 1].isspace():
+        start -= 1
+    while end + 1 < len(text) and not text[end + 1].isspace():
+        end += 1
+    return text[start:end + 1]
+
+
+def _is_non_terminal_period(text, index):
+    prev_char = text[index - 1] if index > 0 else ""
+    next_char = text[index + 1] if index + 1 < len(text) else ""
+
+    if prev_char.isdigit() and next_char.isdigit():
+        return True
+
+    if prev_char.isalpha() and next_char.isalpha():
+        return True
+
+    token = _extract_dot_token(text, index).strip("()[]{}<>\"'")
+    token_lower = token.lower()
+    if token_lower in _COMMON_ABBREVIATIONS:
+        return True
+    if _CODE_SUFFIX_RE.match(token):
+        return True
+    if _ACRONYM_RE.match(token_lower):
+        return True
+
+    return False
+
+
+def _split_text_into_sentences(text):
+    sentences = []
+    start = 0
+    i = 0
+    terminal_punctuation = {'。', '！', '？', '!', '?', ';', '；'}
+
+    while i < len(text):
+        ch = text[i]
+        is_boundary = False
+
+        if ch in terminal_punctuation:
+            is_boundary = True
+        elif ch == '\n':
+            is_boundary = True
+        elif ch == '.':
+            is_boundary = not _is_non_terminal_period(text, i)
+
+        if is_boundary:
+            segment = text[start:i + 1].strip()
+            if segment:
+                sentences.append(segment)
+            start = i + 1
+        i += 1
+
+    tail = text[start:].strip()
+    if tail:
+        sentences.append(tail)
+    return sentences
+
+
+def _consume_sentence_tokens(sentence_text, tokens, start_index):
+    norm_sentence = _normalize_text(sentence_text)
+    if not norm_sentence:
+        return None
+
+    built = ""
+    sent_start = None
+    sent_end = None
+    token_index = start_index
+
+    while token_index < len(tokens):
+        token = tokens[token_index]
+        norm_token = _normalize_text(token.text)
+
+        if not norm_token:
+            token_index += 1
+            continue
+
+        candidate = built + norm_token
+        if not norm_sentence.startswith(candidate):
+            return None
+
+        if sent_start is None:
+            sent_start = token.start_time
+        sent_end = token.end_time
+        built = candidate
+        token_index += 1
+
+        if built == norm_sentence:
+            return {
+                "token_start_index": start_index,
+                "next_token_index": token_index,
+                "start": round(sent_start, 3),
+                "end": round(sent_end, 3),
+                "text": sentence_text
+            }
+
+    return None
+
+
+def _fallback_segment_tokens(tokens, start_index, end_index=None, max_chars=80, max_duration=8.0, gap_threshold=0.8):
+    segments = []
+    idx = start_index
+    stop_index = len(tokens) if end_index is None else min(end_index, len(tokens))
+
+    while idx < stop_index:
+        chunk_texts = []
+        chunk_start = None
+        chunk_end = None
+        last_end = None
+
+        while idx < stop_index:
+            token = tokens[idx]
+            token_text = token.text.strip()
+            if not token_text:
+                idx += 1
+                continue
+
+            if chunk_start is None:
+                chunk_start = token.start_time
+            else:
+                gap = token.start_time - (last_end if last_end is not None else token.start_time)
+                current_text_len = len(_join_token_texts(chunk_texts))
+                current_duration = (chunk_end - chunk_start) if chunk_end is not None else 0.0
+                if gap > gap_threshold or current_text_len >= max_chars or current_duration >= max_duration:
+                    break
+
+            chunk_texts.append(token_text)
+            chunk_end = token.end_time
+            last_end = token.end_time
+            idx += 1
+
+        if chunk_texts and chunk_start is not None and chunk_end is not None:
+            segments.append({
+                "start": round(chunk_start, 3),
+                "end": round(chunk_end, 3),
+                "text": _join_token_texts(chunk_texts)
+            })
+        else:
+            idx += 1
+
+    return segments
+
+
+def _segment_is_oversized(segment, tokens):
+    token_slice = tokens[segment["token_start_index"]:segment["next_token_index"]]
+    duration = segment["end"] - segment["start"]
+    text_length = _estimate_text_length(token_slice)
+    return duration > 14.0 or text_length > 160
 
 def run_qwen_asr_inference(audio_path, model_name="Qwen3-ASR-1.7B", language=None):
     if not Qwen3ASRModel:
@@ -130,95 +307,52 @@ def run_qwen_asr_inference(audio_path, model_name="Qwen3-ASR-1.7B", language=Non
             if res.time_stamps and res.text:
                 full_text = res.text
                 tokens = res.time_stamps
-                
-                # 1. Identify sentence boundaries in full_text based on punctuation
-                import re
-                # Split by common ending punctuation, keeping the punctuation
-                # Added English period '.' with negative lookahead to avoid splitting on decimal points (e.g., 9.7)
-                sentence_list = re.split(r'([。！？!?;；？?\n]+|\.(?!\d))', full_text)
-                
-                # Re-group punctuation with the sentence
-                refined_sentences = []
-                for i in range(0, len(sentence_list) - 1, 2):
-                    text = sentence_list[i].strip()
-                    punc = sentence_list[i+1]
-                    if text:
-                        refined_sentences.append(text + punc)
-                    elif punc.strip(): # Punc only segment (rare)
-                        if refined_sentences:
-                            refined_sentences[-1] += punc
-                        else:
-                            refined_sentences.append(punc)
-                if len(sentence_list) % 2 == 1 and sentence_list[-1].strip():
-                    refined_sentences.append(sentence_list[-1].strip())
+                refined_sentences = _split_text_into_sentences(full_text)
 
-                # 2. Map tokens to these sentences
                 token_idx = 0
-                max_tokens = len(tokens)
-                
-                for sent in refined_sentences:
-                    sent_start = None
-                    sent_end = 0
-                    
-                    # We use a fuzzy search because tokens might be slightly different 
-                    # from the original text (casing, etc.)
-                    # But since they come from the same tokenizer usually, sequential matching works
-                    
-                    # Find how many tokens fit in this sentence
-                    sent_token_count = 0
-                    
-                    # Normalize sentence for better matching (ignore spaces and punctuation)
-                    norm_sent = re.sub(r'[^\w\u4e00-\u9fff]', '', sent).lower()
-                    current_norm_ptr = 0
-                    
-                    for i in range(token_idx, max_tokens):
-                        token = tokens[i]
-                        norm_token = re.sub(r'[^\w\u4e00-\u9fff]', '', token.text).lower()
-                        
-                        if not norm_token: # Skip empty/punct tokens if any
-                            sent_token_count += 1
-                            sent_end = token.end_time
-                            continue
-                            
-                        if norm_token in norm_sent[current_norm_ptr:]:
-                            if sent_start is None:
-                                sent_start = token.start_time
-                            sent_end = token.end_time
-                            sent_token_count += 1
-                            current_norm_ptr = norm_sent.find(norm_token, current_norm_ptr) + len(norm_token)
-                        else:
-                            break
-                    
-                    if sent_token_count > 0:
-                        segments.append({
-                            "start": round(sent_start, 3),
-                            "end": round(sent_end, 3),
-                            "text": sent
-                        })
-                        token_idx += sent_token_count
-                    else:
-                        # Fallback: if a sentence has no tokens (e.g. all empty or missed by aligner)
-                        print(f"[QwenASR] Warning: Sentence '{sent[:30]}...' matched 0 tokens.")
-                        pass
+                sent_idx = 0
+                max_sentence_merge = 4
 
-                # 3. Handle leftover tokens (if any)
-                if token_idx < max_tokens:
-                    remaining_text = []
-                    rem_start = tokens[token_idx].start_time
-                    rem_end = tokens[-1].end_time
-                    for i in range(token_idx, max_tokens):
-                        txt = tokens[i].text
-                        remaining_text.append(txt)
-                    
-                    # Join tokens. For non-CJK languages, add spaces.
-                    is_cjk = any('\u4e00' <= char <= '\u9fff' for char in full_text)
-                    final_rem_text = "".join(remaining_text) if is_cjk else " ".join(remaining_text)
-                    
-                    segments.append({
-                        "start": round(rem_start, 3),
-                        "end": round(rem_end, 3),
-                        "text": final_rem_text
-                    })
+                while sent_idx < len(refined_sentences) and token_idx < len(tokens):
+                    matched_segment = None
+                    merge_count = 1
+
+                    while merge_count <= max_sentence_merge and sent_idx + merge_count <= len(refined_sentences):
+                        merged_sentence = " ".join(refined_sentences[sent_idx:sent_idx + merge_count]).strip()
+                        attempt = _consume_sentence_tokens(merged_sentence, tokens, token_idx)
+                        if attempt:
+                            matched_segment = attempt
+                            break
+                        merge_count += 1
+
+                    if matched_segment:
+                        if _segment_is_oversized(matched_segment, tokens):
+                            print(f"[QwenASR] Warning: Oversized aligned segment '{matched_segment['text'][:30]}...' detected ({matched_segment['end'] - matched_segment['start']:.2f}s). Splitting by token timing.")
+                            segments.extend(
+                                _fallback_segment_tokens(
+                                    tokens,
+                                    matched_segment["token_start_index"],
+                                    end_index=matched_segment["next_token_index"]
+                                )
+                            )
+                        else:
+                            segments.append({
+                                "start": matched_segment["start"],
+                                "end": matched_segment["end"],
+                                "text": matched_segment["text"]
+                            })
+                        token_idx = matched_segment["next_token_index"]
+                        sent_idx += merge_count
+                        continue
+
+                    print(f"[QwenASR] Warning: Sentence '{refined_sentences[sent_idx][:30]}...' could not be aligned at token index {token_idx}. Falling back to token chunking for the remaining audio.")
+                    segments.extend(_fallback_segment_tokens(tokens, token_idx))
+                    token_idx = len(tokens)
+                    break
+
+                if token_idx < len(tokens):
+                    print(f"[QwenASR] Warning: {len(tokens) - token_idx} leftover tokens remained after sentence alignment. Applying fallback chunking.")
+                    segments.extend(_fallback_segment_tokens(tokens, token_idx))
 
             elif res.text:
                 # Fallback if no timestamps returned

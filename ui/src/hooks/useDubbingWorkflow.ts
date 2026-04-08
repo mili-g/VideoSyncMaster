@@ -269,8 +269,21 @@ export function useDubbingWorkflow({
                 sourceSegments.length > 0 ? sourceSegments : translatedSegments
             );
 
-            for (const { segment, index } of errorSegments) {
+            const totalErrors = errorSegments.length;
+
+            for (let retryIdx = 0; retryIdx < totalErrors; retryIdx += 1) {
+                const { segment, index } = errorSegments[retryIdx];
                 if (abortRef.current) return;
+
+                setStatus(`Retrying failed dubbing segment ${retryIdx + 1}/${totalErrors}...`);
+                setTranslatedSegments(prev => {
+                    const next = [...prev];
+                    next[index] = {
+                        ...next[index],
+                        audioStatus: 'pending'
+                    };
+                    return next;
+                });
 
                 const outputPath = `${projectPaths.sessionAudioDir}\\segment_retry_${index}.wav`;
                 const result = await window.api.runBackend(
@@ -300,6 +313,7 @@ export function useDubbingWorkflow({
                     };
                     return next;
                 });
+                setProgress(Math.round(((retryIdx + 1) / totalErrors) * 100));
             }
 
             if (!abortRef.current) {
@@ -311,6 +325,7 @@ export function useDubbingWorkflow({
         } finally {
             if (!abortRef.current) {
                 setDubbingLoading(false);
+                setProgress(0);
             }
         }
     };
