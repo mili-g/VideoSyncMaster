@@ -11,6 +11,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fallback_ref_text", type=str, help="Transcript for fallback reference audio", default="")
     parser.add_argument("--nearby_ref_audios", type=str, help="JSON array of nearby successful audio paths used as intermediate fallback references")
     parser.add_argument("--output", type=str, help="Output path")
+    parser.add_argument("--work_dir", type=str, help="Working directory for intermediate files")
     parser.add_argument("--duration", type=float, help="Target duration in seconds for Alignment")
     parser.add_argument("--lang", type=str, help="Target language for translation/dubbing", default="English")
     parser.add_argument("--ori_lang", type=str, help="Source language for ASR", default="Chinese")

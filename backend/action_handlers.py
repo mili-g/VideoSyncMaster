@@ -175,6 +175,7 @@ def dispatch_basic_action(
                 args.input,
                 target,
                 args.output,
+                work_dir=args.work_dir,
                 asr_service=args.asr,
                 vad_onset=args.vad_onset,
                 vad_offset=args.vad_offset,

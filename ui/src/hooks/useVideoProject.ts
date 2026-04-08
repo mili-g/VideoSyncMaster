@@ -5,6 +5,7 @@ import { usePersistentSettings } from './usePersistentSettings';
 import { useSubtitleImport } from './useSubtitleImport';
 import { useTranslationWorkflow } from './useTranslationWorkflow';
 import { saveSubtitleArtifacts } from '../utils/outputArtifacts';
+import { buildSingleOutputPaths } from '../utils/projectPaths';
 
 export interface Segment {
     start: number;
@@ -195,15 +196,12 @@ export function useVideoProject() {
 
         try {
             const paths = await window.api.getPaths();
-            const outputRoot = paths.outputDir;
-            const projectRoot = paths.projectRoot;
             const filenameWithExt = originalVideoPath.split(/[\\/]/).pop() || 'video.mp4';
-            const filenameNoExt = filenameWithExt.replace(/\.[^/.]+$/, '');
-            const sessionOutputDir = `${outputRoot}\\${filenameNoExt}`;
-            const cacheDir = `${projectRoot}\\.cache\\${filenameNoExt}`;
+            const projectPaths = buildSingleOutputPaths(paths, filenameWithExt);
 
-            await window.api.ensureDir(sessionOutputDir);
-            await window.api.ensureDir(cacheDir);
+            await window.api.ensureDir(projectPaths.finalDir);
+            await window.api.ensureDir(projectPaths.sessionCacheDir);
+            await window.api.ensureDir(projectPaths.sessionTempDir);
 
             const vadOnset = localStorage.getItem('whisper_vad_onset') || '0.700';
             const vadOffset = localStorage.getItem('whisper_vad_offset') || '0.700';
@@ -213,7 +211,7 @@ export function useVideoProject() {
                 '--input', originalVideoPath,
                 '--asr', asrService,
                 '--ori_lang', asrOriLang === 'None' ? '' : asrOriLang,
-                '--output_dir', cacheDir,
+                '--output_dir', projectPaths.sessionTempDir,
                 '--vad_onset', vadOnset,
                 '--vad_offset', vadOffset
             ]);
@@ -232,8 +230,13 @@ export function useVideoProject() {
                 `${index + 1}\n${formatTimeSRT(seg.start)} --> ${formatTimeSRT(seg.end)}\n${seg.text}\n`
             )).join('\n');
 
-            const srtPath = `${sessionOutputDir}\\${filenameNoExt}.en.srt`;
-            await window.api.saveFile(srtPath, srtContent);
+            const artifacts = await saveSubtitleArtifacts(
+                projectPaths.finalDir,
+                filenameWithExt,
+                result.map((segment: Segment) => ({ start: segment.start, end: segment.end, text: segment.text })),
+                result.map((segment: Segment) => ({ start: segment.start, end: segment.end, text: segment.text }))
+            );
+            await window.api.saveFile(artifacts.originalSubtitlePath, srtContent);
 
             setStatus('识别完成，请检查并编辑字幕。');
             return result;
@@ -267,10 +270,9 @@ export function useVideoProject() {
         {
             const paths = await window.api.getPaths();
             const filenameWithExt = originalVideoPath.split(/[\\/]/).pop() || 'video.mp4';
-            const filenameNoExt = filenameWithExt.replace(/\.[^/.]+$/, '');
-            const sessionOutputDir = `${paths.outputDir}\\${filenameNoExt}`;
+            const projectPaths = buildSingleOutputPaths(paths, filenameWithExt);
             await saveSubtitleArtifacts(
-                sessionOutputDir,
+                projectPaths.finalDir,
                 filenameWithExt,
                 asrSegs.map(segment => ({ start: segment.start, end: segment.end, text: segment.text })),
                 transSegs.map(segment => ({ start: segment.start, end: segment.end, text: segment.text }))
@@ -295,10 +297,9 @@ export function useVideoProject() {
         if (segments.length > 0) {
             const paths = await window.api.getPaths();
             const filenameWithExt = originalVideoPath.split(/[\\/]/).pop() || 'video.mp4';
-            const filenameNoExt = filenameWithExt.replace(/\.[^/.]+$/, '');
-            const sessionOutputDir = `${paths.outputDir}\\${filenameNoExt}`;
+            const projectPaths = buildSingleOutputPaths(paths, filenameWithExt);
             await saveSubtitleArtifacts(
-                sessionOutputDir,
+                projectPaths.finalDir,
                 filenameWithExt,
                 segments.map(segment => ({ start: segment.start, end: segment.end, text: segment.text })),
                 transSegs.map(segment => ({ start: segment.start, end: segment.end, text: segment.text }))

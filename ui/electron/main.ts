@@ -29,6 +29,8 @@ let activeBackendProcess: any = null
 
 const utf8Decoder = new TextDecoder('utf-8', { fatal: false })
 const gbkDecoder = new TextDecoder('gbk', { fatal: false })
+const CACHE_RETENTION_DAYS = 3
+const CACHE_RETENTION_MS = CACHE_RETENTION_DAYS * 24 * 60 * 60 * 1000
 
 function countReplacementChars(value: string) {
   return (value.match(/\uFFFD/g) || []).length
@@ -76,6 +78,78 @@ function normalizeKnownProcessMessage(message: string) {
 
 function getPythonProcessEnv() {
   return { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' }
+}
+
+function getProjectRoot() {
+  return app.isPackaged
+    ? path.dirname(process.resourcesPath)
+    : path.resolve(process.env.APP_ROOT, '..')
+}
+
+function getAppPaths() {
+  const projectRoot = getProjectRoot()
+  return {
+    projectRoot,
+    outputDir: path.join(projectRoot, 'output'),
+    cacheDir: path.join(projectRoot, '.cache')
+  }
+}
+
+async function cleanupExpiredCacheSessions() {
+  const { cacheDir } = getAppPaths()
+  const cleanupRoots = [
+    path.join(cacheDir, 'sessions'),
+    path.join(cacheDir, 'sources'),
+    path.join(cacheDir, 'previews')
+  ]
+
+  async function removeExpiredEntries(rootPath: string, removeDirectoriesOnly: boolean) {
+    await fs.promises.mkdir(rootPath, { recursive: true })
+    const now = Date.now()
+    const entries = await fs.promises.readdir(rootPath, { withFileTypes: true })
+
+    for (const entry of entries) {
+      if (removeDirectoriesOnly && !entry.isDirectory()) continue
+      if (!removeDirectoriesOnly && !entry.isFile()) continue
+
+      const entryPath = path.join(rootPath, entry.name)
+      try {
+        const stat = await fs.promises.stat(entryPath)
+        const lastTouched = Math.max(
+          stat.atimeMs || 0,
+          stat.mtimeMs || 0,
+          stat.birthtimeMs || 0
+        )
+
+        if (now - lastTouched > CACHE_RETENTION_MS) {
+          await fs.promises.rm(entryPath, { recursive: true, force: true })
+          console.log(`[CacheCleanup] Removed expired cache entry: ${entryPath}`)
+        }
+      } catch (error) {
+        console.error(`[CacheCleanup] Failed to inspect cache entry: ${entryPath}`, error)
+      }
+    }
+  }
+
+  try {
+    const sessionsRoot = cleanupRoots[0]
+    const sessionTypeDirs = await fs.promises.readdir(sessionsRoot, { withFileTypes: true }).catch(async () => {
+      await fs.promises.mkdir(sessionsRoot, { recursive: true })
+      return []
+    })
+
+    for (const typeDir of sessionTypeDirs) {
+      if (!typeDir.isDirectory()) continue
+
+      const typeDirPath = path.join(sessionsRoot, typeDir.name)
+      await removeExpiredEntries(typeDirPath, true)
+    }
+
+    await removeExpiredEntries(cleanupRoots[1], false)
+    await removeExpiredEntries(cleanupRoots[2], false)
+  } catch (error) {
+    console.error('[CacheCleanup] Startup cleanup failed:', error)
+  }
 }
 
 function isBenignTaskkillMessage(message: string) {
@@ -238,6 +312,7 @@ app.whenReady().then(async () => {
 
   // Check and install VC++ Runtime before creating window
   await checkAndInstallVCRuntime();
+  await cleanupExpiredCacheSessions();
 
   console.log("Creating window...");
   createWindow()
@@ -291,11 +366,7 @@ app.whenReady().then(async () => {
 
   // IPC Handler to get paths
   ipcMain.handle('get-paths', async () => {
-    const projectRoot = app.isPackaged
-      ? path.dirname(process.resourcesPath)
-      : path.resolve(process.env.APP_ROOT, '..');
-    const outputDir = path.join(projectRoot, 'output');
-    return { projectRoot, outputDir };
+    return getAppPaths();
   })
 
   // IPC Handler for Python Backend
@@ -303,9 +374,7 @@ app.whenReady().then(async () => {
     return new Promise((resolve, reject) => {
       console.log('Running backend with args:', args)
 
-      const projectRoot = app.isPackaged
-        ? path.dirname(process.resourcesPath)
-        : path.resolve(process.env.APP_ROOT, '..');
+      const { projectRoot } = getAppPaths()
 
       // Uniform logic for Dev and Prod since structures are now identical
       const pythonExe = path.join(projectRoot, 'python', 'python.exe');
@@ -455,17 +524,12 @@ app.whenReady().then(async () => {
   ipcMain.handle('cache-video', async (_event, filePath: string) => {
     try {
       // Determine .cache folder path
-      let projectRoot;
-      if (app.isPackaged) {
-        projectRoot = path.dirname(process.resourcesPath);
-      } else {
-        projectRoot = path.resolve(process.env.APP_ROOT, '..');
-      }
-      const cacheDir = path.join(projectRoot, '.cache');
+      const { cacheDir } = getAppPaths()
+      const sourceCacheDir = path.join(cacheDir, 'sources')
 
       // Ensure .cache exists
-      if (!fs.existsSync(cacheDir)) {
-        fs.mkdirSync(cacheDir, { recursive: true });
+      if (!fs.existsSync(sourceCacheDir)) {
+        fs.mkdirSync(sourceCacheDir, { recursive: true });
       }
 
       // 1. If input file is already in .cache, assume it's cached and return as is.
@@ -484,7 +548,7 @@ app.whenReady().then(async () => {
       const basename = path.basename(filePath);
       // Limit filename length just in case
       const safeBasename = `${hash.substring(0, 12)}_${basename}`;
-      const destPath = path.join(cacheDir, safeBasename);
+      const destPath = path.join(sourceCacheDir, safeBasename);
 
       // 3. Check if we already have it
       if (fs.existsSync(destPath)) {

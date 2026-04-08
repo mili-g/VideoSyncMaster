@@ -131,9 +131,10 @@ const QwenTTSConfig: React.FC<QwenTTSConfigProps> = ({ themeMode, isActive, onAc
         try {
             const paths = await window.api.getPaths();
             // Distinct output paths for each mode
-            const outputPath = `${paths.projectRoot}\\.cache\\preview_qwen_${mode}.wav`;
+            const previewDir = `${paths.cacheDir}\\previews`;
+            const outputPath = `${previewDir}\\preview_qwen_${mode}.wav`;
 
-            await window.api.ensureDir(`${paths.projectRoot}\\.cache`);
+            await window.api.ensureDir(previewDir);
 
             const args = [
                 '--action', 'test_tts',

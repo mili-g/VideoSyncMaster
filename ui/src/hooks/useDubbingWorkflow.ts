@@ -1,6 +1,7 @@
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
 import type { AudioMixMode, Segment } from './useVideoProject';
 import { cleanupOutputArtifacts, saveSubtitleArtifacts } from '../utils/outputArtifacts';
+import { buildSingleOutputPaths } from '../utils/projectPaths';
 
 type FeedbackType = 'success' | 'error';
 
@@ -72,16 +73,15 @@ export function useDubbingWorkflow({
 
         try {
             const paths = await window.api.getPaths();
-            const projectRoot = paths.projectRoot;
             const filenameWithExt = originalVideoPath.split(/[\\/]/).pop() || 'video.mp4';
-            const filenameNoExt = filenameWithExt.replace(/\.[^/.]+$/, '');
-            const cacheDir = `${projectRoot}\\.cache\\${filenameNoExt}`;
-            const outputPath = `${cacheDir}\\segment_${index}.wav`;
-            await window.api.ensureDir(cacheDir);
+            const projectPaths = buildSingleOutputPaths(paths, filenameWithExt);
+            const outputPath = `${projectPaths.sessionAudioDir}\\segment_${index}.wav`;
+            await window.api.ensureDir(projectPaths.sessionAudioDir);
+            await window.api.ensureDir(projectPaths.sessionTempDir);
 
             const fallbackRefAudio = await prepareFallbackReferenceAudio(
                 originalVideoPath,
-                cacheDir,
+                projectPaths.sessionTempDir,
                 sourceSegments.length > 0 ? sourceSegments : translatedSegments
             );
 
@@ -151,13 +151,12 @@ export function useDubbingWorkflow({
 
         try {
             const paths = await window.api.getPaths();
-            const projectRoot = paths.projectRoot;
             const filenameWithExt = originalVideoPath.split(/[\\/]/).pop() || 'video.mp4';
-            const filenameNoExt = filenameWithExt.replace(/\.[^/.]+$/, '');
-            const cacheDir = `${projectRoot}\\.cache\\${filenameNoExt}`;
-            const tempJsonPath = `${cacheDir}\\segments.json`;
+            const projectPaths = buildSingleOutputPaths(paths, filenameWithExt);
+            const tempJsonPath = `${projectPaths.sessionTempDir}\\segments.json`;
 
-            await window.api.ensureDir(cacheDir);
+            await window.api.ensureDir(projectPaths.sessionAudioDir);
+            await window.api.ensureDir(projectPaths.sessionTempDir);
             await window.api.saveFile(tempJsonPath, JSON.stringify(
                 segmentsToUse.map((segment, index) => ({
                     ...segment,
@@ -176,7 +175,7 @@ export function useDubbingWorkflow({
                 '--action', 'generate_batch_tts',
                 '--tts_service', ttsService,
                 '--input', originalVideoPath,
-                '--output', cacheDir,
+                '--output', projectPaths.sessionAudioDir,
                 '--ref', tempJsonPath,
                 '--batch_size', effectiveBatchSize.toString(),
                 '--max_new_tokens', maxNewTokens.toString(),
@@ -259,22 +258,21 @@ export function useDubbingWorkflow({
 
         try {
             const paths = await window.api.getPaths();
-            const projectRoot = paths.projectRoot;
             const filenameWithExt = originalVideoPath.split(/[\\/]/).pop() || 'video.mp4';
-            const filenameNoExt = filenameWithExt.replace(/\.[^/.]+$/, '');
-            const cacheDir = `${projectRoot}\\.cache\\${filenameNoExt}`;
-            await window.api.ensureDir(cacheDir);
+            const projectPaths = buildSingleOutputPaths(paths, filenameWithExt);
+            await window.api.ensureDir(projectPaths.sessionAudioDir);
+            await window.api.ensureDir(projectPaths.sessionTempDir);
 
             const fallbackRefAudio = await prepareFallbackReferenceAudio(
                 originalVideoPath,
-                cacheDir,
+                projectPaths.sessionTempDir,
                 sourceSegments.length > 0 ? sourceSegments : translatedSegments
             );
 
             for (const { segment, index } of errorSegments) {
                 if (abortRef.current) return;
 
-                const outputPath = `${cacheDir}\\segment_retry_${index}.wav`;
+                const outputPath = `${projectPaths.sessionAudioDir}\\segment_retry_${index}.wav`;
                 const result = await window.api.runBackend(
                     buildSingleTtsArgs(originalVideoPath, outputPath, segment, {
                         targetLang,
@@ -330,13 +328,9 @@ export function useDubbingWorkflow({
 
         try {
             const paths = await window.api.getPaths();
-            const outputRoot = paths.outputDir;
             const filenameWithExt = originalVideoPath.split(/[\\/]/).pop() || 'video.mp4';
-            const filenameNoExt = filenameWithExt.replace(/\.[^/.]+$/, '');
-            const sessionOutputDir = `${outputRoot}\\${filenameNoExt}`;
-            const outputVideoPath = `${sessionOutputDir}\\merged.mp4`;
-            const cacheDir = `${paths.projectRoot}\\.cache\\${filenameNoExt}`;
-
+            const projectPaths = buildSingleOutputPaths(paths, filenameWithExt);
+            const outputVideoPath = projectPaths.finalVideoPath;
             const segmentsForBackend = segmentsToUse
                 .map(segment => ({ ...segment, path: segment.audioPath }))
                 .filter(segment => segment.path);
@@ -351,8 +345,9 @@ export function useDubbingWorkflow({
                 return;
             }
 
-            tempJsonPath = `${sessionOutputDir}\\segments.json`;
-            await window.api.ensureDir(sessionOutputDir);
+            tempJsonPath = `${projectPaths.sessionTempDir}\\merge_segments.json`;
+            await window.api.ensureDir(projectPaths.finalDir);
+            await window.api.ensureDir(projectPaths.sessionTempDir);
             await window.api.saveFile(tempJsonPath, JSON.stringify(segmentsForBackend));
 
             const result = await window.api.runBackend([
@@ -368,13 +363,12 @@ export function useDubbingWorkflow({
 
             if (result && result.success) {
                 await saveSubtitleArtifacts(
-                    sessionOutputDir,
+                    projectPaths.finalDir,
                     filenameWithExt,
                     sourceSegments.map(segment => ({ start: segment.start, end: segment.end, text: segment.text })),
                     segmentsToUse.map(segment => ({ start: segment.start, end: segment.end, text: segment.text }))
                 );
-                await cleanupOutputArtifacts(sessionOutputDir, [tempJsonPath]);
-                await window.api.deletePath(cacheDir);
+                await cleanupOutputArtifacts(projectPaths.finalDir, [tempJsonPath]);
                 tempJsonPath = null;
                 setMergedVideoPath(result.output);
                 setStatus('视频合并完成');
@@ -467,7 +461,7 @@ function buildSingleTtsArgs(
     return args;
 }
 
-function collectNearbySuccessfulAudioPaths(segments: Segment[], index: number, maxRefs = 4) {
+function collectNearbySuccessfulAudioPaths(segments: Segment[], index: number, maxRefs = 2) {
     const candidates = segments
         .map((segment, candidateIndex) => ({
             distance: Math.abs(candidateIndex - index),

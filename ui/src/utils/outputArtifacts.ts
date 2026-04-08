@@ -8,12 +8,9 @@ export function buildOutputArtifacts(outputDir: string, fileName: string) {
     const baseName = sanitizeBaseName(fileName);
     return {
         baseName,
-        originalSubtitlePath: `${outputDir}\\${baseName}.en.srt`,
+        originalSubtitlePath: `${outputDir}\\${baseName}.original.srt`,
         translatedSubtitlePath: `${outputDir}\\${baseName}.zh-CN.srt`,
-        mergedVideoPath: `${outputDir}\\merged.mp4`,
-        mergeJsonPath: `${outputDir}\\segments.json`,
-        sourceCacheDir: `${outputDir}\\.cache`,
-        mergedSegmentsDir: `${outputDir}\\merged_segments`
+        mergedVideoPath: `${outputDir}\\${fileName}`
     };
 }
 
@@ -31,14 +28,11 @@ export async function saveSubtitleArtifacts(
 }
 
 export async function cleanupOutputArtifacts(
-    outputDir: string,
+    _outputDir: string,
     extraPaths: string[] = []
 ) {
-    const paths = [
-        `${outputDir}\\.cache`,
-        `${outputDir}\\merged_segments`,
-        ...extraPaths
-    ];
-
-    await Promise.all(paths.map((targetPath) => window.api.deletePath(targetPath)));
+    if (extraPaths.length === 0) {
+        return;
+    }
+    await Promise.all(extraPaths.map((targetPath) => window.api.deletePath(targetPath)));
 }

@@ -481,11 +481,14 @@ def dub_video(input_path, target_lang, output_path, asr_service="whisperx", vad_
     print("Step 1/4: Running ASR...", flush=True)
     
     output_dir_root = os.path.dirname(output_path)
+    work_dir_root = kwargs.get("work_dir") or output_dir_root
+    os.makedirs(output_dir_root, exist_ok=True)
+    os.makedirs(work_dir_root, exist_ok=True)
     basename = os.path.splitext(os.path.basename(output_path))[0]
-    segments_dir = os.path.join(output_dir_root, f"{basename}_segments") 
+    segments_dir = os.path.join(work_dir_root, f"{basename}_segments") 
     
     
-    cache_dir = os.path.join(output_dir_root, ".cache")
+    cache_dir = os.path.join(work_dir_root, ".cache")
     if not os.path.exists(cache_dir):
         os.makedirs(cache_dir)
         
@@ -501,9 +504,8 @@ def dub_video(input_path, target_lang, output_path, asr_service="whisperx", vad_
         return {"success": False, "error": "ASR failed or no speech detected."}
     
     
-    output_dir = os.path.dirname(output_path)
     basename = os.path.splitext(os.path.basename(output_path))[0]
-    segments_dir = os.path.join(output_dir, f"{basename}_segments")
+    segments_dir = os.path.join(work_dir_root, f"{basename}_segments")
     
     print(f"DEBUG: Output Path: {output_path}")
     print(f"DEBUG: Segments Dir: {segments_dir}")

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { buildBatchMatchKey, classifyBatchAsset, type BatchInputAsset } from '../utils/batchAssets';
 import { parseSRTContent, type SrtSegment } from '../utils/srt';
 import { cleanupOutputArtifacts, saveSubtitleArtifacts } from '../utils/outputArtifacts';
+import { buildBatchOutputPaths } from '../utils/projectPaths';
 
 const BATCH_QUEUE_ITEMS_STORAGE_KEY = 'batchQueue.items.v1';
 const BATCH_QUEUE_META_STORAGE_KEY = 'batchQueue.meta.v1';
@@ -470,23 +471,23 @@ async function processQueueItem(
 ) {
     onStageChange('准备输出目录');
     const paths = await window.api.getPaths();
-    const baseName = item.fileName.replace(/\.[^/.]+$/, '');
-    const sessionDir = `${paths.outputDir}\\batch_${baseName}_${item.id.slice(-4)}`;
-    const outputPath = `${sessionDir}\\merged.mp4`;
-    const workDir = `${sessionDir}\\_temp`;
-    await window.api.ensureDir(sessionDir);
+    const projectPaths = buildBatchOutputPaths(paths, item.fileName, item.id);
+    const outputPath = projectPaths.finalVideoPath;
+    const workDir = projectPaths.sessionTempDir;
+    await window.api.ensureDir(projectPaths.finalDir);
+    await window.api.ensureDir(projectPaths.sessionAudioDir);
     await window.api.ensureDir(workDir);
 
     try {
         if (!item.originalSubtitleContent && !item.translatedSubtitleContent) {
             onStageChange('执行完整流程');
-            const result = await window.api.runBackend(buildDubVideoArgs(item.sourcePath, outputPath, options));
+            const result = await window.api.runBackend(buildDubVideoArgs(item.sourcePath, outputPath, workDir, options));
             if (!result || !result.success) {
                 throw new Error(result?.error || '批量处理失败');
             }
             if (Array.isArray(result.segments)) {
                 await saveSubtitleArtifacts(
-                    sessionDir,
+                    projectPaths.finalDir,
                     item.fileName,
                     result.segments.map((segment: any) => ({
                         start: Number(segment.start) || 0,
@@ -500,7 +501,6 @@ async function processQueueItem(
                     }))
                 );
             }
-            await cleanupOutputArtifacts(sessionDir);
             return result.output || outputPath;
         }
 
@@ -510,7 +510,7 @@ async function processQueueItem(
         }
 
         onStageChange('保存字幕基线');
-        await saveSubtitleArtifacts(sessionDir, item.fileName, sourceSegments, sourceSegments);
+        await saveSubtitleArtifacts(projectPaths.finalDir, item.fileName, sourceSegments, sourceSegments);
 
         let translatedSegments: SrtSegment[];
         if (item.translatedSubtitleContent) {
@@ -525,7 +525,7 @@ async function processQueueItem(
             throw new Error('翻译字幕为空，无法生成配音');
         }
 
-        await saveSubtitleArtifacts(sessionDir, item.fileName, sourceSegments, translatedSegments);
+        await saveSubtitleArtifacts(projectPaths.finalDir, item.fileName, sourceSegments, translatedSegments);
 
         onStageChange('生成配音');
         const tempJsonPath = `${workDir}\\segments.json`;
@@ -537,7 +537,9 @@ async function processQueueItem(
             null,
             2
         ));
-        const ttsResult = await window.api.runBackend(buildBatchTtsArgs(item.sourcePath, workDir, tempJsonPath, options));
+        const ttsResult = await window.api.runBackend(
+            buildBatchTtsArgs(item.sourcePath, projectPaths.sessionAudioDir, tempJsonPath, options)
+        );
         if (!ttsResult || !ttsResult.success) {
             throw new Error(ttsResult?.error || '批量配音失败');
         }
@@ -558,7 +560,7 @@ async function processQueueItem(
             onStageChange(`重试失败片段 (${failedIndexes.length})`);
             await retryFailedBatchSegments({
                 sourcePath: item.sourcePath,
-                sessionDir: workDir,
+                sessionDir: projectPaths.sessionTempDir,
                 sourceSegments,
                 translatedSegments: mergedSegments,
                 failedIndexes,
@@ -588,10 +590,10 @@ async function processQueueItem(
             throw new Error(mergeResult?.error || '合成视频失败');
         }
 
-        await cleanupOutputArtifacts(sessionDir, [tempJsonPath, mergeJsonPath]);
+        await cleanupOutputArtifacts(projectPaths.finalDir, [tempJsonPath, mergeJsonPath]);
         return mergeResult.output || outputPath;
     } finally {
-        await window.api.deletePath(workDir);
+        await cleanupOutputArtifacts(projectPaths.finalDir, [projectPaths.sessionCacheDir]);
     }
 }
 
@@ -700,11 +702,12 @@ async function translateSegments(segments: SrtSegment[], options: BatchQueueOpti
     return result.segments as SrtSegment[];
 }
 
-function buildDubVideoArgs(sourcePath: string, outputPath: string, options: BatchQueueOptions) {
+function buildDubVideoArgs(sourcePath: string, outputPath: string, workDir: string, options: BatchQueueOptions) {
     const args = [
         '--action', 'dub_video',
         '--input', sourcePath,
         '--output', outputPath,
+        '--work_dir', workDir,
         '--lang', options.targetLang,
         '--asr', options.asrService,
         '--tts_service', options.ttsService,
@@ -795,7 +798,7 @@ function buildSingleTtsArgs(
 function collectNearbySuccessfulAudioPaths(
     segments: Array<SrtSegment & { path?: string }>,
     index: number,
-    maxRefs = 4
+    maxRefs = 2
 ) {
     const refs: Array<{ audio_path: string; ref_text?: string }> = [];
     const seen = new Set<string>();
