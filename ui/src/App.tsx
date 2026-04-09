@@ -71,6 +71,7 @@ function App() {
     acknowledgeResume: acknowledgeBatchQueueResume,
     retryFailed: retryFailedBatchQueue,
     openOutput: openBatchQueueOutput,
+    generateMissingSubtitles: generateBatchQueueSubtitles,
     startQueue: startBatchQueue,
     stopQueue: stopBatchQueue
   } = useBatchQueue();
@@ -950,10 +951,16 @@ function App() {
               items={batchQueueItems}
               summary={batchQueueSummary}
               isRunning={isBatchQueueRunning}
+              canGenerateSubtitles={!loading && !dubbingLoading && generatingSegmentId === null && !isBatchQueueRunning && batchQueueItems.some(item => item.status !== 'success' && !item.originalSubtitleContent)}
               onAddAssets={addBatchQueueAssets}
               onRemoveItem={removeBatchQueueItem}
               onClearCompleted={clearCompletedBatchQueue}
               onClearAll={clearAllBatchQueue}
+              onGenerateSubtitles={() => generateBatchQueueSubtitles({
+                asrService,
+                asrOriLang,
+                setStatus
+              })}
               onRetryFailed={retryFailedBatchQueue}
               onOpenOutput={openBatchQueueOutput}
               onStart={() => startBatchQueue({

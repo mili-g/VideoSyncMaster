@@ -21,10 +21,12 @@ interface BatchQueuePanelProps {
     summary: BatchQueueSummary;
     isRunning: boolean;
     canStart: boolean;
+    canGenerateSubtitles: boolean;
     onAddAssets: (assets: BatchInputAsset[]) => void | Promise<void>;
     onRemoveItem: (id: string) => void;
     onClearCompleted: () => void;
     onClearAll: () => void;
+    onGenerateSubtitles: () => void;
     onRetryFailed: () => void;
     onOpenOutput: (item: BatchQueueItem) => void;
     onStart: () => void;
@@ -60,10 +62,12 @@ export default function BatchQueuePanel({
     summary,
     isRunning,
     canStart,
+    canGenerateSubtitles,
     onAddAssets,
     onRemoveItem,
     onClearCompleted,
     onClearAll,
+    onGenerateSubtitles,
     onRetryFailed,
     onOpenOutput,
     onStart,
@@ -106,6 +110,9 @@ export default function BatchQueuePanel({
                         />
                         <button onClick={() => inputRef.current?.click()} style={buttonStyle('#4f46e5')}>
                             添加资源
+                        </button>
+                        <button onClick={onGenerateSubtitles} disabled={!canGenerateSubtitles} style={buttonStyle('rgba(14,165,233,0.28)', !canGenerateSubtitles)}>
+                            批量识别字幕
                         </button>
                         <button onClick={onRetryFailed} style={buttonStyle('rgba(59,130,246,0.28)')}>
                             重试失败项
@@ -179,7 +186,13 @@ export default function BatchQueuePanel({
                             }}
                         >
                             <Cell title="视频文件" primary={item.fileName} secondary={item.sourcePath} />
-                            <Cell title="原字幕" primary={displayName(item.originalSubtitlePath)} secondary={item.originalSubtitlePath} emptyText="自动 ASR" />
+                            <Cell
+                                title="原字幕"
+                                primary={displayName(item.originalSubtitlePath)}
+                                secondary={item.originalSubtitlePath}
+                                emptyText="自动 ASR"
+                                badge={getSourceSubtitleBadge(item)}
+                            />
                             <Cell title="翻译字幕" primary={displayName(item.translatedSubtitlePath)} secondary={item.translatedSubtitlePath} emptyText="自动翻译" />
                             <div>
                                 <span style={{
@@ -239,10 +252,39 @@ function SummaryCard({ label, value, color }: { label: string; value: number | s
     );
 }
 
-function Cell({ title, primary, secondary, emptyText }: { title: string; primary?: string; secondary?: string; emptyText?: string }) {
+function Cell({
+    title,
+    primary,
+    secondary,
+    emptyText,
+    badge
+}: {
+    title: string;
+    primary?: string;
+    secondary?: string;
+    emptyText?: string;
+    badge?: { label: string; color: string; background: string };
+}) {
     return (
         <div style={{ minWidth: 0 }}>
-            <div style={{ color: 'rgba(255,255,255,0.5)', fontSize: '0.78em', marginBottom: '4px' }}>{title}</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px', minWidth: 0 }}>
+                <div style={{ color: 'rgba(255,255,255,0.5)', fontSize: '0.78em' }}>{title}</div>
+                {badge && (
+                    <span style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        padding: '2px 8px',
+                        borderRadius: '999px',
+                        fontSize: '0.72em',
+                        fontWeight: 700,
+                        color: badge.color,
+                        background: badge.background,
+                        whiteSpace: 'nowrap'
+                    }}>
+                        {badge.label}
+                    </span>
+                )}
+            </div>
             <div style={{ color: '#fff', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {primary || emptyText || '未设置'}
             </div>
@@ -253,6 +295,26 @@ function Cell({ title, primary, secondary, emptyText }: { title: string; primary
             )}
         </div>
     );
+}
+
+function getSourceSubtitleBadge(item: BatchQueueItem) {
+    if (item.originalSubtitlePath || item.originalSubtitleContent) {
+        return {
+            label: '字幕已生成',
+            color: '#86efac',
+            background: 'rgba(34,197,94,0.16)'
+        };
+    }
+
+    if (item.status === 'processing' && item.stage === 'Generating source subtitles') {
+        return {
+            label: '识别中',
+            color: '#93c5fd',
+            background: 'rgba(59,130,246,0.16)'
+        };
+    }
+
+    return undefined;
 }
 
 function displayName(filePath?: string) {

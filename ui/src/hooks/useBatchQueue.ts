@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { buildBatchMatchKey, classifyBatchAsset, type BatchInputAsset } from '../utils/batchAssets';
-import { parseSRTContent, type SrtSegment } from '../utils/srt';
+import { parseSRTContent, segmentsToSRT, type SrtSegment } from '../utils/srt';
 import { cleanupOutputArtifacts, saveSubtitleArtifacts } from '../utils/outputArtifacts';
 import { buildBatchOutputPaths } from '../utils/projectPaths';
 
@@ -37,6 +37,12 @@ interface BatchQueueOptions {
     batchSize: number;
     cloneBatchSize: number;
     maxNewTokens: number;
+    setStatus: (value: string) => void;
+}
+
+interface BatchSubtitleGenerationOptions {
+    asrService: string;
+    asrOriLang: string;
     setStatus: (value: string) => void;
 }
 
@@ -446,6 +452,79 @@ export function useBatchQueue() {
         }
     };
 
+    const generateMissingSubtitles = async (options: BatchSubtitleGenerationOptions) => {
+        if (runLockRef.current || isRunning) return;
+
+        const queue = itemsRef.current.filter(item => item.status !== 'success' && !item.originalSubtitleContent);
+        if (queue.length === 0) {
+            options.setStatus('All batch items already have source subtitles.');
+            return;
+        }
+
+        runLockRef.current = true;
+        const startedAt = Date.now();
+        let successCount = 0;
+        let failedCount = 0;
+        options.setStatus(`Starting subtitle recognition for ${queue.length} item(s).`);
+
+        try {
+            for (const item of queue) {
+                if (stopRequestedRef.current) {
+                    break;
+                }
+
+                const itemStartedAt = Date.now();
+                setActiveItemId(item.id);
+                updateItem(item.id, current => ({
+                    ...current,
+                    status: 'processing',
+                    stage: 'Generating source subtitles',
+                    error: undefined,
+                    startedAt: itemStartedAt,
+                    finishedAt: undefined,
+                    elapsedMs: undefined
+                }));
+                options.setStatus(`Recognizing subtitles: ${item.fileName}`);
+
+                try {
+                    const { subtitlePath, subtitleContent } = await generateSubtitleForItem(item, options);
+                    successCount += 1;
+
+                    updateItem(item.id, current => ({
+                        ...current,
+                        status: 'pending',
+                        stage: 'Source subtitles ready for batch processing',
+                        originalSubtitlePath: subtitlePath,
+                        originalSubtitleContent: subtitleContent,
+                        error: undefined,
+                        finishedAt: Date.now(),
+                        elapsedMs: current.startedAt ? Math.max(0, Date.now() - current.startedAt) : current.elapsedMs
+                    }));
+                } catch (error: any) {
+                    failedCount += 1;
+                    updateItem(item.id, current => ({
+                        ...current,
+                        status: 'pending',
+                        stage: 'Subtitle recognition failed; full batch flow can still run',
+                        error: error?.message || String(error),
+                        finishedAt: Date.now(),
+                        elapsedMs: current.startedAt ? Math.max(0, Date.now() - current.startedAt) : current.elapsedMs
+                    }));
+                }
+            }
+        } finally {
+            const elapsed = Math.max(0, Date.now() - startedAt);
+            setActiveItemId(null);
+            activeItemIdRef.current = null;
+            setNow(Date.now());
+            runLockRef.current = false;
+            stopRequestedRef.current = false;
+            options.setStatus(
+                `Subtitle recognition finished in ${Math.floor(elapsed / 1000)}s. Success: ${successCount}, Failed: ${failedCount}, Skipped: ${Math.max(0, queue.length - successCount - failedCount)}.`
+            );
+        }
+    };
+
     return {
         items,
         summary,
@@ -459,8 +538,45 @@ export function useBatchQueue() {
         acknowledgeResume: () => setShouldResume(false),
         retryFailed,
         openOutput,
+        generateMissingSubtitles,
         startQueue,
         stopQueue
+    };
+}
+
+async function generateSubtitleForItem(
+    item: BatchQueueItem,
+    options: BatchSubtitleGenerationOptions
+) {
+    const paths = await window.api.getPaths();
+    const projectPaths = buildBatchOutputPaths(paths, item.fileName, item.id);
+    await window.api.ensureDir(projectPaths.finalDir);
+    await window.api.ensureDir(projectPaths.sessionTempDir);
+
+    const args = [
+        '--action', 'test_asr',
+        '--input', item.sourcePath,
+        '--asr', options.asrService,
+        '--output_dir', projectPaths.sessionTempDir,
+        '--vad_onset', localStorage.getItem('whisper_vad_onset') || '0.700',
+        '--vad_offset', localStorage.getItem('whisper_vad_offset') || '0.700',
+        '--json'
+    ];
+
+    if (options.asrOriLang) {
+        args.push('--ori_lang', options.asrOriLang);
+    }
+
+    const result = await window.api.runBackend(args);
+    if (!Array.isArray(result) || result.length === 0) {
+        throw new Error('ASR did not return any subtitle segments.');
+    }
+
+    const subtitleContent = segmentsToSRT(result);
+    await window.api.saveFile(projectPaths.originalSubtitlePath, subtitleContent);
+    return {
+        subtitlePath: projectPaths.originalSubtitlePath,
+        subtitleContent
     };
 }
 
