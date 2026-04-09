@@ -340,8 +340,8 @@ export function useBatchQueue() {
             if (item.status === 'processing' || item.status === 'pending') {
                 return {
                     ...item,
-                    status: 'canceled' as const,
-                    stage: '已停止',
+                    status: 'pending' as const,
+                    stage: '队列已停止，可继续处理',
                     finishedAt: item.finishedAt ?? stoppedAt,
                     elapsedMs: item.startedAt ? Math.max(0, stoppedAt - item.startedAt) : item.elapsedMs
                 };
@@ -359,7 +359,7 @@ export function useBatchQueue() {
             setQueueFinishedElapsedMs(Math.max(0, stoppedAt - queueStartedAt));
         }
         setNow(stoppedAt);
-        setStatus('批量任务正在停止...');
+        setStatus('正在停止批量任务...');
 
         try {
             await window.api.killBackend();
@@ -367,7 +367,7 @@ export function useBatchQueue() {
             console.error('Failed to stop queue backend process:', error);
         }
 
-        setStatus('批量任务已停止');
+        setStatus('批量任务已停止，可再次启动继续处理。');
     };
 
     const startQueue = async (options: BatchQueueOptions) => {
@@ -389,7 +389,7 @@ export function useBatchQueue() {
         try {
             for (const item of queue) {
                 if (stopRequestedRef.current) {
-                    updateItem(item.id, current => ({ ...current, status: 'canceled', stage: '已取消' }));
+                    updateItem(item.id, current => ({ ...current, status: 'pending', stage: '队列已停止，可继续处理' }));
                     continue;
                 }
 
@@ -410,7 +410,7 @@ export function useBatchQueue() {
                     });
 
                     if (stopRequestedRef.current) {
-                        updateItem(item.id, current => ({ ...current, status: 'canceled', stage: '已取消' }));
+                        updateItem(item.id, current => ({ ...current, status: 'pending', stage: '队列已停止，可继续处理' }));
                     } else {
                         updateItem(item.id, current => ({
                             ...current,
@@ -424,7 +424,7 @@ export function useBatchQueue() {
                     }
                 } catch (error: any) {
                     if (stopRequestedRef.current) {
-                        updateItem(item.id, current => ({ ...current, status: 'canceled', stage: '已取消' }));
+                        updateItem(item.id, current => ({ ...current, status: 'pending', stage: '队列已停止，可继续处理' }));
                     } else {
                         updateItem(item.id, current => ({
                             ...current,
@@ -455,9 +455,11 @@ export function useBatchQueue() {
     const generateMissingSubtitles = async (options: BatchSubtitleGenerationOptions) => {
         if (runLockRef.current || isRunning) return;
 
-        const queue = itemsRef.current.filter(item => item.status !== 'success' && !item.originalSubtitleContent);
+        const eligibleItems = itemsRef.current.filter(item => item.status !== 'success');
+        const missingSubtitleItems = eligibleItems.filter(item => !item.originalSubtitleContent);
+        const queue = missingSubtitleItems.length > 0 ? missingSubtitleItems : eligibleItems;
         if (queue.length === 0) {
-            options.setStatus('All batch items already have source subtitles.');
+            options.setStatus('No batch items are available for subtitle recognition.');
             return;
         }
 
@@ -465,7 +467,12 @@ export function useBatchQueue() {
         const startedAt = Date.now();
         let successCount = 0;
         let failedCount = 0;
-        options.setStatus(`Starting subtitle recognition for ${queue.length} item(s).`);
+        const isRerun = missingSubtitleItems.length === 0;
+        options.setStatus(
+            isRerun
+                ? `Re-running subtitle recognition for ${queue.length} item(s).`
+                : `Starting subtitle recognition for ${queue.length} item(s).`
+        );
 
         try {
             for (const item of queue) {
@@ -484,7 +491,11 @@ export function useBatchQueue() {
                     finishedAt: undefined,
                     elapsedMs: undefined
                 }));
-                options.setStatus(`Recognizing subtitles: ${item.fileName}`);
+                options.setStatus(
+                    isRerun
+                        ? `Re-recognizing subtitles: ${item.fileName}`
+                        : `Recognizing subtitles: ${item.fileName}`
+                );
 
                 try {
                     const { subtitlePath, subtitleContent } = await generateSubtitleForItem(item, options);
@@ -493,7 +504,7 @@ export function useBatchQueue() {
                     updateItem(item.id, current => ({
                         ...current,
                         status: 'pending',
-                        stage: 'Source subtitles ready for batch processing',
+                        stage: isRerun ? 'Source subtitles refreshed for batch processing' : 'Source subtitles ready for batch processing',
                         originalSubtitlePath: subtitlePath,
                         originalSubtitleContent: subtitleContent,
                         error: undefined,
@@ -520,7 +531,7 @@ export function useBatchQueue() {
             runLockRef.current = false;
             stopRequestedRef.current = false;
             options.setStatus(
-                `Subtitle recognition finished in ${Math.floor(elapsed / 1000)}s. Success: ${successCount}, Failed: ${failedCount}, Skipped: ${Math.max(0, queue.length - successCount - failedCount)}.`
+                `${isRerun ? 'Subtitle re-recognition' : 'Subtitle recognition'} finished in ${Math.floor(elapsed / 1000)}s. Success: ${successCount}, Failed: ${failedCount}, Skipped: ${Math.max(0, queue.length - successCount - failedCount)}.`
             );
         }
     };

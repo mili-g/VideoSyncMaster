@@ -951,7 +951,7 @@ function App() {
               items={batchQueueItems}
               summary={batchQueueSummary}
               isRunning={isBatchQueueRunning}
-              canGenerateSubtitles={!loading && !dubbingLoading && generatingSegmentId === null && !isBatchQueueRunning && batchQueueItems.some(item => item.status !== 'success' && !item.originalSubtitleContent)}
+              canGenerateSubtitles={!loading && !dubbingLoading && generatingSegmentId === null && !isBatchQueueRunning && batchQueueItems.some(item => item.status !== 'success')}
               onAddAssets={addBatchQueueAssets}
               onRemoveItem={removeBatchQueueItem}
               onClearCompleted={clearCompletedBatchQueue}
