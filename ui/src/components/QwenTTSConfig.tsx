@@ -172,7 +172,7 @@ const QwenTTSConfig: React.FC<QwenTTSConfigProps> = ({ themeMode, isActive, onAc
                     setHasDesignRef(true);
                 }
             } else {
-                setFeedback({ title: '合成失败', message: result?.error || 'Unknown', type: 'error' });
+                setFeedback({ title: '合成失败', message: result?.error || '未知错误', type: 'error' });
             }
 
         } catch (e: any) {

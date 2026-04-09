@@ -1,626 +1,734 @@
 # VideoSyncMaster 项目分析 V2
 
-## 1. 文档目标
+## 1. 文档目标与分析方法
 
-本文档基于当前仓库的实际实现，对 `VideoSyncMaster` 的系统结构、核心工作流、模块边界、主要风险、文本编码状况和后续工程化方向进行重新梳理。
+本文档基于当前仓库真实代码实现重写，不沿用旧版抽象描述，重点回答以下问题：
 
-本次 V2 分析重点覆盖以下问题：
+1. 当前项目到底是怎样运作的，主链路如何穿透 UI、Electron、Python 后端与本地环境。
+2. Qwen ASR、Qwen TTS、WhisperX、Index-TTS 之间的依赖版本冲突在代码里是如何被“规避”的，这套方式为什么脆弱。
+3. 单文件流程、批量流程、预识别字幕流程分别由哪些函数真正驱动，哪里是关键耦合点。
+4. 当前架构是否具备商业级稳定性，距离稳定商用工程还缺哪些基础契约。
+5. 后续优化应该先做什么，为什么这样排序。
 
-1. 当前项目是否具备稳定的桌面端产品化结构。
-2. 单文件流程与批量流程分别由哪些模块负责，边界是否清晰。
-3. 模型调用、参数组织、日志输出和数据消费是否合理。
-4. 当前实现中最影响稳定性、可维护性和可扩展性的风险点是什么。
-5. 文本乱码和编码问题是否真实存在，影响范围在哪里。
-6. 后续若要向稳定的商业级工程推进，优先应该做哪些治理工作。
-
-## 2. 项目定位
-
-`VideoSyncMaster` 是一个本地运行的桌面端 AI 视频本地化工具。当前产品能力覆盖以下链路：
-
-1. 导入视频、音频和字幕资源。
-2. 执行语音识别，支持 `WhisperX`、`Qwen3-ASR`、`剪映`、`Bcut`。
-3. 导入、编辑、保存原字幕与目标字幕。
-4. 调用翻译能力生成目标语言字幕，支持外部 API 和本地 Qwen 翻译模型。
-5. 调用语音合成能力生成配音音频，支持 `IndexTTS` 和 `Qwen3-TTS`。
-6. 对超时音频做对齐、重试、参考音频兜底和邻近片段回退。
-7. 将配音结果与原视频合成输出。
-8. 同时支持单文件交互式工作流与批处理队列。
-9. 现在还支持批量队列中的“预识别原字幕”流程：先批量生成原字幕，再切换配置执行后续翻译、配音、合成。
-
-因此，这个项目已经不是“调用几个模型的演示工具”，而是一个由 React 前端编排、Electron 宿主管理本地能力、Python 后端执行重型任务的桌面媒体处理系统。
-
-## 3. 当前系统分层
-
-当前系统可以拆为四层。
-
-### 3.1 React 渲染与交互层
-
-主要文件：
+本次分析不是只看组件名和目录名，而是顺着实际执行路径做代码级梳理，重点检查了这些文件：
 
 - `ui/src/App.tsx`
 - `ui/src/hooks/useVideoProject.ts`
-- `ui/src/hooks/useBatchQueue.ts`
-- `ui/src/hooks/useDubbingWorkflow.ts`
 - `ui/src/hooks/useTranslationWorkflow.ts`
-- `ui/src/hooks/useSubtitleImport.ts`
-- `ui/src/components/*`
+- `ui/src/hooks/useDubbingWorkflow.ts`
+- `ui/src/hooks/useBatchQueue.ts`
+- `ui/src/hooks/useBackendEvents.ts`
+- `ui/electron/main.ts`
+- `backend/main.py`
+- `backend/action_handlers.py`
+- `backend/cli_options.py`
+- `backend/dependency_manager.py`
+- `backend/asr.py`
+- `backend/qwen_asr_service.py`
+- `backend/tts.py`
+- `backend/qwen_tts_service.py`
+- `backend/tts_action_handlers.py`
+- `backend/llm.py`
+- `requirements.txt`
+- `Qwen3-ASR/pyproject.toml`
+- `backend/Qwen3-TTS/pyproject.toml`
 
-主要职责：
+## 2. 项目真实定位
 
-- 承载页面布局、用户交互与反馈。
-- 维护单文件工作流状态和批量队列状态。
-- 将 UI 配置组装为后端参数。
-- 消费后端进度、局部结果和最终结果。
-- 通过 `localStorage` 持久化部分运行配置和队列状态。
+`VideoSyncMaster` 已经不是简单的“AI 视频翻译 demo”，它实际上是一个本地桌面端多引擎媒体处理编排器，具备如下真实能力：
 
-当前评价：
+1. 单文件视频字幕识别、翻译、配音、合成。
+2. 批量导入视频和字幕，并按文件名自动归并工件。
+3. 批量预识别原字幕，再切换配置跑后续批处理。
+4. 同时支持 WhisperX、Qwen3-ASR、剪映、Bcut 多种 ASR 路径。
+5. 同时支持 Index-TTS、Qwen3-TTS 两条 TTS 路径。
+6. 支持外部翻译 API 与本地 Qwen 翻译模型。
+7. 支持失败片段重试、近邻参考音频回退、全局兜底参考音频。
+8. 支持环境检测、依赖修复、模型下载、日志查看、缓存清理。
 
-- 优点是已经开始按工作流拆 Hook，方向正确。
-- 风险是前端仍然直接感知大量后端 CLI 细节，参数拼接分散在多个 Hook 中。
+从工程本质上看，这个项目的核心难度已经从“模型调用”转向了“异构模型族、异构依赖、异构工作流在同一桌面壳中如何稳定编排”。
 
-### 3.2 Electron 主进程与桥接层
+## 3. 系统分层与职责
 
-主要文件：
+### 3.1 渲染层：React 工作流编排
+
+主要入口：
+
+- `ui/src/App.tsx`
+- `ui/src/hooks/useVideoProject.ts`
+- `ui/src/hooks/useTranslationWorkflow.ts`
+- `ui/src/hooks/useDubbingWorkflow.ts`
+- `ui/src/hooks/useBatchQueue.ts`
+
+这一层不只是“页面展示”，而是实际承担了大量业务编排职责：
+
+1. 决定当前使用哪个 ASR/TTS。
+2. 从 `localStorage` 聚合参数。
+3. 构造后端 CLI 参数数组。
+4. 决定是走单文件、批量还是预识别字幕。
+5. 在收到后端 partial/progress 事件后，把结果回填到 UI 状态树。
+
+结论：
+
+- 当前前端已经不是薄 UI，而是“半编排器”。
+- 优点是功能推进快。
+- 缺点是前端过度理解后端协议和环境规则，导致跨层耦合严重。
+
+### 3.2 宿主层：Electron 进程和 IPC 桥接
+
+核心文件：
 
 - `ui/electron/main.ts`
 - `ui/electron/preload.ts`
 
-主要职责：
+真实职责：
 
-- 创建桌面窗口。
-- 暴露文件系统、下载、打开目录、环境检查、模型下载等宿主能力。
-- 启动、监控和终止 Python 子进程。
-- 解析 Python 输出并经 IPC 转发给前端。
+1. 启动窗口与处理桌面壳交互。
+2. 管理 Python 进程生命周期。
+3. 从 stdout 中解析 `[PROGRESS]`、`[PARTIAL]`、`[DEPS_INSTALLING]`、`[DEPS_DONE]` 以及 `__JSON_START__` 包裹的结果。
+4. 提供文件保存、目录创建、日志打开、模型下载、环境修复、文件缓存、文件外部打开等宿主能力。
 
-当前评价：
+结论：
 
-- `run-backend` 已成为统一的 Python 调用入口。
-- 但主进程同时承担了进程管理、日志协议解析、依赖修复、模型下载、文件操作等多种职责，边界偏宽。
+- Electron 主进程已经成为“协议路由器 + 下载器 + 环境运维器 + 进程管理器”的复合角色。
+- 这不是不能做，但随着功能增长，主进程会越来越像一个没有正式边界的服务总线。
 
-### 3.3 Python 后端执行层
+### 3.3 执行层：Python 动作路由与模型调度
 
-主要文件：
+核心文件：
 
 - `backend/main.py`
 - `backend/action_handlers.py`
 - `backend/tts_action_handlers.py`
 - `backend/cli_options.py`
-- `backend/asr.py`
-- `backend/llm.py`
-- `backend/tts.py`
-- `backend/qwen_asr_service.py`
-- `backend/qwen_tts_service.py`
-- `backend/alignment.py`
-- `backend/dependency_manager.py`
 
-主要职责：
+真实职责：
 
-- 作为统一动作执行器，根据 `--action` 路由任务。
-- 承载 ASR、翻译、TTS、音频对齐、视频合成逻辑。
-- 处理模型路径、日志、环境变量和 GPU 路径。
-- 输出 JSON 结果和约定格式的进度消息。
+1. 解析 CLI 参数。
+2. 根据 `--action` 路由到 ASR、翻译、单段 TTS、批量 TTS、参考音频准备、视频合成等动作。
+3. 根据 TTS/ASR 类型切换依赖版本。
+4. 在 stdout 上同时输出日志、进度和结构化事件。
 
-当前评价：
+结论：
 
-- 相比纯脚本式实现，已经具备 `action` 分发和部分 handler 拆分基础。
-- 但 `main.py` 仍过重，bootstrap、环境准备、日志、路由和部分编排逻辑没有真正分层。
+- 这层已经是实际业务中枢。
+- 问题不是“没有拆模块”，而是“入口文件、协议、环境切换都在运行时交织”。
 
-### 3.4 本地运行环境与资源层
+### 3.4 环境层：便携 Python 与模型资源
 
 主要目录：
 
 - `python/`
 - `models/`
-- `backend/ffmpeg/`
-- `.cache/`
 - `.env_cache/`
-- `logs/`
-- `output/`
+- `.cache/`
+- `Qwen3-ASR/`
+- `backend/Qwen3-TTS/`
 
-主要职责：
+这一层决定了项目稳定性的上限。
 
-- 提供便携 Python 运行环境。
-- 提供 FFmpeg、多媒体处理和本地模型资源。
-- 保存缓存、日志、中间产物和输出结果。
-- 保存依赖切换缓存。
+因为当前系统不是在不同虚拟环境中隔离模型族，而是在同一个便携 Python 环境里动态切换关键包版本，环境层本身已经成为业务约束的一部分。
 
-当前评价：
+## 4. 真实运行链路梳理
 
-- 项目具备较强的离线运行能力。
-- 但运行环境与代码逻辑耦合很深，环境一致性是当前稳定性的关键风险来源。
+## 4.1 单文件识别链路
 
-## 4. 关键工作流
+入口在 `useVideoProject.handleASR()`。
 
-### 4.1 单文件工作流
+真实执行过程：
 
-核心入口：
+1. 读取 `asrService`、`asrOriLang`、WhisperX 的 `vad_onset/vad_offset`。
+2. 构造 `runBackend([ '--action', 'test_asr', ... ])`。
+3. Electron `run-backend` 调用 `backend/main.py --json --model_dir ... --action test_asr ...`。
+4. `backend/action_handlers.py::dispatch_basic_action()` 命中 `test_asr`。
+5. `backend/asr.py::run_asr()` 再根据 service 分流到：
+   - `jianying`
+   - `bcut`
+   - `qwen`
+   - 默认 `whisperx`
 
+这里有两个非常关键的实现事实：
+
+1. `run_asr()` 在处理视频输入时先用 `pydub` 提取缓存音频，并按绝对路径做 hash 缓存。
+2. WhisperX 路径虽然接收 `language` 参数，但在 `model.transcribe(...)` 里实际写死了 `language="zh"`。
+
+第二点意味着：
+
+- UI 提供了 `asrOriLang`。
+- CLI 也传入了 `--ori_lang`。
+- 但 WhisperX 真正转写时并没有忠实消费这个参数。
+- 这会让“用户以为切了语言，实际 WhisperX 仍按中文走”的风险长期存在。
+
+## 4.2 Qwen ASR 识别链路
+
+`backend/asr.py::run_asr()` 在 `service == "qwen"` 时，调用 `backend/qwen_asr_service.py::run_qwen_asr_inference()`。
+
+这条链路的关键步骤如下：
+
+1. 模块导入时先调用 `ensure_transformers_version("4.57.3")`。
+2. 将本地 `Qwen3-ASR` 仓库目录插入 `sys.path`。
+3. 本地解析模型路径 `models/Qwen3-ASR-*` 和 forced aligner `models/Qwen3-ForcedAligner-0.6B`。
+4. 调用 `Qwen3ASRModel.from_pretrained(...)`。
+5. 用 `return_time_stamps=True` 取回 token 级时间戳。
+6. 通过 `_split_text_into_sentences()`、`_consume_sentence_tokens()`、`_fallback_segment_tokens()` 二次重组字幕段。
+
+这条路径的优点：
+
+1. 不是直接把模型返回结果原样塞给 UI，而是做了句子对齐和 oversized segment 拆分。
+2. 通过 forced aligner 获得相对高质量时间戳。
+
+风险点：
+
+1. 该模块在 import 时就切环境，副作用很重。
+2. 它要求 aligner 必须存在，否则直接失败。
+3. `Qwen3-ASR/pyproject.toml` 要求 `transformers>=4.57.6`，而项目自己的 `dependency_manager.py` 固定切到 `4.57.3`。
+
+这不是抽象风险，而是实打实的版本契约冲突。
+
+## 4.3 翻译链路
+
+翻译逻辑分成 UI 编排与 Python 模型执行两段：
+
+- UI：`useTranslationWorkflow.ts`
+- Python：`backend/main.py::translate_text()` + `backend/llm.py::LLMTranslator`
+
+真实行为：
+
+1. 如果前端配置了 `trans_api_key`，走外部 chat completions。
+2. 否则走本地 `Qwen2.5-7B-Instruct`。
+3. 外部 API 批量翻译是一次性构造 JSON list prompt，再尝试从模型返回中解析 JSON。
+4. 本地翻译则是逐段循环调用 `translate()`。
+
+优点：
+
+1. 外部 API 路径做了批量化，减少网络往返。
+2. 对返回结果做了 `_clean_response()`，尽量剥离思维链、引用和解释。
+
+风险：
+
+1. 翻译配置完全散落在 `localStorage` 与调用点，没有统一 schema。
+2. 本地翻译模型与 Qwen ASR/Qwen TTS 同属 transformers 系生态，但没有被纳入统一环境画像。
+3. 外部 API 解析策略仍然依赖 prompt 和宽松 JSON 抽取，稳定性不等于协议。
+
+## 4.4 单段与批量 TTS 链路
+
+单文件配音由 `useDubbingWorkflow.ts` 驱动，最终落到：
+
+- `backend/tts_action_handlers.py::handle_generate_single_tts`
+- `backend/tts_action_handlers.py::handle_generate_batch_tts`
+- `backend/tts_action_handlers.py::generate_batch_tts_results`
+
+这部分是当前项目复杂度最高、也最接近产品价值核心的区域。
+
+真实机制包括：
+
+1. 为每个片段抽取局部参考音频。
+2. 对过短参考音频跳过直接 segment retry。
+3. 优先使用当前片段参考音频。
+4. 失败后尝试近邻成功音频。
+5. 再失败后尝试全局 fallback 参考音频。
+6. 最终把 partial 成功结果持续通过 `[PARTIAL]` 推回前端。
+
+这说明项目已经不是“调用一次 TTS 就结束”，而是显式实现了一个多层降级重试系统。
+
+这部分优点很明显：
+
+1. 重试链路设计成熟。
+2. 参考音频策略有明显的经验积累。
+3. 单段与批量共享了大部分 TTS 失败恢复逻辑。
+
+但问题也同样明显：
+
+1. 这套逻辑高度依赖 stdout 协议和运行时 side effects。
+2. retry 参数调整只对 `IndexTTS` 生效，Qwen 的退化策略并不等价。
+3. 过多策略通过 kwargs 散射传递，缺少正式的任务 schema。
+
+## 4.5 批量处理链路
+
+核心在 `ui/src/hooks/useBatchQueue.ts`。
+
+当前批量链路实际上有两条：
+
+1. 标准批处理链路：原字幕/翻译字幕足够时，跳过前置步骤，直接翻译、TTS、合成。
+2. 预识别原字幕链路：先批量跑 `test_asr`，把 `originalSubtitlePath` / `originalSubtitleContent` 固化到任务中，再切回别的引擎继续跑。
+
+这条设计有一个非常现实且正确的工程判断：
+
+- 没有试图在一次后端运行里同时混用 Qwen ASR 与 Index-TTS。
+- 而是通过“阶段落盘、后续复用工件”的方式跨环境协作。
+
+这恰好说明当前架构的真实瓶颈不是流程编排，而是运行环境不能稳定共存。
+
+## 5. 依赖版本与环境切换：当前最大的真实风险
+
+## 5.1 当前版本契约并不一致
+
+项目当前至少存在四套互相不完全一致的版本来源：
+
+### A. `requirements.txt`
+
+固定为：
+
+- `transformers==4.52.1`
+- `accelerate==1.8.1`
+- `tokenizers==0.21.0`
+
+这套更像是 IndexTTS / WhisperX 的基础环境。
+
+### B. `backend/dependency_manager.py`
+
+定义：
+
+- `PROFILE_INDEX_TTS = "4.52.1"`
+- `PROFILE_QWEN3 = "4.57.3"`
+- 当切到 Qwen3 时，如果 `accelerate != 1.12.0`，会额外安装 `accelerate==1.12.0`
+
+### C. `backend/Qwen3-TTS/pyproject.toml`
+
+要求：
+
+- `transformers==4.57.3`
+- `accelerate==1.12.0`
+
+### D. `Qwen3-ASR/pyproject.toml`
+
+要求：
+
+- `transformers>=4.57.6`
+- `accelerate==1.12.0`
+
+这里最重要的结论是：
+
+1. Qwen3-TTS 与项目内置 Qwen profile 对齐。
+2. Qwen3-ASR 的 upstream 需求比项目定义的 `4.57.3` 更高。
+3. `fix-python-env` 仍会按 `requirements.txt` 把环境修回 `transformers==4.52.1 + accelerate==1.8.1`。
+
+这意味着“环境修复成功”并不等于“Qwen ASR/TTS 环境处于正确状态”。
+
+## 5.2 当前的环境切换方式是什么
+
+`backend/dependency_manager.py::swap_environment()` 的做法不是虚拟环境隔离，而是：
+
+1. 在当前 Python 的 `site-packages` 下查找 `transformers/tokenizers/accelerate`。
+2. 把当前版本整体搬去 `.env_cache/v_xxx/`。
+3. 再把目标版本从 `.env_cache/v_target/` 搬回来。
+4. 缓存没有时再执行 `pip install`。
+
+这是一种“目录级热切换”。
+
+它能跑，但它天然有这些问题：
+
+1. 切换不是原子事务，中途失败会导致环境半残。
+2. 只有三个包被显式搬运，其它被这些包间接影响的依赖并没有统一画像。
+3. 版本恢复依赖 `.env_cache` 完整性，而不是正式 lockfile。
+4. 同一进程生命周期内 import 缓存、模块状态、CUDA 资源不一定和目录切换同步。
+
+## 5.3 代码里哪些地方会触发环境切换
+
+目前至少有这些入口会触发：
+
+1. `backend/main.py::get_tts_runner()`：
+   - `qwen` 时切 `4.57.3`
+   - `indextts` 时切 `4.52.1`
+2. `backend/qwen_asr_service.py` 在模块导入时切 `4.57.3`
+3. `backend/qwen_tts_service.py` 在模块导入时切 `4.57.3`
+4. `backend/tts.py` 在模块导入时切 `4.52.1`
+
+这说明环境切换不是集中发生的，而是散落在 import 时和运行时两种阶段。
+
+这是非常危险的设计信号：
+
+- import 本应是“拿定义”，现在却同时在“修改运行环境”。
+- 难以推断某次任务究竟是谁触发了版本切换。
+
+## 5.4 前端为什么要禁止 Qwen ASR + Index-TTS
+
+UI 的冲突规则在两处重复定义：
+
+- `ui/src/hooks/usePersistentSettings.ts`
 - `ui/src/hooks/useVideoProject.ts`
-- `ui/src/hooks/useTranslationWorkflow.ts`
-- `ui/src/hooks/useDubbingWorkflow.ts`
 
-典型流程：
+规则内容都是：
 
-1. 用户选择视频。
-2. 前端调用 `run-backend --action test_asr` 获取识别结果。
-3. 用户编辑、导入或确认字幕。
-4. 前端调用翻译流程生成目标字幕。
-5. 前端调用单段或批量 TTS。
-6. 对失败片段执行重试、兜底参考音频准备和邻近片段回退。
-7. 前端调用合成动作输出最终视频。
+- 如果 `asr === 'qwen' && tts === 'indextts'`，则拒绝切换并弹提示。
 
-评价：
+这说明产品层已经显式承认当前环境不支持该组合。
 
-- 优点是用户参与度高，允许局部修正和精细操作。
-- 风险是状态和参数编排仍高度集中在前端。
+但这里有两个更深层的问题：
 
-### 4.2 批量工作流
+1. 冲突规则在两处重复维护，后续容易漂移。
+2. 规则只覆盖了 UI 可见的组合，没有覆盖“依赖修复后版本漂移”“翻译模型与 Qwen 生态耦合”“批量任务中跨阶段切换”等更深层环境状态。
 
-核心入口：
+## 6. 函数级审计结论
 
-- `ui/src/hooks/useBatchQueue.ts`
+## 6.1 `backend/main.py`
 
-当前批量链路分成两类。
+这是当前项目后端最重的单点文件，真实承担了太多职责：
 
-#### 标准批量链路
+1. UTF-8/子进程编码修复。
+2. 便携 Python bootstrap。
+3. 日志写入。
+4. 模型目录定位。
+5. FFmpeg 路径注入。
+6. GPU DLL 路径修复。
+7. TTS runner 选择与依赖切换。
+8. 翻译动作包装。
+9. `dub_video` 端到端编排。
+10. 动作路由入口。
 
-1. 导入多个视频和字幕资源。
-2. 依据文件名建立视频、原字幕、目标字幕映射。
-3. 将队列写入 `localStorage` 以支持恢复。
-4. 根据资源完整性判断是否跳过 ASR 或翻译。
-5. 调用后端执行批量 TTS 与合成。
-6. 记录每个任务的状态、耗时、输出路径和错误信息。
+尤其值得指出的代码事实：
 
-#### 新增的预识别原字幕链路
+1. `main()` 在完成 `dispatch_basic_action()` 和 JSON 输出后，后面还残留一段旧式 `if args.action == 'asr'` 逻辑，基本属于死代码或历史遗留逻辑。
+2. `dub_video()` 内部直接串起 ASR、翻译、批量 TTS、自动对齐、视频合成，是一个超长 orchestration function。
 
-1. 用户在批量页切换到想用的 ASR 配置。
-2. 点击“批量识别字幕”按钮。
-3. 系统仅处理缺失原字幕的任务，调用 `--action test_asr` 逐个生成字幕。
-4. 将识别结果保存为任务目录中的 `*.original.srt`，同时回写到队列项的 `originalSubtitlePath` 和 `originalSubtitleContent`。
-5. 用户可切换回其它 ASR 或 TTS 配置。
-6. 后续点击“启动队列”时，这些任务会自动跳过 ASR，直接进入翻译、配音、合成阶段。
+判断：
 
-评价：
+- 当前后端不是没有模块，而是“已经拆了模块，但主入口仍然吞掉了太多编排逻辑”。
 
-- 这条新增链路非常符合当前工程现实。
-- 它没有试图在同一次后端运行中混用 `Qwen ASR` 与 `WhisperX / IndexTTS` 的环境，而是通过“阶段分离 + 结果落盘”绕开环境冲突。
-- 这是目前一个低风险且高收益的产品增强点。
-
-## 5. 模块职责地图
-
-### 5.1 前端核心模块
-
-`ui/src/App.tsx`
-
-- 顶层视图装配与布局控制。
-- 承接单文件工作流和批处理工作流入口。
-- 管理环境检查、自动恢复、播放状态和部分弹窗。
-
-`ui/src/hooks/useVideoProject.ts`
-
-- 单文件工作流总协调器。
-- 整合 ASR、翻译、配音、字幕导入和后端事件监听。
-
-`ui/src/hooks/useDubbingWorkflow.ts`
-
-- 管理单段配音、批量配音、失败重试和合成调用。
-
-`ui/src/hooks/useTranslationWorkflow.ts`
-
-- 负责翻译与重翻译。
-
-`ui/src/hooks/useBatchQueue.ts`
-
-- 管理批量队列持久化、恢复、状态机和任务执行。
-- 当前也是批量预识别原字幕能力的主要编排层。
-
-### 5.2 Electron 核心模块
-
-`ui/electron/main.ts`
-
-- Python 进程生命周期管理。
-- 解析 stdout/stderr。
-- 提供环境检查、模型下载、文件系统能力。
-
-`ui/electron/preload.ts`
-
-- 将宿主 API 暴露给渲染层。
-- 当前接口较宽，类型约束偏弱。
-
-### 5.3 后端核心模块
-
-`backend/main.py`
-
-- 后端统一入口。
-- 负责 bootstrap、日志、模型目录推断、依赖准备、action 路由和部分业务编排。
-
-`backend/cli_options.py`
-
-- 定义 CLI 参数。
-- 构造 TTS 与翻译参数字典。
-
-`backend/action_handlers.py`
-
-- 处理基础 action。
-
-`backend/tts_action_handlers.py`
-
-- 处理单段 TTS、批量 TTS、失败重试、参考音频与回退逻辑。
-
-`backend/asr.py`
-
-- 管理 WhisperX、剪映、Bcut、Qwen ASR 路径。
-
-`backend/llm.py`
-
-- 负责翻译模型封装。
-- 支持外部 API 与本地 `Qwen2.5-7B-Instruct`。
-
-`backend/tts.py`
-
-- IndexTTS 路径。
-
-`backend/qwen_tts_service.py`
-
-- Qwen TTS 路径。
-
-`backend/qwen_asr_service.py`
-
-- Qwen ASR 路径。
-- 利用 `Qwen3-ForcedAligner-0.6B` 生成时间戳并做分句。
-
-`backend/alignment.py`
-
-- 音频对齐、音视频合成和相关媒体处理。
-
-`backend/dependency_manager.py`
-
-- 在同一个便携 Python 环境中切换多套 `transformers` 版本组合。
-- 这是当前环境稳定性风险的重要来源。
-
-## 6. 架构健壮性与可扩展性评估
-
-### 6.1 当前架构是否健壮
-
-结论：功能层面已经足够完整，但工程层面的稳健性只能算“中等”，离商业级稳定还有明显差距。
-
-原因：
-
-- 产品功能链路已经闭环，单文件与批处理都能工作。
-- 本地化运行能力较强，适合离线桌面场景。
-- 但环境切换、输出协议、参数分发和入口文件膨胀会持续侵蚀稳定性。
-
-### 6.2 当前架构是否具备可扩展性
-
-结论：具备扩展空间，但前提是先治理协议和环境。
-
-目前适合扩展的方向：
-
-- 新增 ASR 引擎。
-- 新增 TTS 引擎。
-- 新增批处理策略。
-- 新增输出工件索引和任务追踪。
-
-当前阻碍扩展的核心点：
-
-- 前端参数拼接分散，新增一个动作常常需要改多个 Hook。
-- 后端输出协议混杂在日志中，不利于长期演进。
-- 同进程热切换依赖版本，会让新增模型路径越来越脆弱。
-
-## 7. 主要业务链路的解耦评估
-
-### 7.1 解耦做得比较好的部分
-
-- React、Electron、Python 三层职责大方向仍可辨认。
-- 后端开始从大脚本模式演进为 `action + handler` 模式。
-- 批量工作流已经形成独立编排层。
-- 原字幕、目标字幕、音频和输出视频已经形成较清晰的工件概念。
-
-### 7.2 存在明显跨层耦合的部分
-
-#### 前端深度感知后端 CLI 协议
-
-多个 Hook 直接构造参数数组，例如：
-
-- `useVideoProject.ts`
-- `useDubbingWorkflow.ts`
-- `useBatchQueue.ts`
-- `useTranslationWorkflow.ts`
-
-问题：
-
-- 默认值分散。
-- 参数语义重复。
-- 单文件与批量流程容易漂移。
-- 前端必须理解后端细节才能做简单流程变更。
-
-#### Electron 主进程深度感知 Python 输出格式
-
-当前输出依赖这些 marker：
-
-- `[PROGRESS]`
-- `[PARTIAL]`
-- `[DEPS_INSTALLING]`
-- `[DEPS_DONE]`
-- `__JSON_START__ / __JSON_END__`
-
-问题：
-
-- 普通日志格式变化会影响 UI 行为。
-- 日志与协议耦合严重。
-- 调试和扩展成本高。
-
-#### 环境层与模型层没有真正隔离
-
-`Qwen ASR`、`Qwen TTS`、`IndexTTS` 依赖不同版本的 `transformers`，当前通过运行期切换依赖文件来勉强共存。
-
-这不是“业务逻辑耦合”，而是“运行时环境耦合”，风险更大。
-
-## 8. 模型调用、参数组织、常量管理、数据消费评估
-
-### 8.1 模型调用评估
-
-#### 翻译
-
-- 默认无 API 时使用本地 `Qwen2.5-7B-Instruct`。
-- 配置 API Key 时改走外部 chat completions 接口，模型名由前端传入。
-
-评价：
-
-- 设计足够实用。
-- 风险在于 Base URL、模型名和默认值依赖前端 `localStorage`，缺少统一配置域。
-
-#### ASR
-
-- `WhisperX` 路径成熟，具备分段、对齐、调试输出。
-- `Qwen3-ASR` 文本质量更好，并配合 forced aligner 输出时间戳。
-- 云端 ASR 作为补充路径存在。
-
-评价：
-
-- 多模型接入能力较强。
-- 但不同引擎的结果规范化逻辑分散，不同路径的后处理成熟度不一致。
-
-#### TTS
-
-- `IndexTTS` 与 `Qwen3-TTS` 共存。
-- 单段、批量、失败重试、参考音频和邻近片段兜底逻辑都已存在。
-
-评价：
-
-- 产品能力完整。
-- 但能力完整是以复杂编排为代价换来的，维护成本高。
-
-### 8.2 参数组织评估
-
-现状：
-
-- 参数默认值分散在前端组件、Hook、后端 parser、`localStorage` 多处。
-- 同一组参数的构建逻辑会在不同文件重复。
-- 批处理与单文件流程对同一能力的拼参方式不完全统一。
-
-结论：
-
-- 当前参数组织“能跑”，但不适合继续放大。
-- 应尽快抽象出统一的前端请求构造器和后端动作 schema。
-
-### 8.3 常量管理评估
-
-现状：
-
-- 存在大量硬编码的 `localStorage` key、模型目录名、默认模型名、默认 URL。
-- 有些常量靠注释和命名约定表达，并未形成中心化定义。
-
-结论：
-
-- 常量管理处于“局部自洽、全局分散”的状态。
-- 对于持续迭代型项目，这是后续容易出错的区域。
-
-### 8.4 数据消费逻辑评估
+## 6.2 `backend/asr.py`
 
 优点：
 
-- 原字幕、翻译字幕、TTS 结果、最终合成结果已有相对统一的工件流转方式。
-- 批量队列已经会把关键状态和工件路径持久化。
+1. 视频输入会先提音频并做缓存。
+2. WhisperX 路径做了较细的字幕切分。
+3. 对本地对齐模型缺失做了显式提示。
 
 问题：
 
-- 结果对象结构仍然依赖各 action 的隐式约定。
-- 前端大量假设后端返回字段名和结构稳定。
-- 缺少明确的结果 schema 与版本控制。
+1. WhisperX 转写时语言写死成 `zh`。
+2. `torch.load` 被全局 monkey patch 成 `weights_only=False`，这是带全局副作用的安全关闭方式。
+3. `split_into_subtitles()` 过长，包含太多修正逻辑、经验参数和时间戳补丁，难以测试。
 
-## 9. 控制台日志与协议评估
-
-结论：当前日志对开发调试有帮助，但对长期维护和产品级稳定不够友好。
-
-存在的问题：
-
-1. 日志和协议复用同一输出通道。
-2. 既有普通说明日志，也有 UI 必须解析的控制标记。
-3. 同一流程中日志风格不统一，有些偏用户提示，有些偏底层调试。
-4. 某些日志冗余，且包含环境、路径、模型切换等强耦合细节。
+## 6.3 `backend/qwen_asr_service.py`
 
 优点：
 
-- 当前实现简单直接，调试成本低。
-- 在单机桌面应用里，这种方案初期推进速度快。
+1. 对 token 时间戳做了句级重构，不是简单粗暴切片。
+2. 具备 oversized segment fallback。
 
-缺点：
+问题：
 
-- 一旦继续加模型、加队列能力，协议脆弱性会快速上升。
+1. 模块 import 阶段就切依赖。
+2. 版本要求与 upstream `pyproject` 不一致。
+3. 句子对齐算法和 token fallback 是高价值逻辑，但没有单元测试保护。
 
-建议方向：
+## 6.4 `backend/qwen_tts_service.py`
 
-- 把“给 UI 的结构化事件”与“给开发者的普通日志”拆开。
-- 至少先统一事件对象格式，而不是继续依赖 marker 字符串。
+优点：
 
-## 10. 文本乱码与编码审计
+1. 统一封装了 clone/design/preset 三种模式。
+2. 有模型缓存 `_loaded_models`。
+3. 有自适应 `max_new_tokens` 与生成音频校验。
 
-### 10.1 结论
+问题：
 
-当前项目核心源码未发现真实的编码损坏问题。绝大多数“乱码观感”来自终端显示编码不一致，而不是仓库文件本身损坏。
+1. `_build_qwen_generation_kwargs()` 仍然默认注入 `temperature/top_p/repetition_penalty`。
+2. 用户此前遇到的 `The following generation flags are not valid and may be ignored: ['temperature']`，根源就在这一层：项目仍在向某些 Qwen 生成路径传入上游模型并不严格接受的 generation flag。
+3. 这说明“UI 已隐藏高级参数”并不等于“后端不再传这些参数”。
 
-### 10.2 实际检查结果
+换句话说，界面层已经想托管参数，但执行层还保留着旧行为。
 
-已检查范围：
+## 6.5 `backend/tts.py`
 
-- `ui/src`
-- `backend`
-- 根目录文档和配置文件
+优点：
 
-检查结论：
+1. 对 IndexTTS 的生成参数做了文本长度约束。
+2. 做了时长异常和静音音频校验。
 
-- 未发现非 UTF-8 的业务源码文本文件。
-- 未发现核心源码中的实际乱码字符串损坏。
-- 前端源码中的中文文案按 UTF-8 读取后均可正常解析。
-- 仅在模型附带文档 `models/alignment/.../README.md` 中发现替换字符 `�`，这属于第三方模型资源说明文件，不影响业务逻辑。
+问题：
 
-### 10.3 为什么终端里会看到“鎵归噺 / 璇嗗埆 / 宸插畬鎴”
+1. 模块 import 时切 `4.52.1`。
+2. 单段和批量都在每次调用时初始化 `IndexTTS2`，虽然后者是一轮 batch 内复用，但跨任务没有复用。
+3. 逻辑层已经实现了防 hallucination，但与 UI 没有形成正式质量指标契约。
 
-原因更接近以下情况：
+## 6.6 `backend/tts_action_handlers.py`
 
-- PowerShell / 控制台 code page 与文件编码不一致。
-- 某些输出链路使用了不稳定的本地控制台编码。
-- `Get-Content` 的显示效果不等于文件真实存储内容。
+这是当前最值得保留和继续沉淀的业务逻辑模块之一。
 
-因此：
+它的价值在于：
 
-- 目前不建议把“终端显示乱码”误判成“源码文件损坏”。
-- 更值得做的是统一日志查看链路的 UTF-8 输出策略。
+1. 参考音频提取逻辑集中。
+2. 近邻成功引用和共享 fallback 引用设计成熟。
+3. 批处理重试逻辑比很多同类项目完整。
 
-## 11. 主要风险点
+但同样需要指出：
 
-### P0
+1. retry 策略是经验型参数，没有配置模型。
+2. 这套逻辑依赖大量动态 kwargs。
+3. `generate_batch_tts_results()` 和 `_finalize_batch_tts_results()` 已经接近一个“子状态机”，却没有正式状态模型。
 
-- 同一便携 Python 环境中的依赖热切换设计。
-- stdout 日志与结构化协议混用。
-- `backend/main.py` 持续膨胀，成为高耦合单点。
+## 6.7 `ui/src/hooks/useVideoProject.ts`
 
-### P1
+优点：
 
-- 前端参数构建重复且分散。
-- `App.tsx` 仍然承担过多职责。
-- Electron 主进程边界过宽。
-- 结果 schema 缺乏显式约束。
+1. 单文件工作流入口清晰。
+2. 已把翻译、配音、字幕导入拆进独立 hook。
 
-### P2
+问题：
 
-- `localStorage` key 与默认值缺乏集中治理。
-- 文档更新依赖人工维护，没有变更约束机制。
-- 第三方模型资源文档中存在个别替换字符，但不影响功能。
+1. 与 `usePersistentSettings.ts` 重复定义了 ASR/TTS 冲突规则。
+2. `handleASR()`、`handleOneClickRun()`、`handleTranslateAndDub()` 仍然直接理解后端参数细节。
+3. 这层既做总协调，又做部分业务校验，边界还不稳。
 
-## 12. 优化方案与选型理由
+## 6.8 `ui/src/hooks/useBatchQueue.ts`
 
-以下方案按“收益高、争议低、与当前项目兼容性好”的原则排序。
+当前这份代码比旧版本成熟很多，尤其是：
 
-### 12.1 第一优先级：停止在同一运行环境中热切换依赖 profile
+1. 批量队列可持久化和恢复。
+2. 已支持“仅识别缺失原字幕项”。
+3. 已加入阶段键 `stageKey`，把显示文案和状态识别解耦。
+
+但从工程角度看，仍存在三个问题：
+
+1. 这里依然直接构造 CLI 参数。
+2. 单文件和批量流程分别维护了一套拼参逻辑，存在漂移风险。
+3. 队列项数据结构已经接近任务工件数据库，但目前只存在浏览器 `localStorage` 中。
+
+## 6.9 `ui/electron/main.ts`
+
+问题非常集中：
+
+1. `run-backend` 同时承担进程启动、编码解码、stdout 协议解析、JSON 提取。
+2. JSON 是靠 `__JSON_START__` / `__JSON_END__` 再做二次截取。
+3. 普通日志、结构化事件、依赖安装事件全部混在一个 stdout 通道。
+
+这套方式在项目早期很实用，但现在已经成为扩展瓶颈。
+
+## 7. 日志、反馈与协议审计
+
+当前项目有四种反馈通道同时存在：
+
+1. 顶部 `status` 文本。
+2. `feedback` 弹窗。
+3. Electron 主进程控制台日志。
+4. Python stdout/stderr 协议输出。
+
+再叠加：
+
+5. `[PROGRESS]`
+6. `[PARTIAL]`
+7. `[DEPS_INSTALLING]`
+8. `[DEPS_DONE]`
+9. `__JSON_START__`
+
+当前状态下的问题不是“有没有提示”，而是“协议与日志共道”：
+
+1. 一旦日志格式变化，UI 解析就可能受影响。
+2. stdout 既承载人类可读信息，也承载机器事件。
+3. 某些问题看上去像日志异常，实际上会变成功能异常。
+
+这已经不适合再继续叠加新 marker 了。
+
+## 8. 文本编码与乱码结论
+
+当前核心业务源码没有发现系统性的真实文本损坏问题。
+
+更准确的结论是：
+
+1. 项目做了大量 UTF-8 兜底和 Windows 编码兼容。
+2. Electron 主进程有 `decodeProcessChunk()`，会在 UTF-8 与 GBK 之间择优。
+3. Python 入口也强制了 `PYTHONUTF8` 和 `PYTHONIOENCODING=utf-8`。
+
+所以大部分“乱码观感”来自控制台或子进程输出，而不是仓库源码本身坏掉。
+
+但这不代表编码问题已经彻底解决，因为：
+
+1. 编码修复逻辑散落在多层。
+2. 仍然是经验型解码，而不是统一的结构化通道。
+
+## 9. 架构健壮性与可扩展性评估
+
+## 9.1 是否健壮
+
+结论：
+
+- 功能层面已可用。
+- 工程层面仍未达到商业级稳定。
+
+最根本的原因不是单个 bug，而是三类基础契约尚未建立：
+
+1. 依赖版本契约。
+2. 动作参数契约。
+3. 事件输出契约。
+
+## 9.2 是否可扩展
+
+结论：
+
+- 业务能力可扩展。
+- 运行环境不可持续扩展。
+
+也就是说：
+
+- 再加一个模型，从 UI 到后端是能接的。
+- 但每加一个模型，环境冲突、参数分散和协议脆弱性都会继续累积。
+
+## 10. 当前最重要的真实问题清单
+
+### P0：依赖版本契约断裂
+
+具体表现：
+
+1. `requirements.txt`、`dependency_manager.py`、`Qwen3-ASR/pyproject.toml`、`backend/Qwen3-TTS/pyproject.toml` 不一致。
+2. `fix-python-env` 修好的是基础环境，不是 Qwen 可运行环境。
+3. `Qwen3-ASR` 上游要求 `transformers>=4.57.6`，项目内部只切到 `4.57.3`。
+
+这会直接影响：
+
+1. ASR/TTS 切换稳定性。
+2. 批量预识别字幕后的后续流程稳定性。
+3. 新机器首次安装后的可复现性。
+
+### P0：运行期热切 `site-packages`
+
+这是当前最重的工程风险。
+
+一旦切换过程中中断、缓存损坏、模块残留或 pip 安装异常，就可能进入不可预测状态。
+
+### P1：协议和日志混流
+
+当前 UI 行为强依赖 stdout marker，这在复杂工程中不可持续。
+
+### P1：前端拼参分散
+
+当前单文件、批量、单段重试、批量预识别字幕分别维护多套参数构造方式，后续很容易漂移。
+
+### P1：冲突规则重复维护
+
+`validateServiceIncompatibility` 在两处重复实现，后续必然有维护漂移风险。
+
+### P2：高价值算法逻辑缺少测试护栏
+
+尤其是：
+
+1. `split_into_subtitles()`
+2. Qwen ASR 句子-token 对齐逻辑
+3. 批量 TTS fallback/retry 状态机
+
+## 11. 商业级优化方案与选型理由
+
+## 11.1 第一优先级：停止同环境热切，改为环境分区或任务级解释器隔离
+
+推荐方案：
+
+1. 为 `IndexTTS/WhisperX` 准备一个独立运行环境。
+2. 为 `Qwen3-ASR/Qwen3-TTS` 准备另一个独立运行环境。
+3. Electron 根据 action 选择不同 python 可执行文件或 launcher。
+
+为什么优先做这个：
+
+1. 它是当前所有“不能同时启用”“切回来才能跑”“修复环境后又不对”的根因。
+2. 一旦隔离环境，UI 冲突规则可以从“硬禁止”升级为“可并存但任务分阶段运行”。
+
+## 11.2 第二优先级：建立正式的环境画像文件
+
+建议新增类似：
+
+- `env_profiles/index_tts.lock`
+- `env_profiles/qwen.lock`
+
+至少把这些信息固定下来：
+
+1. Python 版本
+2. transformers/tokenizers/accelerate 版本
+3. torch / torchaudio / torchvision 版本
+4. Qwen3-ASR/Qwen3-TTS 对应上游 commit 或版本
+
+这样可以终止“代码里说一种版本，requirements 里写另一种，上游 pyproject 又是第三种”的状态。
+
+## 11.3 第三优先级：把后端 stdout marker 改成结构化事件
 
 建议：
 
-- 改为按引擎或任务类型启动独立 Python 子进程。
-- 将 `Qwen ASR / Qwen TTS` 与 `IndexTTS / WhisperX` 运行环境拆开。
+1. 让 Python 只输出 JSON event。
+2. Electron 主进程只按 event schema 转发。
+3. 普通日志写文件，不再和 UI 通道混用。
 
-原因：
+最低可行 event schema：
 
-- 这是当前系统最主要的稳定性风险。
-- 一旦环境隔离做好，很多“为什么这个组合不能同时开”的问题都会自然消失。
-- 新增模型时也不会继续放大依赖冲突。
+```json
+{
+  "type": "progress|partial|deps|result|log|error",
+  "action": "test_asr|generate_batch_tts|merge_video",
+  "payload": {},
+  "timestamp": "2026-04-09T13:00:00Z"
+}
+```
 
-### 12.2 第二优先级：把输出协议改成结构化事件
+## 11.4 第四优先级：统一前端动作参数构建
 
-建议：
+建议建立前端 action builder：
 
-- 定义统一事件结构，例如 `type / action / payload / timestamp`。
-- Electron 主进程只解析结构化事件，不再依赖普通日志 marker。
+1. `buildAsrArgs()`
+2. `buildTranslateArgs()`
+3. `buildSingleTtsArgs()`
+4. `buildBatchTtsArgs()`
+5. `buildMergeArgs()`
 
-原因：
+并让单文件和批量共享同一套参数拼装逻辑。
 
-- 这能显著降低前后端耦合。
-- 有利于后续扩展批处理、下载、环境修复和长任务监控。
+这样能立刻降低：
 
-### 12.3 第三优先级：统一前端参数构建入口
+1. 参数漂移
+2. 默认值分散
+3. 本地存储 key 到 CLI 形态的耦合
 
-建议：
+## 11.5 第五优先级：把 Qwen 与 IndexTTS 的生成参数策略正式化
 
-- 为 ASR、翻译、TTS、合成、批处理分别建立前端请求构造器。
-- 将 `localStorage` 读取和默认值集中治理。
+当前项目处于一种尴尬状态：
 
-原因：
-
-- 当前很多功能已经不是“做不到”，而是“维护成本太高”。
-- 统一参数入口会立刻降低重复逻辑和漂移风险。
-
-### 12.4 第四优先级：继续拆分 `backend/main.py`
-
-建议：
-
-- 让 `main.py` 只保留 bootstrap 和 dispatch。
-- 将日志初始化、环境准备、动作编排拆入独立模块。
-
-原因：
-
-- 后端入口文件目前是最明显的重耦合区域。
-- 这一步是后续可测试性和复用性的前提。
-
-### 12.5 第五优先级：进一步瘦身 `App.tsx`
+1. UI 想“托管高级参数”。
+2. 后端仍在向模型传 `temperature/top_p/...`。
+3. 不同模型路径对这些参数的接受程度不一致。
 
 建议：
 
-- 将恢复逻辑、布局逻辑、顶部状态区和部分播放控制拆出。
-- 保持 `App.tsx` 只做页面装配。
+1. 为每个模型族定义正式的可接受参数白名单。
+2. 对不支持的参数直接在后端剔除。
+3. 将“高级参数托管策略”写成策略对象，而不是散落在多个函数里。
+
+这能直接解决此前出现的 generation flags warning。
+
+## 11.6 第六优先级：拆分 `backend/main.py`
+
+建议最少拆成：
+
+1. `bootstrap.py`
+2. `env_runtime.py`
+3. `event_protocol.py`
+4. `workflow_dub_video.py`
+5. `action_router.py`
 
 原因：
 
-- 当前前端代码已经出现典型“顶层组件过重”征兆。
-- 早点拆，有利于后续页面继续增长。
+- 当前主入口已经承担了太多跨域逻辑，不利于测试与演进。
 
-### 12.6 第六优先级：建立文本与编码自检机制
+## 11.7 第七优先级：建立关键函数测试
 
-建议：
+优先级最高的测试对象：
 
-- 增加一个仓库级文本检查脚本。
-- 统一要求业务源码与文档使用 UTF-8。
-- 把终端/日志链路的 UTF-8 输出策略标准化。
+1. `split_into_subtitles()`
+2. `run_qwen_asr_inference()` 里的句子对齐与 fallback 分段
+3. `_finalize_batch_tts_results()` 的重试和回退路径
+4. 前端 `buildTtsExtraArgs()` / 批量预识别字幕流程
 
-原因：
+## 12. 结论
 
-- 当前真实编码问题不严重，但“显示层误判”已经会影响协作效率。
-- 这类治理成本低，收益稳定。
+当前 `VideoSyncMaster` 的产品能力已经很强，真正的问题不是“功能太少”，而是“工程契约没有收口”。
 
-## 13. 对“商业级稳定工程”的判断
+本次深入代码审查后的核心判断如下：
 
-若以“稳定的商业级别工程”为目标，当前项目还缺三类基础契约：
+1. 项目的主要架构风险不在 UI 视觉层，而在运行环境层。
+2. Qwen ASR / Qwen TTS / WhisperX / Index-TTS 不是单纯“不能共存”，而是当前通过热切 `site-packages` 在同一便携 Python 中勉强共存。
+3. 这套方案已经支撑了当前功能，但它不具备长期稳定放大能力。
+4. `requirements.txt`、环境切换器、Qwen 上游 pyproject 的版本要求目前并不完全一致，这是当前最需要正视的问题。
+5. 项目里已经有一些非常有价值的工程积累，尤其是批量 TTS 回退体系、批量预识别字幕、Qwen ASR 句级对齐后处理，这些不应该推倒重来，而应该被更正式的架构托住。
 
-1. 参数契约：前端到后端的动作参数要有统一 schema。
-2. 输出契约：后端到 Electron/前端的事件和结果要结构化。
-3. 运行环境契约：不同模型族要真正环境隔离，而不是热切依赖。
+因此，最合理的后续路线不是大范围重写，而是按以下顺序收口：
 
-这三项如果不先治理，功能越多，维护成本和稳定性风险越高。
+1. 先做环境隔离和版本契约统一。
+2. 再做 stdout 协议结构化。
+3. 然后统一前端参数构建与冲突规则。
+4. 最后继续拆分后端入口并补测试。
 
-相反，只要优先把这三项收口，当前架构仍然具备持续演进空间，尤其适合继续增强以下能力：
-
-- 更强的批处理编排。
-- 多引擎协同工作流。
-- 输出工件管理与任务恢复。
-- 环境诊断、模型管理和质量监控。
-
-## 14. 结论
-
-当前 `VideoSyncMaster` 不是一个“能力不足”的项目，而是一个“产品能力已经很强，但工程复杂度正在逼近架构拐点”的项目。
-
-它的核心问题不是单点 bug，而是以下三类基础约束尚未完全收口：
-
-- 参数组织
-- 输出协议
-- 模型运行环境
-
-与此同时，本次检查也确认了一件重要的事：项目核心源码并没有广泛存在真实乱码或编码损坏，当前看到的大量“乱码观感”更像是控制台显示链路问题，而不是仓库文本文件损坏。
-
-因此，最合理的后续路线不是大面积重写，而是分阶段做以下治理：
-
-1. 先隔离运行环境。
-2. 再结构化输出协议。
-3. 然后集中参数入口与配置治理。
-4. 最后持续拆分前后端顶层重耦合文件。
-
-如果按这个顺序推进，当前项目完全有机会演进成稳定、可维护、可继续扩展的桌面端商业级工程。
+只要按这个顺序推进，这个项目完全有机会从“强功能、强经验驱动”的本地工具，升级为“稳定、可复现、可持续扩展”的商业级桌面工程。

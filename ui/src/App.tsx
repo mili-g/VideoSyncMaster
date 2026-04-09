@@ -739,7 +739,7 @@ function App() {
                   ⏹ 停止任务
                 </button>
               )}
-              {!(loading || dubbingLoading || generatingSegmentId !== null) && (
+              {!(loading || dubbingLoading || generatingSegmentId !== null || isBatchQueueRunning) && (
                 <button
                   onClick={() => setStatus('')}
                   title="清除消息"
@@ -1019,7 +1019,11 @@ function App() {
           )}
           {currentView === 'models' && (
             <div style={{ flex: 1, margin: '10px', overflow: 'auto' }}>
-              <ModelManager themeMode={'dark'} />
+              <ModelManager
+                themeMode={'dark'}
+                onStatusChange={setStatus}
+                onFeedback={setFeedback}
+              />
             </div>
           )}
           {currentView === 'about' && (
@@ -1029,24 +1033,6 @@ function App() {
           )}
         </div>
       </div>
-
-      <ConfirmDialog
-        isOpen={showRepairConfirm}
-        onConfirm={confirmRepairAction}
-        onCancel={() => setShowRepairConfirm(false)}
-        title="修复运行环境"
-        message={repairConfirmMessage}
-        isLightMode={false}
-      />
-
-      <ConfirmDialog
-        isOpen={!!feedback}
-        title={feedback?.title || ''}
-        message={feedback?.message || ''}
-        onConfirm={() => setFeedback(null)}
-        onCancel={() => setFeedback(null)}
-        isLightMode={false}
-      />
 
       {
         installingDeps && (

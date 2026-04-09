@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import ConfirmDialog from './ConfirmDialog';
 
 interface ModelStatus {
     whisperx: boolean;
@@ -17,13 +18,24 @@ interface ModelStatus {
 
 interface ModelManagerProps {
     themeMode?: 'light' | 'dark' | 'gradient';
+    onStatusChange?: (status: string) => void;
+    onFeedback?: (feedback: { title: string; message: string; type: 'success' | 'error' }) => void;
 }
 
-const ModelManager: React.FC<ModelManagerProps> = ({ themeMode }) => {
+const ModelManager: React.FC<ModelManagerProps> = ({ themeMode, onStatusChange, onFeedback }) => {
     const [status, setStatus] = useState<ModelStatus | null>(null);
     const [modelsRoot, setModelsRoot] = useState<string>('');
     const [loading, setLoading] = useState(true);
     const isLightMode = themeMode === 'gradient' || themeMode === 'light';
+    const [localFeedback, setLocalFeedback] = useState<{ title: string; message: string; type: 'success' | 'error' } | null>(null);
+
+    const notify = (feedback: { title: string; message: string; type: 'success' | 'error' }) => {
+        if (onFeedback) {
+            onFeedback(feedback);
+            return;
+        }
+        setLocalFeedback(feedback);
+    };
 
     const checkStatus = async () => {
         setLoading(true);
@@ -50,10 +62,10 @@ const ModelManager: React.FC<ModelManagerProps> = ({ themeMode }) => {
         if (downloading) return;
         setDownloading(modelKey);
         setDownloadProgress('正在准备下载...');
+        let modelId = '';
 
         try {
             // Determine model details based on key
-            let modelId = '';
             let localDir = '';
             let isGenericFile = false;
             let downloadUrl = '';
@@ -121,16 +133,31 @@ const ModelManager: React.FC<ModelManagerProps> = ({ themeMode }) => {
             }
 
             if (result.success) {
-                alert('模型下载完成！');
+                onStatusChange?.(`模型下载完成：${modelId}`);
+                notify({
+                    title: '下载完成',
+                    message: `模型 ${modelId} 已下载完成，可返回对应功能页直接使用。`,
+                    type: 'success'
+                });
                 checkStatus();
             } else {
                 if (result.error !== 'Cancelled') {
-                    alert(`下载失败: ${result.error}`);
+                    onStatusChange?.(`模型下载失败：${modelId}`);
+                    notify({
+                        title: '下载失败',
+                        message: `模型 ${modelId} 下载失败：\n${result.error}`,
+                        type: 'error'
+                    });
                 }
             }
         } catch (e: any) {
             console.error(e);
-            alert(`下载请求出错: ${e.message}`);
+            onStatusChange?.(`模型下载请求出错：${modelId}`);
+            notify({
+                title: '下载请求异常',
+                message: `模型 ${modelId} 下载请求出错：\n${e.message}`,
+                type: 'error'
+            });
         } finally {
             setDownloading(null);
             setDownloadProgress('');
@@ -176,6 +203,17 @@ const ModelManager: React.FC<ModelManagerProps> = ({ themeMode }) => {
 
     return (
         <div style={{ padding: '20px', height: '100%', overflowY: 'auto', color: isLightMode ? '#333' : '#fff' }}>
+            <ConfirmDialog
+                isOpen={!!localFeedback}
+                title={localFeedback?.title || ''}
+                message={localFeedback?.message || ''}
+                onConfirm={() => setLocalFeedback(null)}
+                onCancel={() => setLocalFeedback(null)}
+                isLightMode={isLightMode}
+                confirmText="确定"
+                cancelText={localFeedback?.type === 'error' ? '关闭' : ''}
+                confirmColor={localFeedback?.type === 'success' ? '#10b981' : '#3b82f6'}
+            />
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
                 <h2 style={{ margin: 0, color: isLightMode ? '#000' : '#fff' }}>📦 模型管理中心</h2>
                 <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>

@@ -275,7 +275,7 @@ export function useDubbingWorkflow({
                 const { segment, index } = errorSegments[retryIdx];
                 if (abortRef.current) return;
 
-                setStatus(`Retrying failed dubbing segment ${retryIdx + 1}/${totalErrors}...`);
+                setStatus(`正在重试失败配音片段 ${retryIdx + 1}/${totalErrors}...`);
                 setTranslatedSegments(prev => {
                     const next = [...prev];
                     next[index] = {

@@ -1,5 +1,5 @@
 import React, { useRef } from 'react';
-import type { BatchQueueItem } from '../hooks/useBatchQueue';
+import { BATCH_QUEUE_STAGE, type BatchQueueItem } from '../hooks/useBatchQueue';
 import type { BatchInputAsset } from '../utils/batchAssets';
 
 const suspiciousMojibakePattern = /[\uFFFD\u00C3\u00E2\u00D0\u00CF]/;
@@ -193,7 +193,13 @@ export default function BatchQueuePanel({
                                 emptyText="自动 ASR"
                                 badge={getSourceSubtitleBadge(item)}
                             />
-                            <Cell title="翻译字幕" primary={displayName(item.translatedSubtitlePath)} secondary={item.translatedSubtitlePath} emptyText="自动翻译" />
+                            <Cell
+                                title="翻译字幕"
+                                primary={displayName(item.translatedSubtitlePath)}
+                                secondary={item.translatedSubtitlePath}
+                                emptyText="自动翻译"
+                                badge={getTranslatedSubtitleBadge(item)}
+                            />
                             <div>
                                 <span style={{
                                     display: 'inline-flex',
@@ -306,9 +312,29 @@ function getSourceSubtitleBadge(item: BatchQueueItem) {
         };
     }
 
-    if (item.status === 'processing' && item.stage === 'Generating source subtitles') {
+    if (item.status === 'processing' && item.stageKey === BATCH_QUEUE_STAGE.sourceSubtitleGenerating) {
         return {
             label: '识别中',
+            color: '#93c5fd',
+            background: 'rgba(59,130,246,0.16)'
+        };
+    }
+
+    return undefined;
+}
+
+function getTranslatedSubtitleBadge(item: BatchQueueItem) {
+    if (item.translatedSubtitlePath || item.translatedSubtitleContent) {
+        return {
+            label: '翻译已生成',
+            color: '#fcd34d',
+            background: 'rgba(245,158,11,0.16)'
+        };
+    }
+
+    if (item.status === 'processing' && item.stageKey === BATCH_QUEUE_STAGE.translatingSubtitles) {
+        return {
+            label: '翻译中',
             color: '#93c5fd',
             background: 'rgba(59,130,246,0.16)'
         };

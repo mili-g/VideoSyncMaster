@@ -88,8 +88,8 @@ export function useTranslationWorkflow({
 
             setStatus('翻译失败');
             setFeedback({
-                title: '翻译失败 (Translation Error)',
-                message: `API 返回错误: \n${result?.error || 'Unknown Error'}`,
+                title: '翻译失败',
+                message: `API 返回错误：\n${result?.error || '未知错误'}`,
                 type: 'error'
             });
             return null;
@@ -147,7 +147,7 @@ export function useTranslationWorkflow({
                 }
             } else {
                 console.error('Re-translation failed:', result);
-                setStatus(`重新翻译失败: ${result?.error || 'Unknown'}`);
+                setStatus(`重新翻译失败: ${result?.error || '未知错误'}`);
             }
         } catch (e: any) {
             console.error(e);

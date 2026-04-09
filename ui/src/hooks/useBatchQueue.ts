@@ -20,11 +20,41 @@ export interface BatchQueueItem {
     translatedSubtitleContent?: string;
     status: BatchQueueStatus;
     stage: string;
+    stageKey?: string;
     outputPath?: string;
     error?: string;
     startedAt?: number;
     finishedAt?: number;
     elapsedMs?: number;
+}
+
+export const BATCH_QUEUE_STAGE = {
+    idle: 'idle',
+    waiting: 'waiting',
+    retryWaiting: 'retry-waiting',
+    stopped: 'stopped',
+    preparing: 'preparing',
+    preparingOutput: 'preparing-output',
+    fullFlow: 'full-flow',
+    savingSourceSubtitles: 'saving-source-subtitles',
+    loadingTranslatedSubtitles: 'loading-translated-subtitles',
+    translatingSubtitles: 'translating-subtitles',
+    generatingDubbing: 'generating-dubbing',
+    retryingFailedSegments: 'retrying-failed-segments',
+    partialMerge: 'partial-merge',
+    mergingVideo: 'merging-video',
+    completed: 'completed',
+    failed: 'failed',
+    sourceSubtitleGenerating: 'source-subtitle-generating',
+    sourceSubtitleReady: 'source-subtitle-ready',
+    sourceSubtitleRefreshed: 'source-subtitle-refreshed',
+    sourceSubtitleFailed: 'source-subtitle-failed'
+} as const;
+
+type BatchQueueStageKey = typeof BATCH_QUEUE_STAGE[keyof typeof BATCH_QUEUE_STAGE];
+
+function createStage(stageKey: BatchQueueStageKey, stage: string) {
+    return { stageKey, stage };
 }
 
 interface BatchQueueOptions {
@@ -109,7 +139,7 @@ function readBootstrapState(): BatchQueueBootstrapState {
                 return {
                     ...item,
                     status: 'pending' as const,
-                    stage: '等待处理',
+                    ...createStage(BATCH_QUEUE_STAGE.waiting, '等待处理'),
                     finishedAt: undefined,
                     elapsedMs: undefined
                 };
@@ -233,7 +263,7 @@ export function useBatchQueue() {
                     sourcePath: asset.path,
                     fileName: asset.name,
                     status: 'pending',
-                    stage: '等待处理'
+                    ...createStage(BATCH_QUEUE_STAGE.waiting, '等待处理')
                 };
                 next.push(item);
                 newlyAddedVideos.push({ id: item.id, path: item.sourcePath });
@@ -311,7 +341,7 @@ export function useBatchQueue() {
                 return {
                     ...item,
                     status: 'pending',
-                    stage: '等待重试',
+                    ...createStage(BATCH_QUEUE_STAGE.retryWaiting, '等待重试'),
                     error: undefined,
                     startedAt: undefined,
                     finishedAt: undefined,
@@ -341,7 +371,7 @@ export function useBatchQueue() {
                 return {
                     ...item,
                     status: 'pending' as const,
-                    stage: '队列已停止，可继续处理',
+                    ...createStage(BATCH_QUEUE_STAGE.stopped, '队列已停止，可继续处理'),
                     finishedAt: item.finishedAt ?? stoppedAt,
                     elapsedMs: item.startedAt ? Math.max(0, stoppedAt - item.startedAt) : item.elapsedMs
                 };
@@ -389,7 +419,11 @@ export function useBatchQueue() {
         try {
             for (const item of queue) {
                 if (stopRequestedRef.current) {
-                    updateItem(item.id, current => ({ ...current, status: 'pending', stage: '队列已停止，可继续处理' }));
+                    updateItem(item.id, current => ({
+                        ...current,
+                        status: 'pending',
+                        ...createStage(BATCH_QUEUE_STAGE.stopped, '队列已停止，可继续处理')
+                    }));
                     continue;
                 }
 
@@ -401,21 +435,32 @@ export function useBatchQueue() {
                     finishedAt: undefined,
                     elapsedMs: undefined
                 }));
-                updateItem(item.id, current => ({ ...current, status: 'processing', stage: '准备处理中', error: undefined }));
+                updateItem(item.id, current => ({
+                    ...current,
+                    status: 'processing',
+                    ...createStage(BATCH_QUEUE_STAGE.preparing, '准备处理中'),
+                    error: undefined
+                }));
 
                 try {
                     const outputPath = await processQueueItem(item, options, stage => {
                         updateItem(item.id, current => ({ ...current, stage }));
                         options.setStatus(`批量处理中：${item.fileName} - ${stage}`);
+                    }, patch => {
+                        updateItem(item.id, current => ({ ...current, ...patch }));
                     });
 
                     if (stopRequestedRef.current) {
-                        updateItem(item.id, current => ({ ...current, status: 'pending', stage: '队列已停止，可继续处理' }));
+                        updateItem(item.id, current => ({
+                            ...current,
+                            status: 'pending',
+                            ...createStage(BATCH_QUEUE_STAGE.stopped, '队列已停止，可继续处理')
+                        }));
                     } else {
                         updateItem(item.id, current => ({
                             ...current,
                             status: 'success',
-                            stage: '处理完成',
+                            ...createStage(BATCH_QUEUE_STAGE.completed, '处理完成'),
                             outputPath,
                             error: undefined,
                             finishedAt: Date.now(),
@@ -424,12 +469,16 @@ export function useBatchQueue() {
                     }
                 } catch (error: any) {
                     if (stopRequestedRef.current) {
-                        updateItem(item.id, current => ({ ...current, status: 'pending', stage: '队列已停止，可继续处理' }));
+                        updateItem(item.id, current => ({
+                            ...current,
+                            status: 'pending',
+                            ...createStage(BATCH_QUEUE_STAGE.stopped, '队列已停止，可继续处理')
+                        }));
                     } else {
                         updateItem(item.id, current => ({
                             ...current,
                             status: 'error',
-                            stage: '处理失败',
+                            ...createStage(BATCH_QUEUE_STAGE.failed, '处理失败'),
                             error: error?.message || String(error),
                             finishedAt: Date.now(),
                             elapsedMs: current.startedAt ? Math.max(0, Date.now() - current.startedAt) : current.elapsedMs
@@ -459,7 +508,7 @@ export function useBatchQueue() {
         const missingSubtitleItems = eligibleItems.filter(item => !item.originalSubtitleContent);
         const queue = missingSubtitleItems.length > 0 ? missingSubtitleItems : eligibleItems;
         if (queue.length === 0) {
-            options.setStatus('No batch items are available for subtitle recognition.');
+            options.setStatus('当前没有可执行字幕识别的批量任务。');
             return;
         }
 
@@ -470,8 +519,8 @@ export function useBatchQueue() {
         const isRerun = missingSubtitleItems.length === 0;
         options.setStatus(
             isRerun
-                ? `Re-running subtitle recognition for ${queue.length} item(s).`
-                : `Starting subtitle recognition for ${queue.length} item(s).`
+                ? `正在重新识别全部 ${queue.length} 个任务的原字幕...`
+                : `开始识别缺失原字幕的 ${queue.length} 个任务...`
         );
 
         try {
@@ -485,7 +534,7 @@ export function useBatchQueue() {
                 updateItem(item.id, current => ({
                     ...current,
                     status: 'processing',
-                    stage: 'Generating source subtitles',
+                    ...createStage(BATCH_QUEUE_STAGE.sourceSubtitleGenerating, '正在识别原字幕'),
                     error: undefined,
                     startedAt: itemStartedAt,
                     finishedAt: undefined,
@@ -493,8 +542,8 @@ export function useBatchQueue() {
                 }));
                 options.setStatus(
                     isRerun
-                        ? `Re-recognizing subtitles: ${item.fileName}`
-                        : `Recognizing subtitles: ${item.fileName}`
+                        ? `正在重新识别字幕：${item.fileName}`
+                        : `正在识别字幕：${item.fileName}`
                 );
 
                 try {
@@ -504,7 +553,10 @@ export function useBatchQueue() {
                     updateItem(item.id, current => ({
                         ...current,
                         status: 'pending',
-                        stage: isRerun ? 'Source subtitles refreshed for batch processing' : 'Source subtitles ready for batch processing',
+                        ...createStage(
+                            isRerun ? BATCH_QUEUE_STAGE.sourceSubtitleRefreshed : BATCH_QUEUE_STAGE.sourceSubtitleReady,
+                            isRerun ? '原字幕已刷新，可继续批量处理' : '原字幕已生成，可继续批量处理'
+                        ),
                         originalSubtitlePath: subtitlePath,
                         originalSubtitleContent: subtitleContent,
                         error: undefined,
@@ -516,7 +568,7 @@ export function useBatchQueue() {
                     updateItem(item.id, current => ({
                         ...current,
                         status: 'pending',
-                        stage: 'Subtitle recognition failed; full batch flow can still run',
+                        ...createStage(BATCH_QUEUE_STAGE.sourceSubtitleFailed, '字幕识别失败，可稍后重试或直接继续完整流程'),
                         error: error?.message || String(error),
                         finishedAt: Date.now(),
                         elapsedMs: current.startedAt ? Math.max(0, Date.now() - current.startedAt) : current.elapsedMs
@@ -531,7 +583,7 @@ export function useBatchQueue() {
             runLockRef.current = false;
             stopRequestedRef.current = false;
             options.setStatus(
-                `${isRerun ? 'Subtitle re-recognition' : 'Subtitle recognition'} finished in ${Math.floor(elapsed / 1000)}s. Success: ${successCount}, Failed: ${failedCount}, Skipped: ${Math.max(0, queue.length - successCount - failedCount)}.`
+                `${isRerun ? '字幕重新识别' : '字幕识别'}已完成，耗时 ${Math.floor(elapsed / 1000)} 秒。成功 ${successCount} 项，失败 ${failedCount} 项，跳过 ${Math.max(0, queue.length - successCount - failedCount)} 项。`
             );
         }
     };
@@ -580,7 +632,7 @@ async function generateSubtitleForItem(
 
     const result = await window.api.runBackend(args);
     if (!Array.isArray(result) || result.length === 0) {
-        throw new Error('ASR did not return any subtitle segments.');
+        throw new Error('语音识别未返回有效字幕片段。');
     }
 
     const subtitleContent = segmentsToSRT(result);
@@ -594,9 +646,15 @@ async function generateSubtitleForItem(
 async function processQueueItem(
     item: BatchQueueItem,
     options: BatchQueueOptions,
-    onStageChange: (stage: string) => void
+    onStageChange: (stage: string) => void,
+    onItemPatch: (patch: Partial<BatchQueueItem>) => void
 ) {
-    onStageChange('准备输出目录');
+    const applyStage = (stageKey: BatchQueueStageKey, stage: string) => {
+        onItemPatch(createStage(stageKey, stage));
+        onStageChange(stage);
+    };
+
+    applyStage(BATCH_QUEUE_STAGE.preparingOutput, '准备输出目录');
     const paths = await window.api.getPaths();
     const projectPaths = buildBatchOutputPaths(paths, item.fileName, item.id);
     const outputPath = projectPaths.finalVideoPath;
@@ -607,26 +665,34 @@ async function processQueueItem(
 
     try {
         if (!item.originalSubtitleContent && !item.translatedSubtitleContent) {
-            onStageChange('执行完整流程');
+            applyStage(BATCH_QUEUE_STAGE.fullFlow, '执行完整流程');
             const result = await window.api.runBackend(buildDubVideoArgs(item.sourcePath, outputPath, workDir, options));
             if (!result || !result.success) {
                 throw new Error(result?.error || '批量处理失败');
             }
             if (Array.isArray(result.segments)) {
+                const originalSegments = result.segments.map((segment: any) => ({
+                    start: Number(segment.start) || 0,
+                    end: Number(segment.end) || 0,
+                    text: segment.original_text || segment.text || ''
+                }));
+                const translatedSegments = result.segments.map((segment: any) => ({
+                    start: Number(segment.start) || 0,
+                    end: Number(segment.end) || 0,
+                    text: segment.text || ''
+                }));
                 await saveSubtitleArtifacts(
                     projectPaths.finalDir,
                     item.fileName,
-                    result.segments.map((segment: any) => ({
-                        start: Number(segment.start) || 0,
-                        end: Number(segment.end) || 0,
-                        text: segment.original_text || segment.text || ''
-                    })),
-                    result.segments.map((segment: any) => ({
-                        start: Number(segment.start) || 0,
-                        end: Number(segment.end) || 0,
-                        text: segment.text || ''
-                    }))
+                    originalSegments,
+                    translatedSegments
                 );
+                onItemPatch({
+                    originalSubtitlePath: projectPaths.originalSubtitlePath,
+                    originalSubtitleContent: segmentsToSRT(originalSegments),
+                    translatedSubtitlePath: projectPaths.translatedSubtitlePath,
+                    translatedSubtitleContent: segmentsToSRT(translatedSegments)
+                });
             }
             return result.output || outputPath;
         }
@@ -636,15 +702,19 @@ async function processQueueItem(
             throw new Error('字幕解析失败，未找到有效片段');
         }
 
-        onStageChange('保存字幕基线');
+        applyStage(BATCH_QUEUE_STAGE.savingSourceSubtitles, '保存原字幕');
         await saveSubtitleArtifacts(projectPaths.finalDir, item.fileName, sourceSegments, sourceSegments);
+        onItemPatch({
+            originalSubtitlePath: projectPaths.originalSubtitlePath,
+            originalSubtitleContent: item.originalSubtitleContent || segmentsToSRT(sourceSegments)
+        });
 
         let translatedSegments: SrtSegment[];
         if (item.translatedSubtitleContent) {
-            onStageChange('加载翻译字幕');
+            applyStage(BATCH_QUEUE_STAGE.loadingTranslatedSubtitles, '加载翻译字幕');
             translatedSegments = parseSRTContent(item.translatedSubtitleContent);
         } else {
-            onStageChange('翻译字幕');
+            applyStage(BATCH_QUEUE_STAGE.translatingSubtitles, '翻译字幕');
             translatedSegments = await translateSegments(sourceSegments, options);
         }
 
@@ -653,8 +723,12 @@ async function processQueueItem(
         }
 
         await saveSubtitleArtifacts(projectPaths.finalDir, item.fileName, sourceSegments, translatedSegments);
+        onItemPatch({
+            translatedSubtitlePath: projectPaths.translatedSubtitlePath,
+            translatedSubtitleContent: item.translatedSubtitleContent || segmentsToSRT(translatedSegments)
+        });
 
-        onStageChange('生成配音');
+        applyStage(BATCH_QUEUE_STAGE.generatingDubbing, '生成配音');
         const tempJsonPath = `${workDir}\\segments.json`;
         await window.api.saveFile(tempJsonPath, JSON.stringify(
             translatedSegments.map((segment, index) => ({
@@ -684,7 +758,7 @@ async function processQueueItem(
         }
 
         if (failedIndexes.length > 0) {
-            onStageChange(`重试失败片段 (${failedIndexes.length})`);
+            applyStage(BATCH_QUEUE_STAGE.retryingFailedSegments, `重试失败片段 (${failedIndexes.length})`);
             await retryFailedBatchSegments({
                 sourcePath: item.sourcePath,
                 sessionDir: projectPaths.sessionTempDir,
@@ -700,7 +774,10 @@ async function processQueueItem(
             throw new Error('所有配音片段均失败，无法合成');
         }
 
-        onStageChange(failedIndexes.length > 0 ? '部分片段失败，继续合成' : '合成视频');
+        applyStage(
+            failedIndexes.length > 0 ? BATCH_QUEUE_STAGE.partialMerge : BATCH_QUEUE_STAGE.mergingVideo,
+            failedIndexes.length > 0 ? '部分片段失败，继续合成' : '合成视频'
+        );
         const mergeJsonPath = `${workDir}\\merge_segments.json`;
         await window.api.saveFile(mergeJsonPath, JSON.stringify(readySegments, null, 2));
         const mergeResult = await window.api.runBackend([
