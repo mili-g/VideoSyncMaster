@@ -23,7 +23,9 @@ interface DesktopApi {
     cancelFileDownload(payload: { key: string }): Promise<any>;
     openFileDialog(options: unknown): Promise<any>;
     showSaveDialog(options: unknown): Promise<any>;
-    onBackendProgress(listener: (value: number) => void): () => void;
+    onBackendProgress(listener: (value: unknown) => void): () => void;
+    onBackendStage(listener: (data: unknown) => void): () => void;
+    onBackendIssue(listener: (data: unknown) => void): () => void;
     onBackendPartialResult(listener: (data: unknown) => void): () => void;
     onBackendDepsInstalling(listener: (pkgName: string) => void): () => void;
     onBackendDepsDone(listener: () => void): () => void;

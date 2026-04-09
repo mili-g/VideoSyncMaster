@@ -6,6 +6,7 @@ import { useSubtitleImport } from './useSubtitleImport';
 import { useTranslationWorkflow } from './useTranslationWorkflow';
 import { saveSubtitleArtifacts } from '../utils/outputArtifacts';
 import { buildSingleOutputPaths } from '../utils/projectPaths';
+import { isBackendCanceledError } from '../utils/backendCancellation';
 
 export interface Segment {
     start: number;
@@ -111,7 +112,8 @@ export function useVideoProject() {
         setProgress,
         setTranslatedSegments,
         setInstallingDeps,
-        setDepsPackageName
+        setDepsPackageName,
+        setStatus
     });
 
     const {
@@ -241,6 +243,10 @@ export function useVideoProject() {
             setStatus('识别完成，请检查并编辑字幕。');
             return result;
         } catch (e: any) {
+            if (abortRef.current || isBackendCanceledError(e)) {
+                setStatus('任务已由用户停止');
+                return null;
+            }
             console.error(e);
             setStatus(`识别错误: ${e.message}`);
             return null;

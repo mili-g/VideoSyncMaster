@@ -3,6 +3,7 @@ import { buildBatchMatchKey, classifyBatchAsset, type BatchInputAsset } from '..
 import { parseSRTContent, segmentsToSRT, type SrtSegment } from '../utils/srt';
 import { cleanupOutputArtifacts, saveSubtitleArtifacts } from '../utils/outputArtifacts';
 import { buildBatchOutputPaths } from '../utils/projectPaths';
+import { isBackendCanceledError } from '../utils/backendCancellation';
 
 const BATCH_QUEUE_ITEMS_STORAGE_KEY = 'batchQueue.items.v1';
 const BATCH_QUEUE_META_STORAGE_KEY = 'batchQueue.meta.v1';
@@ -514,6 +515,11 @@ export function useBatchQueue() {
 
         runLockRef.current = true;
         const startedAt = Date.now();
+        setIsRunning(true);
+        setQueueStartedAt(startedAt);
+        setQueueFinishedElapsedMs(0);
+        setNow(startedAt);
+        stopRequestedRef.current = false;
         let successCount = 0;
         let failedCount = 0;
         const isRerun = missingSubtitleItems.length === 0;
@@ -548,6 +554,16 @@ export function useBatchQueue() {
 
                 try {
                     const { subtitlePath, subtitleContent } = await generateSubtitleForItem(item, options);
+                    if (stopRequestedRef.current) {
+                        updateItem(item.id, current => ({
+                            ...current,
+                            status: 'pending',
+                            ...createStage(BATCH_QUEUE_STAGE.stopped, '队列已停止，可继续识别或开始批量处理'),
+                            finishedAt: Date.now(),
+                            elapsedMs: current.startedAt ? Math.max(0, Date.now() - current.startedAt) : current.elapsedMs
+                        }));
+                        continue;
+                    }
                     successCount += 1;
 
                     updateItem(item.id, current => ({
@@ -564,6 +580,17 @@ export function useBatchQueue() {
                         elapsedMs: current.startedAt ? Math.max(0, Date.now() - current.startedAt) : current.elapsedMs
                     }));
                 } catch (error: any) {
+                    if (stopRequestedRef.current || isBackendCanceledError(error)) {
+                        updateItem(item.id, current => ({
+                            ...current,
+                            status: 'pending',
+                            ...createStage(BATCH_QUEUE_STAGE.stopped, '队列已停止，可继续识别或开始批量处理'),
+                            error: undefined,
+                            finishedAt: Date.now(),
+                            elapsedMs: current.startedAt ? Math.max(0, Date.now() - current.startedAt) : current.elapsedMs
+                        }));
+                        continue;
+                    }
                     failedCount += 1;
                     updateItem(item.id, current => ({
                         ...current,
@@ -577,14 +604,21 @@ export function useBatchQueue() {
             }
         } finally {
             const elapsed = Math.max(0, Date.now() - startedAt);
+            const wasStopped = stopRequestedRef.current;
             setActiveItemId(null);
             activeItemIdRef.current = null;
+            setIsRunning(false);
+            setQueueFinishedElapsedMs(elapsed);
             setNow(Date.now());
             runLockRef.current = false;
             stopRequestedRef.current = false;
-            options.setStatus(
-                `${isRerun ? '字幕重新识别' : '字幕识别'}已完成，耗时 ${Math.floor(elapsed / 1000)} 秒。成功 ${successCount} 项，失败 ${failedCount} 项，跳过 ${Math.max(0, queue.length - successCount - failedCount)} 项。`
-            );
+            if (wasStopped) {
+                options.setStatus('批量字幕识别已停止，可再次启动继续处理。');
+            } else {
+                options.setStatus(
+                    `${isRerun ? '字幕重新识别' : '字幕识别'}已完成，耗时 ${Math.floor(elapsed / 1000)} 秒。成功 ${successCount} 项，失败 ${failedCount} 项，跳过 ${Math.max(0, queue.length - successCount - failedCount)} 项。`
+                );
+            }
         }
     };
 

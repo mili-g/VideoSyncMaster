@@ -1,5 +1,6 @@
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
 import type { Segment } from './useVideoProject';
+import { isBackendCanceledError } from '../utils/backendCancellation';
 
 type FeedbackType = 'success' | 'error';
 
@@ -94,6 +95,10 @@ export function useTranslationWorkflow({
             });
             return null;
         } catch (e: any) {
+            if (abortRef.current || isBackendCanceledError(e)) {
+                setStatus('任务已由用户停止');
+                return null;
+            }
             console.error(e);
             setStatus(`翻译错误: ${e.message}`);
             return null;
@@ -150,6 +155,10 @@ export function useTranslationWorkflow({
                 setStatus(`重新翻译失败: ${result?.error || '未知错误'}`);
             }
         } catch (e: any) {
+            if (isBackendCanceledError(e)) {
+                setStatus('任务已由用户停止');
+                return;
+            }
             console.error(e);
             setStatus(`重新翻译错误: ${e.message}`);
         } finally {

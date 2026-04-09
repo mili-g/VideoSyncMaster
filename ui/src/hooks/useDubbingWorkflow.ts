@@ -2,6 +2,7 @@ import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
 import type { AudioMixMode, Segment } from './useVideoProject';
 import { cleanupOutputArtifacts, saveSubtitleArtifacts } from '../utils/outputArtifacts';
 import { buildSingleOutputPaths } from '../utils/projectPaths';
+import { isBackendCanceledError } from '../utils/backendCancellation';
 
 type FeedbackType = 'success' | 'error';
 
@@ -127,6 +128,10 @@ export function useDubbingWorkflow({
                 setStatus(`片段 ${index + 1} 配音生成失败`);
             }
         } catch (error) {
+            if (isBackendCanceledError(error)) {
+                setStatus('任务已由用户停止');
+                return;
+            }
             console.error(error);
             setTranslatedSegments(prev => {
                 const next = [...prev];
@@ -231,6 +236,10 @@ export function useDubbingWorkflow({
             });
             return null;
         } catch (e: any) {
+            if (abortRef.current || isBackendCanceledError(e)) {
+                setStatus('任务已由用户停止');
+                return null;
+            }
             console.error(e);
             setStatus(`配音生成错误: ${e.message}`);
             return null;
@@ -320,6 +329,10 @@ export function useDubbingWorkflow({
                 setStatus('失败片段重试完成');
             }
         } catch (error: any) {
+            if (abortRef.current || isBackendCanceledError(error)) {
+                setStatus('任务已由用户停止');
+                return;
+            }
             console.error(error);
             setStatus(`重试失败: ${error?.message || String(error)}`);
         } finally {
@@ -401,6 +414,10 @@ export function useDubbingWorkflow({
                 });
             }
         } catch (e: any) {
+            if (abortRef.current || isBackendCanceledError(e)) {
+                setStatus('任务已由用户停止');
+                return;
+            }
             console.error(e);
             setStatus(`合并错误: ${e.message}`);
         } finally {

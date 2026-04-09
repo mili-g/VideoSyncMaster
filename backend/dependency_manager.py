@@ -5,6 +5,7 @@ import os
 import shutil
 import glob
 import importlib.metadata
+from event_protocol import emit_event, emit_issue, emit_progress, emit_stage
 
 # ============================================================
 # Configuration
@@ -50,6 +51,7 @@ def install_package(package_spec):
     print(f"[DependencyManager] Installing {package_spec}...")
     # Add a special flag for frontend to detect and show notification
     print(f"[DEPS_INSTALLING] {package_spec}", flush=True)
+    emit_event("deps_installing", "runtime_setup", {"package": package_spec})
     try:
         # Use the current python executable
         # Removed --no-cache-dir for faster re-installs
@@ -61,9 +63,19 @@ def install_package(package_spec):
         subprocess.check_call(cmd)
         print(f"[DependencyManager] Successfully installed {package_spec}")
         print(f"[DEPS_DONE] {package_spec}", flush=True)
+        emit_event("deps_done", "runtime_setup", {"package": package_spec})
         return True
     except subprocess.CalledProcessError as e:
         print(f"[DependencyManager] Failed to install {package_spec}: {e}")
+        emit_issue(
+            "runtime_setup",
+            "runtime_repair",
+            "error",
+            "RUNTIME_INSTALL_FAILED",
+            f"依赖安装失败: {package_spec}",
+            detail=str(e),
+            suggestion="请检查网络、磁盘空间或完整日志"
+        )
         return False
 
 
@@ -124,12 +136,26 @@ def swap_environment(target_version):
     
     print(f"[DependencyManager] Swapping environment: v{current_version} -> v{target_version}")
     print(f"[DEPS_INSTALLING] Environment v{target_version}", flush=True)
+    emit_stage(
+        "runtime_switch",
+        "runtime_switch",
+        f"正在切换依赖版本到 {target_version}",
+        stage_label="正在切换运行环境"
+    )
+    emit_event("deps_installing", "runtime_switch", {"package": f"Environment v{target_version}"})
     
     # Step 1: Check if target version is in cache
     target_in_cache = os.path.exists(target_cache) and len(os.listdir(target_cache)) > 0
     
     if target_in_cache:
         print(f"[DependencyManager] Target version v{target_version} found in cache. Performing instant swap...")
+        emit_progress(
+            "runtime_switch",
+            "runtime_switch",
+            25,
+            f"已找到缓存版本 {target_version}",
+            stage_label="正在切换运行环境"
+        )
         
         # Step 2A: Move current packages to cache (if they exist)
         if current_version and current_cache:
@@ -146,14 +172,47 @@ def swap_environment(target_version):
             if new_version == target_version:
                 print(f"[DependencyManager] Instant swap complete! Now on v{target_version}")
                 print(f"[DEPS_DONE] Environment v{target_version}", flush=True)
+                emit_progress(
+                    "runtime_switch",
+                    "runtime_switch",
+                    100,
+                    f"已切换到版本 {target_version}",
+                    stage_label="正在切换运行环境"
+                )
+                emit_event("deps_done", "runtime_switch", {"package": f"Environment v{target_version}"})
                 return True
             else:
                 print(f"[DependencyManager] Warning: Swap verification failed. Expected v{target_version}, got v{new_version}")
+                emit_issue(
+                    "runtime_switch",
+                    "runtime_switch",
+                    "warn",
+                    "RUNTIME_SWITCH_VERIFY_FAILED",
+                    "版本切换校验失败",
+                    detail=f"Expected {target_version}, got {new_version}",
+                    suggestion="请尝试修复运行环境或重建切换缓存"
+                )
         else:
             print(f"[DependencyManager] Warning: No packages restored from cache. Cache may be empty or corrupted.")
+            emit_issue(
+                "runtime_switch",
+                "runtime_switch",
+                "warn",
+                "RUNTIME_CACHE_MISSING",
+                "目标缓存不存在或已损坏",
+                detail=f"Cache path: {target_cache}",
+                suggestion="请执行运行环境修复或重建缓存"
+            )
     
     # Step 3: Fallback to pip install if cache miss or swap failed
     print(f"[DependencyManager] Cache miss or swap failed. Falling back to pip install...")
+    emit_progress(
+        "runtime_switch",
+        "runtime_switch",
+        60,
+        "缓存不可用，正在回退到 pip 安装",
+        stage_label="正在切换运行环境"
+    )
     
     # First, cache the current version if we haven't already
     if current_version and current_cache and not os.path.exists(current_cache):
@@ -181,9 +240,26 @@ def swap_environment(target_version):
         
         print(f"[DependencyManager] Successfully switched to v{target_version} via pip")
         print(f"[DEPS_DONE] Environment v{target_version}", flush=True)
+        emit_progress(
+            "runtime_switch",
+            "runtime_switch",
+            100,
+            f"已切换到版本 {target_version}",
+            stage_label="正在切换运行环境"
+        )
+        emit_event("deps_done", "runtime_switch", {"package": f"Environment v{target_version}"})
         return True
     
     print(f"[DependencyManager] Failed to switch to v{target_version}")
+    emit_issue(
+        "runtime_switch",
+        "runtime_switch",
+        "error",
+        "RUNTIME_SWITCH_FAILED",
+        f"切换到版本 {target_version} 失败",
+        detail=f"Current version: {current_version}",
+        suggestion="请执行运行环境修复并查看完整日志"
+    )
     return False
 
 

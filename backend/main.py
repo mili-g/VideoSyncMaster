@@ -41,6 +41,8 @@ current_script_dir = os.path.dirname(os.path.abspath(__file__))
 if current_script_dir not in sys.path:
     sys.path.insert(0, current_script_dir)
 
+from event_protocol import emit_issue, emit_partial_result, emit_progress, emit_stage
+
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 # With flat structure, APP_ROOT is consistently the parent of backend/
 APP_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, ".."))
@@ -381,6 +383,7 @@ def translate_text(input_text_or_json, target_lang, **kwargs):
     """
     Translates text or a list of segments (JSON string).
     """
+    action_name = "translate_text"
     LLMTranslator = get_llm_translator_class()
     translator = LLMTranslator(**kwargs)
     
@@ -418,6 +421,12 @@ def translate_text(input_text_or_json, target_lang, **kwargs):
 
             # [Original Loop for Local Model]
             print(f"Translating {len(data)} segments to {target_lang}...")
+            emit_stage(
+                action_name,
+                "translate",
+                f"正在翻译 {len(data)} 个片段到 {target_lang}",
+                stage_label="正在翻译字幕"
+            )
             translated_segments = []
             for idx, item in enumerate(data):
                 original = item.get('text', '')
@@ -426,7 +435,15 @@ def translate_text(input_text_or_json, target_lang, **kwargs):
                     continue
                     
                 print(f"  [{idx+1}/{len(data)}] {original}")
-                print(f"[PROGRESS] {int((idx + 1) / len(data) * 100)}", flush=True)
+                emit_progress(
+                    action_name,
+                    "translate",
+                    int((idx + 1) / len(data) * 100),
+                    f"第 {idx + 1}/{len(data)} 条翻译中",
+                    stage_label="正在翻译字幕",
+                    item_index=idx + 1,
+                    item_total=len(data)
+                )
                 trans = translator.translate(original, target_lang)
                 
                 # Stream partial result
@@ -434,7 +451,7 @@ def translate_text(input_text_or_json, target_lang, **kwargs):
                     "index": idx,
                     "text": trans if trans else original
                 }
-                print(f"[PARTIAL] {json.dumps(partial_data)}", flush=True)
+                emit_partial_result(action_name, partial_data)
                 
                 new_item = item.copy()
                 new_item['text'] = trans if trans else original
@@ -461,10 +478,12 @@ def translate_text(input_text_or_json, target_lang, **kwargs):
 # 333: 
 def dub_video(input_path, target_lang, output_path, asr_service="whisperx", vad_onset=0.700, vad_offset=0.700, tts_service="indextts", **kwargs):
     print(f"Starting AI Dubbing for {input_path} -> {target_lang} using ASR:{asr_service} TTS:{tts_service}", flush=True)
+    emit_stage("dub_video", "bootstrap", "正在准备配音任务", stage_label="正在准备任务")
     
     # 0. Get TTS Runner (This will switch deps if needed)
     run_tts_func, run_batch_tts_func = get_tts_runner(tts_service)
     if not run_tts_func:
+        emit_issue("dub_video", "bootstrap", "error", "TTS_INIT_FAILED", f"初始化 TTS 服务失败: {tts_service}")
         return {"success": False, "error": f"Failed to initialize TTS service: {tts_service}"}
 
     # 1. Initialize LLM
@@ -479,6 +498,7 @@ def dub_video(input_path, target_lang, output_path, asr_service="whisperx", vad_
     
     # 2. Run ASR
     print("Step 1/4: Running ASR...", flush=True)
+    emit_stage("dub_video", "asr", "正在识别字幕", stage_label="正在识别字幕")
     
     output_dir_root = os.path.dirname(output_path)
     work_dir_root = kwargs.get("work_dir") or output_dir_root
@@ -501,6 +521,7 @@ def dub_video(input_path, target_lang, output_path, asr_service="whisperx", vad_
         language=kwargs.get("ori_lang")
     ) 
     if not segments:
+        emit_issue("dub_video", "asr", "error", "ASR_NO_SEGMENTS", "识别失败或未检测到有效语音")
         return {"success": False, "error": "ASR failed or no speech detected."}
     
     
@@ -520,6 +541,7 @@ def dub_video(input_path, target_lang, output_path, asr_service="whisperx", vad_
     
     
     print(f"Step 2: Translating {len(segments)} segments...", flush=True)
+    emit_stage("dub_video", "translate", f"正在翻译 {len(segments)} 个片段", stage_label="正在翻译字幕")
     source_texts = [seg.get('text', '') for seg in segments]
     translated_texts = translator.translate_batch(source_texts, target_lang)
     if len(translated_texts) != len(source_texts):
@@ -558,6 +580,7 @@ def dub_video(input_path, target_lang, output_path, asr_service="whisperx", vad_
     del translator
     
     print(f"Step 3: Cloning Voice for {len(tts_tasks)} segments using {tts_service}...", flush=True)
+    emit_stage("dub_video", "tts_generate", f"正在生成 {len(tts_tasks)} 条配音", stage_label="正在生成配音")
 
     tts_segments = [
         {
@@ -646,6 +669,17 @@ def dub_video(input_path, target_lang, output_path, asr_service="whisperx", vad_
             })
         else:
             print(f"    [DubVideo] Segment {idx} failed after retries: {last_error}")
+            emit_issue(
+                "dub_video",
+                "tts_generate",
+                "warn",
+                "TTS_SEGMENT_FAILED",
+                f"片段 {idx + 1} 配音失败",
+                item_index=idx + 1,
+                item_total=len(tts_tasks),
+                detail=last_error or "TTS generation failed after retries",
+                suggestion="请查看完整日志或切换参考音频后重试"
+            )
             result_segments.append({
                 "index": idx,
                 "start": start,
@@ -662,6 +696,15 @@ def dub_video(input_path, target_lang, output_path, asr_service="whisperx", vad_
     if failed_segments:
         failed_indexes = [str(seg.get("index")) for seg in failed_segments]
         print(f"[DubVideo] Warning: segments still failed after retries: {', '.join(failed_indexes)}")
+        emit_issue(
+            "dub_video",
+            "tts_generate",
+            "warn",
+            "TTS_PARTIAL_FAILURE",
+            f"{len(failed_segments)} 个片段在重试后仍然失败",
+            detail=", ".join(failed_indexes),
+            suggestion="可先导出日志，再对失败片段单独重试"
+        )
         if not new_audio_segments:
             return {
                 "success": False,
@@ -672,6 +715,7 @@ def dub_video(input_path, target_lang, output_path, asr_service="whisperx", vad_
         
     # 4. Merge
     print("Step 4/4: Merging Video...")
+    emit_stage("dub_video", "merge_video", "正在合成视频", stage_label="正在合成视频")
     success = merge_audios_to_video(
         input_path,
         new_audio_segments,
@@ -690,6 +734,14 @@ def dub_video(input_path, target_lang, output_path, asr_service="whisperx", vad_
             "warning": f"Segments failed after retries: {', '.join(str(seg.get('index')) for seg in failed_segments)}" if failed_segments else None
         }
     else:
+        emit_issue(
+            "dub_video",
+            "merge_video",
+            "error",
+            "MERGE_VIDEO_FAILED",
+            "视频合成失败",
+            suggestion="请检查 FFmpeg、输出路径和完整日志"
+        )
         return {"success": False, "error": "Merging failed."}
 
 

@@ -5,6 +5,7 @@ import soundfile as sf
 import traceback
 import json
 from audio_validation import validate_generated_audio
+from event_protocol import emit_issue, emit_partial_result, emit_progress, emit_stage
 
 # Ensure environment requirements
 try:
@@ -564,7 +565,7 @@ def run_batch_qwen_tts(tasks, language="Auto", **kwargs):
                                 f"Generated audio rejected: {validation_info}"
                             )
                             results.append(fallback_result)
-                            print(f"[PARTIAL] {json.dumps(fallback_result)}", flush=True)
+                            emit_partial_result("generate_batch_tts", fallback_result)
                         else:
                             error_result = {
                                 "index": original_idx,
@@ -572,7 +573,7 @@ def run_batch_qwen_tts(tasks, language="Auto", **kwargs):
                                 "error": f"Generated audio rejected: {validation_info}"
                             }
                             results.append(error_result)
-                            print(f"[PARTIAL] {json.dumps(error_result)}", flush=True)
+                            emit_partial_result("generate_batch_tts", error_result)
                         continue
 
                     results.append({
@@ -580,12 +581,21 @@ def run_batch_qwen_tts(tasks, language="Auto", **kwargs):
                         "success": True,
                         "audio_path": out_p
                     })
-                    print(f"[PARTIAL] {json.dumps({'index': original_idx, 'success': True, 'audio_path': out_p})}", flush=True)
+                    emit_partial_result("generate_batch_tts", {"index": original_idx, "success": True, "audio_path": out_p})
 
                 return results
 
             except Exception as batch_e:
                 print(f"[QwenTTS] Batch failed: {batch_e}")
+                emit_issue(
+                    "generate_batch_tts",
+                    "tts_generate",
+                    "warn",
+                    "TTS_BATCH_SLICE_FAILED",
+                    "当前批次生成失败，正在降级处理",
+                    detail=str(batch_e),
+                    suggestion="系统将尝试逐条回退，请关注失败片段"
+                )
                 traceback.print_exc()
                 rets = []
                 for i, task in enumerate(batch_tasks):
@@ -595,23 +605,38 @@ def run_batch_qwen_tts(tasks, language="Auto", **kwargs):
                         if fallback_result.get("index") is None:
                             fallback_result["index"] = original_idx
                         rets.append(fallback_result)
-                        print(f"[PARTIAL] {json.dumps(fallback_result)}", flush=True)
+                        emit_partial_result("generate_batch_tts", fallback_result)
                     else:
                         error_result = {
                             "index": original_idx,
                             "success": False,
                             "error": str(batch_e)
                         }
-                        print(f"[PARTIAL] {json.dumps(error_result)}", flush=True)
+                        emit_partial_result("generate_batch_tts", error_result)
                         rets.append(error_result)
                 return rets
 
         # Main Loop
+        emit_stage(
+            "generate_batch_tts",
+            "tts_generate",
+            f"正在生成 {total_tasks} 条 Qwen 配音",
+            stage_label="正在生成配音"
+        )
         for i in range(0, total_tasks, batch_size):
             # Safe slice
             end_idx = min(i + batch_size, total_tasks)
             batch_tasks = tasks[i : end_idx]
-            print(f"[PROGRESS] {int((i) / total_tasks * 100)}", flush=True)
+            emit_progress(
+                "generate_batch_tts",
+                "tts_generate",
+                int((i) / total_tasks * 100) if total_tasks else 0,
+                f"正在处理第 {i + 1}-{end_idx}/{total_tasks} 条",
+                stage_label="正在生成配音",
+                item_index=min(i + 1, total_tasks) if total_tasks else 0,
+                item_total=total_tasks,
+                detail=f"当前批大小 {len(batch_tasks)}"
+            )
             if len(batch_tasks) == 1:
                 task = batch_tasks[0]
                 print(
@@ -638,5 +663,14 @@ def run_batch_qwen_tts(tasks, language="Auto", **kwargs):
 
     except Exception as e:
         print(f"[QwenTTS] Batch Error: {e}")
+        emit_issue(
+            "generate_batch_tts",
+            "tts_generate",
+            "error",
+            "TTS_BATCH_FAILED",
+            "Qwen 批量配音执行失败",
+            detail=str(e),
+            suggestion="请查看完整日志，检查模型状态、显存或参考音频"
+        )
         traceback.print_exc()
 

@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 import traceback
+from event_protocol import emit_issue, emit_stage
 
 
 def _build_retry_tts_kwargs(base_kwargs, *, tts_service_name, attempt, use_fallback_reference=False):
@@ -574,8 +575,21 @@ def generate_batch_tts_results(
     sf,
     log_prefix="[BatchTTS]"
 ):
+    emit_stage(
+        "generate_batch_tts",
+        "prepare_reference",
+        "正在提取参考音频",
+        stage_label="正在准备参考音频"
+    )
     run_tts_func, run_batch_tts_func = get_tts_runner(tts_service_name)
     if not run_batch_tts_func:
+        emit_issue(
+            "generate_batch_tts",
+            "tts_generate",
+            "error",
+            "TTS_INIT_FAILED",
+            f"初始化批量 TTS 失败: {tts_service_name}"
+        )
         return {"success": False, "error": f"Failed to init Batch TTS: {tts_service_name}"}
 
     shared_ref_path = None
@@ -596,6 +610,15 @@ def generate_batch_tts_results(
                 )
             except Exception as shared_ref_error:
                 print(f"{log_prefix} Failed to prepare shared fallback reference audio: {shared_ref_error}")
+                emit_issue(
+                    "generate_batch_tts",
+                    "prepare_reference",
+                    "warn",
+                    "REFERENCE_PREPARE_FAILED",
+                    "共享兜底参考音频准备失败",
+                    detail=str(shared_ref_error),
+                    suggestion="系统将继续执行，但部分片段重试能力可能下降"
+                )
                 shared_ref_path = None
                 shared_ref_should_clean = False
 
@@ -615,6 +638,12 @@ def generate_batch_tts_results(
         )
 
         print(f"\n[Stage 2] Running TTS for {len(tasks)} tasks (skipped {len(segments) - len(tasks)} invalid items)...")
+        emit_stage(
+            "generate_batch_tts",
+            "tts_generate",
+            f"正在为 {len(tasks)} 条任务生成配音",
+            stage_label="正在生成配音"
+        )
 
         if not tasks:
             print("No valid tasks available.")

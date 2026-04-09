@@ -6,6 +6,7 @@ import traceback
 import json
 import subprocess
 from audio_validation import validate_generated_audio
+from event_protocol import emit_issue, emit_partial_result, emit_progress, emit_stage
 
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 if BACKEND_DIR not in sys.path:
@@ -237,6 +238,12 @@ def run_batch_tts(tasks, model_dir=None, config_path=None, language="English", *
         )
         
         total = len(tasks)
+        emit_stage(
+            "generate_batch_tts",
+            "tts_generate",
+            f"正在生成 {total} 条 IndexTTS 配音",
+            stage_label="正在生成配音"
+        )
         
         for i, task in enumerate(tasks):
             text = task['text']
@@ -248,6 +255,15 @@ def run_batch_tts(tasks, model_dir=None, config_path=None, language="English", *
             
 
             print(f"Synthesizing [{i+1}/{total}]: '{text}'")
+            emit_progress(
+                "generate_batch_tts",
+                "tts_generate",
+                int((i / total) * 100) if total else 0,
+                f"第 {i + 1}/{total} 条正在生成",
+                stage_label="正在生成配音",
+                item_index=i + 1,
+                item_total=total
+            )
             
             os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
             
@@ -280,7 +296,7 @@ def run_batch_tts(tasks, model_dir=None, config_path=None, language="English", *
                     "success": True,
                     "duration": dur
                 }
-                print(f"[PARTIAL] {json.dumps(partial_data)}", flush=True)
+                emit_partial_result("generate_batch_tts", partial_data)
                 
                 yield {
                     "index": task.get('index', i),
@@ -291,6 +307,17 @@ def run_batch_tts(tasks, model_dir=None, config_path=None, language="English", *
 
             except Exception as e:
                 print(f"Failed task {i}: {e}")
+                emit_issue(
+                    "generate_batch_tts",
+                    "tts_generate",
+                    "warn",
+                    "TTS_SEGMENT_FAILED",
+                    f"第 {i + 1} 条配音生成失败",
+                    item_index=i + 1,
+                    item_total=total,
+                    detail=str(e),
+                    suggestion="系统会继续处理后续片段，可稍后重试失败片段"
+                )
                 
                 # Include audio_path if file was generated (allows user to play even failed audio)
                 error_result = {
@@ -308,15 +335,32 @@ def run_batch_tts(tasks, model_dir=None, config_path=None, language="English", *
                     except:
                         pass
                 
-                print(f"[PARTIAL] {json.dumps(error_result)}", flush=True)
+                emit_partial_result("generate_batch_tts", error_result)
                 
                 yield error_result
             
             # Emit progress
-            print(f"[PROGRESS] {int((i + 1) / total * 100)}", flush=True)
+            emit_progress(
+                "generate_batch_tts",
+                "tts_generate",
+                int((i + 1) / total * 100),
+                f"第 {i + 1}/{total} 条已完成",
+                stage_label="正在生成配音",
+                item_index=i + 1,
+                item_total=total
+            )
 
     except Exception as e:
         print(f"Error during Batch TTS: {e}")
+        emit_issue(
+            "generate_batch_tts",
+            "tts_generate",
+            "error",
+            "TTS_BATCH_FAILED",
+            "批量配音执行失败",
+            detail=str(e),
+            suggestion="请查看完整日志，检查模型状态或参考音频"
+        )
         import traceback
         traceback.print_exc()
         pass

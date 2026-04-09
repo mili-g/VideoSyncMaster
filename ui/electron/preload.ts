@@ -39,8 +39,16 @@ contextBridge.exposeInMainWorld('api', {
   getPaths() {
     return ipcRenderer.invoke('get-paths')
   },
-  runBackend(args: string[]) {
-    return ipcRenderer.invoke('run-backend', args)
+  async runBackend(args: string[]) {
+    const result = await ipcRenderer.invoke('run-backend', args)
+    if (result && typeof result === 'object' && (result as { canceled?: boolean }).canceled) {
+      const error = Object.assign(new Error((result as { error?: string }).error || 'Task canceled by user'), {
+        canceled: true,
+        code: 'BACKEND_CANCELED',
+      })
+      throw error
+    }
+    return result
   },
   cacheVideo(filePath: string) {
     return ipcRenderer.invoke('cache-video', filePath)
@@ -84,10 +92,20 @@ contextBridge.exposeInMainWorld('api', {
   showSaveDialog(options: unknown) {
     return ipcRenderer.invoke('dialog:showSaveDialog', options)
   },
-  onBackendProgress(listener: (value: number) => void) {
-    const wrapped = (_event: unknown, value: number) => listener(value)
+  onBackendProgress(listener: (value: unknown) => void) {
+    const wrapped = (_event: unknown, value: unknown) => listener(value)
     ipcRenderer.on('backend-progress', wrapped)
     return () => ipcRenderer.off('backend-progress', wrapped)
+  },
+  onBackendStage(listener: (data: unknown) => void) {
+    const wrapped = (_event: unknown, data: unknown) => listener(data)
+    ipcRenderer.on('backend-stage', wrapped)
+    return () => ipcRenderer.off('backend-stage', wrapped)
+  },
+  onBackendIssue(listener: (data: unknown) => void) {
+    const wrapped = (_event: unknown, data: unknown) => listener(data)
+    ipcRenderer.on('backend-issue', wrapped)
+    return () => ipcRenderer.off('backend-issue', wrapped)
   },
   onBackendPartialResult(listener: (data: unknown) => void) {
     const wrapped = (_event: unknown, data: unknown) => listener(data)

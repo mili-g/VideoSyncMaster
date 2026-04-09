@@ -26,6 +26,8 @@ process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, 
 
 let win: BrowserWindow | null
 let activeBackendProcess: any = null
+let activeBackendCancellation: { requested: boolean } | null = null
+let backendRunQueue: Promise<unknown> = Promise.resolve()
 
 const utf8Decoder = new TextDecoder('utf-8', { fatal: false })
 const gbkDecoder = new TextDecoder('gbk', { fatal: false })
@@ -74,6 +76,70 @@ function normalizeKnownProcessMessage(message: string) {
   }
 
   return message
+}
+
+function enqueueBackendRun<T>(runner: () => Promise<T>): Promise<T> {
+  const task = backendRunQueue.then(runner, runner)
+  backendRunQueue = task.catch(() => undefined)
+  return task
+}
+
+interface BackendStructuredEvent {
+  type?: string
+  name?: string
+  action?: string | null
+  payload?: Record<string, any>
+  timestamp?: string
+}
+
+const BACKEND_EVENT_PREFIX = '__EVENT__'
+
+function parseBackendStructuredEvent(line: string): BackendStructuredEvent | null {
+  const trimmed = line.trim()
+  if (!trimmed.startsWith(BACKEND_EVENT_PREFIX)) return null
+
+  try {
+    return JSON.parse(trimmed.slice(BACKEND_EVENT_PREFIX.length))
+  } catch (error) {
+    console.error('Failed to parse backend structured event:', trimmed, error)
+    return null
+  }
+}
+
+function dispatchBackendStructuredEvent(sender: Electron.WebContents, event: BackendStructuredEvent) {
+  const payload = event.payload || {}
+
+  if (event.name === 'progress') {
+    sender.send('backend-progress', payload)
+    return true
+  }
+
+  if (event.name === 'stage') {
+    sender.send('backend-stage', payload)
+    return true
+  }
+
+  if (event.name === 'issue') {
+    sender.send('backend-issue', payload)
+    return true
+  }
+
+  if (event.name === 'partial_result') {
+    sender.send('backend-partial-result', payload)
+    return true
+  }
+
+  if (event.name === 'deps_installing') {
+    sender.send('backend-deps-installing', payload.package || '')
+    return true
+  }
+
+  if (event.name === 'deps_done') {
+    sender.send('backend-deps-done')
+    return true
+  }
+
+  return false
 }
 
 function getPythonProcessEnv() {
@@ -371,7 +437,7 @@ app.whenReady().then(async () => {
 
   // IPC Handler for Python Backend
   ipcMain.handle('run-backend', async (_event: any, args: any[]) => {
-    return new Promise((resolve, reject) => {
+    return enqueueBackendRun(() => new Promise((resolve, reject) => {
       console.log('Running backend with args:', args)
 
       const { projectRoot } = getAppPaths()
@@ -400,61 +466,97 @@ app.whenReady().then(async () => {
       });
 
       activeBackendProcess = backendProcess
+      const cancellationState = { requested: false }
+      activeBackendCancellation = cancellationState
 
 
       let outputData = ''
       let errorData = ''
+      let stdoutBuffer = ''
+      let stderrBuffer = ''
+
+      const processBackendLine = (line: string, source: 'stdout' | 'stderr') => {
+        const normalizedLine = normalizeKnownProcessMessage(line)
+        if (!normalizedLine) return
+
+        const structuredEvent = parseBackendStructuredEvent(normalizedLine)
+        if (structuredEvent) {
+          dispatchBackendStructuredEvent(_event.sender, structuredEvent)
+          return
+        }
+
+        if (source === 'stdout') {
+          const progressMatch = normalizedLine.match(/\[PROGRESS\]\s*(\d+)/);
+          if (progressMatch) {
+            const p = parseInt(progressMatch[1], 10);
+            _event.sender.send('backend-progress', { percent: p, message: `当前进度 ${p}%` });
+          }
+
+          const partialMatch = normalizedLine.match(/\[PARTIAL\]\s*(.*)/);
+          if (partialMatch) {
+            try {
+              const pData = JSON.parse(partialMatch[1].trim());
+              _event.sender.send('backend-partial-result', pData);
+            } catch (e) {
+              console.error("Failed to parse partial:", e);
+            }
+          }
+
+          const depsMatch = normalizedLine.match(/\[DEPS_INSTALLING\]\s*(.*)/);
+          if (depsMatch) {
+            const packageDesc = depsMatch[1].trim();
+            _event.sender.send('backend-deps-installing', packageDesc);
+          }
+
+          const depsDoneMatch = normalizedLine.match(/\[DEPS_DONE\]\s*(.*)/);
+          if (depsDoneMatch) {
+            _event.sender.send('backend-deps-done');
+          }
+
+          console.log('[Py Stdout]:', normalizedLine)
+          return
+        }
+
+        console.error('[Py Stderr]:', normalizedLine)
+      }
+
+      const consumeProcessChunk = (chunk: string, source: 'stdout' | 'stderr') => {
+        const normalized = normalizeKnownProcessMessage(decodeProcessChunk(chunk))
+        let buffer = source === 'stdout' ? stdoutBuffer : stderrBuffer
+        buffer += normalized
+        const parts = buffer.split(/\r?\n/)
+        buffer = parts.pop() || ''
+
+        for (const line of parts) {
+          processBackendLine(line, source)
+        }
+
+        if (source === 'stdout') stdoutBuffer = buffer
+        else stderrBuffer = buffer
+      }
 
       if (backendProcess) {
         backendProcess.stdout.on('data', (data: any) => {
-          const str = normalizeKnownProcessMessage(decodeProcessChunk(data))
-
-          const lines = str.split('\n');
-          lines.forEach((line: string) => {
-            // Parse progress markers: [PROGRESS] 50
-            const progressMatch = line.match(/\[PROGRESS\]\s*(\d+)/);
-            if (progressMatch) {
-              const p = parseInt(progressMatch[1], 10);
-              _event.sender.send('backend-progress', p);
-            }
-
-            // Parse partial results: [PARTIAL] json
-            const partialMatch = line.match(/\[PARTIAL\]\s*(.*)/);
-            if (partialMatch) {
-              try {
-                const pData = JSON.parse(partialMatch[1].trim());
-                _event.sender.send('backend-partial-result', pData);
-              } catch (e) {
-                console.error("Failed to parse partial:", e);
-              }
-            }
-
-            // Parse dependency installation markers: [DEPS_INSTALLING] package
-            const depsMatch = line.match(/\[DEPS_INSTALLING\]\s*(.*)/);
-            if (depsMatch) {
-              const packageDesc = depsMatch[1].trim();
-              _event.sender.send('backend-deps-installing', packageDesc);
-            }
-
-            // Parse dependency completion markers: [DEPS_DONE] package
-            const depsDoneMatch = line.match(/\[DEPS_DONE\]\s*(.*)/);
-            if (depsDoneMatch) {
-              _event.sender.send('backend-deps-done');
-            }
-          });
-
-          console.log('[Py Stdout]:', str)
-          outputData += str
+          const str = decodeProcessChunk(data)
+          consumeProcessChunk(str, 'stdout')
+          outputData += normalizeKnownProcessMessage(str)
         })
 
         backendProcess.stderr.on('data', (data: any) => {
-          const str = normalizeKnownProcessMessage(decodeProcessChunk(data))
-          console.error('[Py Stderr]:', str)
-          errorData += str
+          const str = decodeProcessChunk(data)
+          consumeProcessChunk(str, 'stderr')
+          errorData += normalizeKnownProcessMessage(str)
         })
 
         backendProcess.on('close', (code: number) => {
           if (activeBackendProcess === backendProcess) activeBackendProcess = null;
+          if (activeBackendCancellation === cancellationState) activeBackendCancellation = null;
+          if (stdoutBuffer.trim()) processBackendLine(stdoutBuffer, 'stdout')
+          if (stderrBuffer.trim()) processBackendLine(stderrBuffer, 'stderr')
+          if (cancellationState.requested) {
+            resolve({ success: false, canceled: true, error: 'Task canceled by user' })
+            return
+          }
           if (code !== 0) {
             reject(new Error(`Python process exited with code ${code}. Error: ${errorData}`))
             return
@@ -515,10 +617,20 @@ app.whenReady().then(async () => {
             reject(new Error(`Failed to parse backend output: ${e}`))
           }
         })
+
+        backendProcess.on('error', (error: Error) => {
+          if (activeBackendProcess === backendProcess) activeBackendProcess = null;
+          if (activeBackendCancellation === cancellationState) activeBackendCancellation = null;
+          if (cancellationState.requested) {
+            resolve({ success: false, canceled: true, error: 'Task canceled by user' })
+            return
+          }
+          reject(error)
+        })
       } else {
         reject(new Error("Failed to spawn backend process"));
       }
-    })
+    }))
   })
 
   ipcMain.handle('cache-video', async (_event, filePath: string) => {
@@ -604,8 +716,11 @@ app.whenReady().then(async () => {
       return true;
     }
 
-    const processToKill = activeBackendProcess as ChildProcess;
-    activeBackendProcess = null;
+      const processToKill = activeBackendProcess as ChildProcess;
+      if (activeBackendCancellation) {
+        activeBackendCancellation.requested = true;
+      }
+      activeBackendProcess = null;
 
     try {
       console.log(`Killing python process ${processToKill.pid}...`);
