@@ -16,10 +16,15 @@ export interface DesktopProjectPaths {
     cacheDir: string;
 }
 
-export function buildSingleOutputPaths(paths: DesktopProjectPaths, fileName: string) {
+function resolveOutputDir(paths: DesktopProjectPaths, outputDirOverride?: string) {
+    return outputDirOverride?.trim() || paths.outputDir;
+}
+
+export function buildSingleOutputPaths(paths: DesktopProjectPaths, fileName: string, outputDirOverride?: string) {
     const baseName = sanitizeBaseName(fileName);
     const sessionKey = buildSessionKey(fileName);
-    const finalDir = `${paths.outputDir}\\${sessionKey}`;
+    const outputDir = resolveOutputDir(paths, outputDirOverride);
+    const finalDir = `${outputDir}\\${sessionKey}`;
     const sessionCacheDir = `${paths.cacheDir}\\sessions\\single\\${sessionKey}`;
 
     return {
@@ -28,17 +33,18 @@ export function buildSingleOutputPaths(paths: DesktopProjectPaths, fileName: str
         finalDir,
         finalVideoPath: `${finalDir}\\${fileName}`,
         originalSubtitlePath: `${finalDir}\\${baseName}.original.srt`,
-        translatedSubtitlePath: `${finalDir}\\${baseName}.zh-CN.srt`,
+        translatedSubtitlePath: `${finalDir}\\${baseName}.en.srt`,
         sessionCacheDir,
         sessionAudioDir: `${sessionCacheDir}\\audio`,
         sessionTempDir: `${sessionCacheDir}\\temp`
     };
 }
 
-export function buildBatchOutputPaths(paths: DesktopProjectPaths, fileName: string, itemId: string) {
+export function buildBatchOutputPaths(paths: DesktopProjectPaths, fileName: string, itemId: string, outputDirOverride?: string) {
     const baseName = sanitizeBaseName(fileName);
     const sessionKey = `${buildSessionKey(fileName)}_${itemId.slice(-4)}`;
-    const finalDir = `${paths.outputDir}\\${sessionKey}`;
+    const outputDir = resolveOutputDir(paths, outputDirOverride);
+    const finalDir = `${outputDir}\\${sessionKey}`;
     const sessionCacheDir = `${paths.cacheDir}\\sessions\\batch\\${sessionKey}`;
 
     return {
@@ -47,7 +53,7 @@ export function buildBatchOutputPaths(paths: DesktopProjectPaths, fileName: stri
         finalDir,
         finalVideoPath: `${finalDir}\\${fileName}`,
         originalSubtitlePath: `${finalDir}\\${baseName}.original.srt`,
-        translatedSubtitlePath: `${finalDir}\\${baseName}.zh-CN.srt`,
+        translatedSubtitlePath: `${finalDir}\\${baseName}.en.srt`,
         sessionCacheDir,
         sessionAudioDir: `${sessionCacheDir}\\audio`,
         sessionTempDir: `${sessionCacheDir}\\temp`

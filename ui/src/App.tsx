@@ -20,6 +20,12 @@ import { segmentsToSRT } from './utils/srt';
 
 
 function App() {
+  const [outputDirOverride, setOutputDirOverride] = useState(() => localStorage.getItem('outputDirOverride') || '');
+
+  useEffect(() => {
+    localStorage.setItem('outputDirOverride', outputDirOverride);
+  }, [outputDirOverride]);
+
   const {
     videoPath, setVideoPath,
     originalVideoPath, setOriginalVideoPath,
@@ -58,7 +64,7 @@ function App() {
     handleTranslateAndDub,
     handleStop,
     hasErrors
-  } = useVideoProject();
+  } = useVideoProject({ outputDirOverride });
   const {
     items: batchQueueItems,
     summary: batchQueueSummary,
@@ -74,7 +80,7 @@ function App() {
     generateMissingSubtitles: generateBatchQueueSubtitles,
     startQueue: startBatchQueue,
     stopQueue: stopBatchQueue
-  } = useBatchQueue();
+  } = useBatchQueue({ outputDirOverride });
 
   const [playingAudioIndex, setPlayingAudioIndex] = useState<number | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -438,9 +444,10 @@ function App() {
     if (segments.length === 0) return;
     try {
       const srtContent = segmentsToSRT(segments);
+      const baseName = (originalVideoPath.split(/[\\/]/).pop() || 'subtitle').replace(/\.[^/.]+$/, '');
       const result = await window.api.showSaveDialog({
         title: '导出原始字幕',
-        defaultPath: 'subtitle.srt',
+        defaultPath: outputDirOverride ? `${outputDirOverride}\\${baseName}.original.srt` : `${baseName}.original.srt`,
         filters: [{ name: 'Subtitle Files', extensions: ['srt'] }]
       });
 
@@ -458,9 +465,10 @@ function App() {
     if (translatedSegments.length === 0) return;
     try {
       const srtContent = segmentsToSRT(translatedSegments);
+      const baseName = (originalVideoPath.split(/[\\/]/).pop() || 'subtitle').replace(/\.[^/.]+$/, '');
       const result = await window.api.showSaveDialog({
         title: '导出翻译字幕',
-        defaultPath: 'translated_subtitle.srt',
+        defaultPath: outputDirOverride ? `${outputDirOverride}\\${baseName}.en.srt` : `${baseName}.en.srt`,
         filters: [{ name: 'Subtitle Files', extensions: ['srt'] }]
       });
 
@@ -472,6 +480,28 @@ function App() {
       console.error('Export failed:', e);
       setStatus('导出失败: ' + String(e));
     }
+  };
+
+  const handleChooseOutputDir = async () => {
+    try {
+      const result = await window.api.openFileDialog({
+        title: '选择输出目录',
+        properties: ['openDirectory', 'createDirectory']
+      });
+
+      if (!result.canceled && Array.isArray(result.filePaths) && result.filePaths[0]) {
+        setOutputDirOverride(result.filePaths[0]);
+        setStatus(`输出目录已更新为: ${result.filePaths[0]}`);
+      }
+    } catch (e: any) {
+      console.error('Choose output dir failed:', e);
+      setStatus(`选择输出目录失败: ${e.message || String(e)}`);
+    }
+  };
+
+  const handleResetOutputDir = () => {
+    setOutputDirOverride('');
+    setStatus('输出目录已恢复为默认项目 output 文件夹');
   };
 
   const handleRepairEnv = async () => {
@@ -703,6 +733,58 @@ function App() {
                 )}
               </div>
             </div>
+          </div>
+        </div>
+
+        <div style={{
+          marginBottom: '16px',
+          padding: '12px 16px',
+          borderRadius: '14px',
+          background: 'rgba(255,255,255,0.06)',
+          border: '1px solid rgba(255,255,255,0.08)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: '12px',
+          flexWrap: 'wrap'
+        }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ color: 'rgba(255,255,255,0.55)', fontSize: '0.78em' }}>当前输出目录</div>
+            <div style={{ color: '#fff', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '900px' }}>
+              {outputDirOverride || '默认目录（项目 output 文件夹）'}
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+            <button
+              onClick={handleChooseOutputDir}
+              disabled={backendBusy}
+              style={{
+                padding: '8px 14px',
+                borderRadius: '10px',
+                border: '1px solid rgba(255,255,255,0.12)',
+                background: 'rgba(59,130,246,0.18)',
+                color: '#fff',
+                cursor: backendBusy ? 'not-allowed' : 'pointer',
+                opacity: backendBusy ? 0.6 : 1
+              }}
+            >
+              选择目录
+            </button>
+            <button
+              onClick={handleResetOutputDir}
+              disabled={backendBusy || !outputDirOverride}
+              style={{
+                padding: '8px 14px',
+                borderRadius: '10px',
+                border: '1px solid rgba(255,255,255,0.12)',
+                background: 'rgba(255,255,255,0.08)',
+                color: '#fff',
+                cursor: (backendBusy || !outputDirOverride) ? 'not-allowed' : 'pointer',
+                opacity: (backendBusy || !outputDirOverride) ? 0.6 : 1
+              }}
+            >
+              恢复默认
+            </button>
           </div>
         </div>
 
@@ -957,6 +1039,7 @@ function App() {
               onClearCompleted={clearCompletedBatchQueue}
               onClearAll={clearAllBatchQueue}
               onGenerateSubtitles={() => generateBatchQueueSubtitles({
+                outputDirOverride,
                 asrService,
                 asrOriLang,
                 setStatus
@@ -964,6 +1047,7 @@ function App() {
               onRetryFailed={retryFailedBatchQueue}
               onOpenOutput={openBatchQueueOutput}
               onStart={() => startBatchQueue({
+                outputDirOverride,
                 targetLang,
                 asrService,
                 ttsService,

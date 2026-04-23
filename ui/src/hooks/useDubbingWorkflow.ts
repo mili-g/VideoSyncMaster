@@ -16,6 +16,7 @@ interface DubbingWorkflowOptions {
     originalVideoPath: string;
     sourceSegments: Segment[];
     translatedSegments: Segment[];
+    outputDirOverride?: string;
     targetLang: string;
     ttsService: 'indextts' | 'qwen';
     batchSize: number;
@@ -39,6 +40,7 @@ export function useDubbingWorkflow({
     originalVideoPath,
     sourceSegments,
     translatedSegments,
+    outputDirOverride,
     targetLang,
     ttsService,
     batchSize,
@@ -75,7 +77,7 @@ export function useDubbingWorkflow({
         try {
             const paths = await window.api.getPaths();
             const filenameWithExt = originalVideoPath.split(/[\\/]/).pop() || 'video.mp4';
-            const projectPaths = buildSingleOutputPaths(paths, filenameWithExt);
+            const projectPaths = buildSingleOutputPaths(paths, filenameWithExt, outputDirOverride);
             const outputPath = `${projectPaths.sessionAudioDir}\\segment_${index}.wav`;
             await window.api.ensureDir(projectPaths.sessionAudioDir);
             await window.api.ensureDir(projectPaths.sessionTempDir);
@@ -157,7 +159,7 @@ export function useDubbingWorkflow({
         try {
             const paths = await window.api.getPaths();
             const filenameWithExt = originalVideoPath.split(/[\\/]/).pop() || 'video.mp4';
-            const projectPaths = buildSingleOutputPaths(paths, filenameWithExt);
+            const projectPaths = buildSingleOutputPaths(paths, filenameWithExt, outputDirOverride);
             const tempJsonPath = `${projectPaths.sessionTempDir}\\segments.json`;
 
             await window.api.ensureDir(projectPaths.sessionAudioDir);
@@ -268,7 +270,7 @@ export function useDubbingWorkflow({
         try {
             const paths = await window.api.getPaths();
             const filenameWithExt = originalVideoPath.split(/[\\/]/).pop() || 'video.mp4';
-            const projectPaths = buildSingleOutputPaths(paths, filenameWithExt);
+            const projectPaths = buildSingleOutputPaths(paths, filenameWithExt, outputDirOverride);
             await window.api.ensureDir(projectPaths.sessionAudioDir);
             await window.api.ensureDir(projectPaths.sessionTempDir);
 
@@ -357,7 +359,7 @@ export function useDubbingWorkflow({
         try {
             const paths = await window.api.getPaths();
             const filenameWithExt = originalVideoPath.split(/[\\/]/).pop() || 'video.mp4';
-            const projectPaths = buildSingleOutputPaths(paths, filenameWithExt);
+            const projectPaths = buildSingleOutputPaths(paths, filenameWithExt, outputDirOverride);
             const outputVideoPath = projectPaths.finalVideoPath;
             const segmentsForBackend = segmentsToUse
                 .map(segment => ({ ...segment, path: segment.audioPath }))

@@ -20,7 +20,11 @@ export interface Segment {
 
 export type AudioMixMode = 'preserve_background' | 'replace_original';
 
-export function useVideoProject() {
+interface UseVideoProjectOptions {
+    outputDirOverride?: string;
+}
+
+export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = {}) {
     const [videoPath, setVideoPath] = useState<string>('');
     const [originalVideoPath, setOriginalVideoPath] = useState<string>('');
     const [mergedVideoPath, setMergedVideoPath] = useState<string>('');
@@ -155,6 +159,7 @@ export function useVideoProject() {
         originalVideoPath,
         sourceSegments: segments,
         translatedSegments,
+        outputDirOverride,
         targetLang,
         ttsService,
         batchSize,
@@ -199,7 +204,7 @@ export function useVideoProject() {
         try {
             const paths = await window.api.getPaths();
             const filenameWithExt = originalVideoPath.split(/[\\/]/).pop() || 'video.mp4';
-            const projectPaths = buildSingleOutputPaths(paths, filenameWithExt);
+            const projectPaths = buildSingleOutputPaths(paths, filenameWithExt, outputDirOverride);
 
             await window.api.ensureDir(projectPaths.finalDir);
             await window.api.ensureDir(projectPaths.sessionCacheDir);
@@ -276,7 +281,7 @@ export function useVideoProject() {
         {
             const paths = await window.api.getPaths();
             const filenameWithExt = originalVideoPath.split(/[\\/]/).pop() || 'video.mp4';
-            const projectPaths = buildSingleOutputPaths(paths, filenameWithExt);
+            const projectPaths = buildSingleOutputPaths(paths, filenameWithExt, outputDirOverride);
             await saveSubtitleArtifacts(
                 projectPaths.finalDir,
                 filenameWithExt,
@@ -303,7 +308,7 @@ export function useVideoProject() {
         if (segments.length > 0) {
             const paths = await window.api.getPaths();
             const filenameWithExt = originalVideoPath.split(/[\\/]/).pop() || 'video.mp4';
-            const projectPaths = buildSingleOutputPaths(paths, filenameWithExt);
+            const projectPaths = buildSingleOutputPaths(paths, filenameWithExt, outputDirOverride);
             await saveSubtitleArtifacts(
                 projectPaths.finalDir,
                 filenameWithExt,

@@ -59,6 +59,7 @@ function createStage(stageKey: BatchQueueStageKey, stage: string) {
 }
 
 interface BatchQueueOptions {
+    outputDirOverride?: string;
     targetLang: string;
     asrService: string;
     ttsService: 'indextts' | 'qwen';
@@ -72,6 +73,7 @@ interface BatchQueueOptions {
 }
 
 interface BatchSubtitleGenerationOptions {
+    outputDirOverride?: string;
     asrService: string;
     asrOriLang: string;
     setStatus: (value: string) => void;
@@ -162,7 +164,11 @@ function readBootstrapState(): BatchQueueBootstrapState {
     };
 }
 
-export function useBatchQueue() {
+interface UseBatchQueueOptions {
+    outputDirOverride?: string;
+}
+
+export function useBatchQueue(_options: UseBatchQueueOptions = {}) {
     const bootstrapRef = useRef<BatchQueueBootstrapState>(readBootstrapState());
     const persistedMetaRef = useRef<BatchQueuePersistedMeta>(bootstrapRef.current.meta);
     const [items, setItems] = useState<BatchQueueItem[]>(() => bootstrapRef.current.items);
@@ -646,7 +652,7 @@ async function generateSubtitleForItem(
     options: BatchSubtitleGenerationOptions
 ) {
     const paths = await window.api.getPaths();
-    const projectPaths = buildBatchOutputPaths(paths, item.fileName, item.id);
+    const projectPaths = buildBatchOutputPaths(paths, item.fileName, item.id, options.outputDirOverride);
     await window.api.ensureDir(projectPaths.finalDir);
     await window.api.ensureDir(projectPaths.sessionTempDir);
 
@@ -690,7 +696,7 @@ async function processQueueItem(
 
     applyStage(BATCH_QUEUE_STAGE.preparingOutput, '准备输出目录');
     const paths = await window.api.getPaths();
-    const projectPaths = buildBatchOutputPaths(paths, item.fileName, item.id);
+    const projectPaths = buildBatchOutputPaths(paths, item.fileName, item.id, options.outputDirOverride);
     const outputPath = projectPaths.finalVideoPath;
     const workDir = projectPaths.sessionTempDir;
     await window.api.ensureDir(projectPaths.finalDir);

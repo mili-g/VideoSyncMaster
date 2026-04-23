@@ -9,7 +9,7 @@ export function buildOutputArtifacts(outputDir: string, fileName: string) {
     return {
         baseName,
         originalSubtitlePath: `${outputDir}\\${baseName}.original.srt`,
-        translatedSubtitlePath: `${outputDir}\\${baseName}.zh-CN.srt`,
+        translatedSubtitlePath: `${outputDir}\\${baseName}.en.srt`,
         mergedVideoPath: `${outputDir}\\${fileName}`
     };
 }
