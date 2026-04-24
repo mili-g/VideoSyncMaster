@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import type { Segment } from './useVideoProject';
 
@@ -57,7 +57,33 @@ export function useBackendEvents({
     setDepsPackageName,
     setStatus
 }: BackendEventsOptions) {
+    const ttsProgressTotalRef = useRef<number | null>(null);
+    const ttsProgressCompletedRef = useRef(0);
+
     useEffect(() => {
+        const extractTtsTotal = (text: string) => {
+            const match = text.match(/(\d+)\s*条/);
+            return match ? Number(match[1]) : null;
+        };
+
+        const buildProgressStatus = (payload: ProgressPayload) => {
+            const stageLabel = payload.stage_label || '';
+            const hasItemProgress = typeof payload.item_index === 'number' && typeof payload.item_total === 'number';
+            const itemText = hasItemProgress
+                ? `第 ${payload.item_index}/${payload.item_total} 条语音合成`
+                : '';
+            const message = (payload.message || '').trim();
+
+            const messageParts = [stageLabel];
+            if (itemText) {
+                messageParts.push(itemText);
+            } else if (message) {
+                messageParts.push(message);
+            }
+
+            return messageParts.filter(Boolean).join(' - ');
+        };
+
         const handleProgress = (value: unknown) => {
             const payload = (typeof value === 'number' ? { percent: value } : (value || {})) as ProgressPayload;
             const percent = typeof payload.percent === 'number'
@@ -66,17 +92,29 @@ export function useBackendEvents({
             setIsIndeterminate(false);
             setProgress(percent);
 
-            const stageLabel = payload.stage_label || '';
-            const itemText = (typeof payload.item_index === 'number' && typeof payload.item_total === 'number')
-                ? `第 ${payload.item_index}/${payload.item_total} 条`
-                : '';
-            const parts = [stageLabel, payload.message || itemText, payload.detail || ''].filter(Boolean);
-            if (parts.length > 0) {
-                setStatus(parts.join(' - '));
+            if (typeof payload.item_total === 'number') {
+                ttsProgressTotalRef.current = payload.item_total;
+            }
+            if (typeof payload.item_index === 'number') {
+                ttsProgressCompletedRef.current = Math.max(0, payload.item_index - 1);
+            }
+
+            const statusText = buildProgressStatus(payload);
+            if (statusText) {
+                setStatus(statusText);
             }
         };
 
         const handleStage = (payload: StagePayload) => {
+            const message = payload.message || '';
+            const total = extractTtsTotal(message);
+            if (total && (message.includes('IndexTTS') || message.includes('Qwen') || message.includes('配音'))) {
+                ttsProgressTotalRef.current = total;
+                ttsProgressCompletedRef.current = 0;
+                setStatus(`${payload.stage_label || '正在生成配音'} - 第 1/${total} 条语音合成`);
+                return;
+            }
+
             const parts = [payload.stage_label || '', payload.message || '', payload.detail || ''].filter(Boolean);
             if (parts.length > 0) {
                 setStatus(parts.join(' - '));
@@ -129,6 +167,22 @@ export function useBackendEvents({
                     }
                     return newSegs;
                 });
+
+                if (typeof ttsProgressTotalRef.current === 'number' && ttsProgressTotalRef.current > 0) {
+                    ttsProgressCompletedRef.current = Math.min(
+                        ttsProgressCompletedRef.current + 1,
+                        ttsProgressTotalRef.current
+                    );
+                    const nextIndex = Math.min(
+                        ttsProgressCompletedRef.current + 1,
+                        ttsProgressTotalRef.current
+                    );
+                    setStatus(
+                        ttsProgressCompletedRef.current >= ttsProgressTotalRef.current
+                            ? `正在生成配音 - 已完成 ${ttsProgressTotalRef.current}/${ttsProgressTotalRef.current} 条语音`
+                            : `正在生成配音 - 第 ${nextIndex}/${ttsProgressTotalRef.current} 条语音合成`
+                    );
+                }
             }
         };
 

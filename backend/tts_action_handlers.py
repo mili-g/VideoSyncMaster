@@ -2,7 +2,7 @@ import json
 import os
 import shutil
 import traceback
-from event_protocol import emit_issue, emit_stage
+from event_protocol import emit_issue, emit_progress, emit_stage
 
 
 def _build_retry_tts_kwargs(base_kwargs, *, tts_service_name, attempt, use_fallback_reference=False):
@@ -154,6 +154,29 @@ def _with_qwen_reference_text(base_kwargs, tts_service_name, ref_text):
     return adjusted_kwargs
 
 
+def _get_effective_retry_attempts(task, max_retry_attempts, tts_service_name):
+    attempts = max(int(max_retry_attempts or 0), 0)
+    if attempts == 0:
+        return 0
+
+    if not isinstance(task, dict):
+        return attempts
+
+    if task.get("skip_segment_retry"):
+        return 0
+
+    duration = float(task.get("duration") or 0.0)
+    text_len = len(str(task.get("text") or "").strip())
+
+    if tts_service_name == "indextts":
+        if duration <= 0.8 or text_len <= 6:
+            return min(attempts, 1)
+        if duration <= 1.5 or text_len <= 16:
+            return min(attempts, 2)
+
+    return attempts
+
+
 def _build_batch_tts_tasks(
     *,
     video_path,
@@ -273,6 +296,19 @@ def _finalize_batch_tts_results(
     task_result_map = {}
     task_lookup = {int(task["index"]): task for task in tasks}
     nearby_success_map = {}
+    total_segments = len(segments)
+
+    def emit_retry_status(item_index, message, *, detail=None):
+        emit_progress(
+            "generate_batch_tts",
+            "tts_generate",
+            int((max(int(item_index), 1) / total_segments) * 100) if total_segments else 100,
+            message,
+            stage_label="正在生成配音",
+            item_index=max(int(item_index), 1),
+            item_total=total_segments,
+            detail=detail
+        )
 
     for result in batch_results:
         if not isinstance(result, dict):
@@ -284,7 +320,7 @@ def _finalize_batch_tts_results(
 
     for i, seg in enumerate(segments):
         final_idx = seg.get("original_index", i)
-        task = next((item for item in tasks if item.get("index") == final_idx), None)
+        task = task_lookup.get(int(final_idx))
 
         if final_idx in task_result_map:
             res = task_result_map[final_idx]
@@ -316,11 +352,17 @@ def _finalize_batch_tts_results(
                 retry_success = False
                 retry_error = res.get("error") or "Batch TTS failed"
                 nearby_refs = _collect_nearby_success_refs(final_idx, nearby_success_map)
+                effective_retry_attempts = _get_effective_retry_attempts(task, max_retry_attempts, tts_service_name)
 
-                if not retry_success and not task.get("skip_segment_retry"):
-                    for attempt in range(1, max_retry_attempts + 1):
+                if not retry_success and effective_retry_attempts > 0:
+                    for attempt in range(1, effective_retry_attempts + 1):
                         try:
-                            print(f"{log_prefix} Retrying segment {final_idx} ({attempt}/{max_retry_attempts}) with segment reference...")
+                            emit_retry_status(
+                                final_idx + 1,
+                                f"第 {final_idx + 1}/{total_segments} 条重试中",
+                                detail=f"使用片段参考重试 {attempt}/{effective_retry_attempts}"
+                            )
+                            print(f"{log_prefix} Retrying segment {final_idx} ({attempt}/{effective_retry_attempts}) with segment reference...")
                             attempt_kwargs = _build_retry_tts_kwargs(
                                 tts_kwargs,
                                 tts_service_name=tts_service_name,
@@ -348,16 +390,21 @@ def _finalize_batch_tts_results(
                             print(f"{log_prefix} Segment {final_idx} retry failed: {retry_exc}")
                             retry_success = False
                 elif not retry_success:
-                    print(f"{log_prefix} Segment {final_idx} reference too short after trim, skipping direct segment retries.")
+                    print(f"{log_prefix} Segment {final_idx} direct segment retries skipped by retry policy.")
 
                 if not retry_success and nearby_refs:
                     for nearby_idx, nearby_ref in enumerate(nearby_refs, start=1):
                         try:
+                            emit_retry_status(
+                                final_idx + 1,
+                                f"第 {final_idx + 1}/{total_segments} 条重试中",
+                                detail=f"使用邻近成功参考重试 {nearby_idx}/{len(nearby_refs)}"
+                            )
                             print(f"{log_prefix} Segment {final_idx} trying nearby successful reference {nearby_idx}/{len(nearby_refs)}...")
                             nearby_kwargs = _build_retry_tts_kwargs(
                                 tts_kwargs,
                                 tts_service_name=tts_service_name,
-                                attempt=max_retry_attempts + nearby_idx,
+                                attempt=effective_retry_attempts + nearby_idx,
                                 use_fallback_reference=True
                             )
                             nearby_kwargs = _with_qwen_reference_text(
@@ -383,11 +430,16 @@ def _finalize_batch_tts_results(
 
                 if not retry_success and task.get("fallback_ref_audio"):
                     try:
+                        emit_retry_status(
+                            final_idx + 1,
+                            f"第 {final_idx + 1}/{total_segments} 条重试中",
+                            detail="切换共享兜底参考音频"
+                        )
                         print(f"{log_prefix} Segment {final_idx} switching to shared fallback reference audio...")
                         fallback_kwargs = _build_retry_tts_kwargs(
                             tts_kwargs,
                             tts_service_name=tts_service_name,
-                            attempt=max_retry_attempts + 1,
+                            attempt=effective_retry_attempts + 1,
                             use_fallback_reference=True
                         )
                         fallback_kwargs = _with_qwen_reference_text(
@@ -441,11 +493,17 @@ def _finalize_batch_tts_results(
                 retry_success = False
                 retry_error = retry_result["error"]
                 nearby_refs = _collect_nearby_success_refs(final_idx, nearby_success_map)
+                effective_retry_attempts = _get_effective_retry_attempts(task, max_retry_attempts, tts_service_name)
 
-                if not retry_success and not task.get("skip_segment_retry"):
-                    for attempt in range(1, max_retry_attempts + 1):
+                if not retry_success and effective_retry_attempts > 0:
+                    for attempt in range(1, effective_retry_attempts + 1):
                         try:
-                            print(f"{log_prefix} Retrying missing segment {final_idx} ({attempt}/{max_retry_attempts}) with segment reference...")
+                            emit_retry_status(
+                                final_idx + 1,
+                                f"第 {final_idx + 1}/{total_segments} 条重试中",
+                                detail=f"缺失片段补生成 {attempt}/{effective_retry_attempts}"
+                            )
+                            print(f"{log_prefix} Retrying missing segment {final_idx} ({attempt}/{effective_retry_attempts}) with segment reference...")
                             attempt_kwargs = _build_retry_tts_kwargs(
                                 tts_kwargs,
                                 tts_service_name=tts_service_name,
@@ -473,16 +531,21 @@ def _finalize_batch_tts_results(
                             print(f"{log_prefix} Missing segment {final_idx} retry failed: {retry_exc}")
                             retry_success = False
                 elif not retry_success:
-                    print(f"{log_prefix} Missing segment {final_idx} reference too short after trim, skipping direct segment retries.")
+                    print(f"{log_prefix} Missing segment {final_idx} direct segment retries skipped by retry policy.")
 
                 if not retry_success and nearby_refs:
                     for nearby_idx, nearby_ref in enumerate(nearby_refs, start=1):
                         try:
+                            emit_retry_status(
+                                final_idx + 1,
+                                f"第 {final_idx + 1}/{total_segments} 条重试中",
+                                detail=f"缺失片段使用邻近成功参考 {nearby_idx}/{len(nearby_refs)}"
+                            )
                             print(f"{log_prefix} Missing segment {final_idx} trying nearby successful reference {nearby_idx}/{len(nearby_refs)}...")
                             nearby_kwargs = _build_retry_tts_kwargs(
                                 tts_kwargs,
                                 tts_service_name=tts_service_name,
-                                attempt=max_retry_attempts + nearby_idx,
+                                attempt=effective_retry_attempts + nearby_idx,
                                 use_fallback_reference=True
                             )
                             nearby_kwargs = _with_qwen_reference_text(
@@ -508,11 +571,16 @@ def _finalize_batch_tts_results(
 
                 if not retry_success and task.get("fallback_ref_audio"):
                     try:
+                        emit_retry_status(
+                            final_idx + 1,
+                            f"第 {final_idx + 1}/{total_segments} 条重试中",
+                            detail="缺失片段切换共享兜底参考音频"
+                        )
                         print(f"{log_prefix} Missing segment {final_idx} switching to shared fallback reference audio...")
                         fallback_kwargs = _build_retry_tts_kwargs(
                             tts_kwargs,
                             tts_service_name=tts_service_name,
-                            attempt=max_retry_attempts + 1,
+                            attempt=effective_retry_attempts + 1,
                             use_fallback_reference=True
                         )
                         fallback_kwargs = _with_qwen_reference_text(
