@@ -559,7 +559,7 @@ function formatItemElapsed(item: BatchQueueItem, nowEpochMs: number) {
     if (typeof item.elapsedMs === 'number' && item.elapsedMs >= 0) {
         return formatElapsed(item.elapsedMs);
     }
-    if (item.startedAt) {
+    if (item.status === 'processing' && item.startedAt) {
         return formatElapsed(Math.max(0, nowEpochMs - item.startedAt));
     }
     return '--';

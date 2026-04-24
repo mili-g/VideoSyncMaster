@@ -154,6 +154,7 @@ function readBootstrapState(): BatchQueueBootstrapState {
                     ...item,
                     status: 'pending' as const,
                     ...createStage(BATCH_QUEUE_STAGE.waiting, '等待处理'),
+                    startedAt: undefined,
                     finishedAt: undefined,
                     elapsedMs: undefined
                 };
@@ -1124,7 +1125,7 @@ async function finalizeQueueItem(
 
     applyStage(BATCH_QUEUE_STAGE.generatingDubbing, '生成配音');
     const mergedSegments = translatedSegments.map(segment => ({ ...segment }));
-    const recoveredCount = await recoverExistingBatchAudioSegments(mergedSegments, projectPaths.sessionAudioDir);
+    const recoveredCount = await recoverExistingBatchAudioSegments(mergedSegments, workDir);
     const pendingSegments = mergedSegments
         .map((segment, index) => ({
             ...segment,
