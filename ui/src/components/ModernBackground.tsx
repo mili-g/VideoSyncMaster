@@ -25,11 +25,11 @@ const ModernBackground: React.FC<ModernBackgroundProps> = ({ mode }) => {
                 position: 'absolute',
                 top: '-10%',
                 left: '-10%',
-                width: '60%',
-                height: '60%',
-                background: 'radial-gradient(circle, rgba(99, 102, 241, 0.15) 0%, transparent 70%)',
-                filter: 'blur(80px)',
-                animation: 'blob-float 20s infinite alternate ease-in-out',
+                width: '52%',
+                height: '52%',
+                background: 'radial-gradient(circle, rgba(99, 102, 241, 0.12) 0%, transparent 70%)',
+                filter: 'blur(56px)',
+                animation: 'blob-float 26s infinite alternate ease-in-out',
                 borderRadius: '50%'
             }} />
 
@@ -37,11 +37,11 @@ const ModernBackground: React.FC<ModernBackgroundProps> = ({ mode }) => {
                 position: 'absolute',
                 bottom: '-20%',
                 right: '-10%',
-                width: '70%',
-                height: '70%',
-                background: 'radial-gradient(circle, rgba(139, 92, 246, 0.1) 0%, transparent 70%)',
-                filter: 'blur(100px)',
-                animation: 'blob-float 25s infinite alternate-reverse ease-in-out',
+                width: '62%',
+                height: '62%',
+                background: 'radial-gradient(circle, rgba(139, 92, 246, 0.08) 0%, transparent 70%)',
+                filter: 'blur(72px)',
+                animation: 'blob-float 30s infinite alternate-reverse ease-in-out',
                 borderRadius: '50%'
             }} />
 
@@ -49,13 +49,13 @@ const ModernBackground: React.FC<ModernBackgroundProps> = ({ mode }) => {
                 position: 'absolute',
                 top: '20%',
                 right: '10%',
-                width: '40%',
-                height: '40%',
+                width: '32%',
+                height: '32%',
                 background: isDark
-                    ? 'radial-gradient(circle, rgba(59, 130, 246, 0.1) 0%, transparent 70%)'
-                    : 'radial-gradient(circle, rgba(59, 130, 246, 0.05) 0%, transparent 70%)',
-                filter: 'blur(60px)',
-                animation: 'blob-float 18s infinite alternate ease-in-out',
+                    ? 'radial-gradient(circle, rgba(59, 130, 246, 0.08) 0%, transparent 70%)'
+                    : 'radial-gradient(circle, rgba(59, 130, 246, 0.04) 0%, transparent 70%)',
+                filter: 'blur(42px)',
+                animation: 'blob-float 24s infinite alternate ease-in-out',
                 borderRadius: '50%'
             }} />
 
@@ -71,8 +71,8 @@ const ModernBackground: React.FC<ModernBackgroundProps> = ({ mode }) => {
             <style>{`
                 @keyframes blob-float {
                     0% { transform: translate(0, 0) scale(1); }
-                    33% { transform: translate(10%, -5%) scale(1.1); }
-                    66% { transform: translate(-5%, 10%) scale(0.9); }
+                    33% { transform: translate(6%, -4%) scale(1.04); }
+                    66% { transform: translate(-4%, 6%) scale(0.96); }
                     100% { transform: translate(0, 0) scale(1); }
                 }
             `}</style>

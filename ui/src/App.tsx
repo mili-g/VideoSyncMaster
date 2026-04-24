@@ -450,7 +450,7 @@ function App() {
       const baseName = (originalVideoPath.split(/[\\/]/).pop() || 'subtitle').replace(/\.[^/.]+$/, '');
       const result = await window.api.showSaveDialog({
         title: '导出原始字幕',
-        defaultPath: outputDirOverride ? `${outputDirOverride}\\${baseName}.original.srt` : `${baseName}.original.srt`,
+        defaultPath: outputDirOverride ? `${outputDirOverride}\\${baseName}.en.srt` : `${baseName}.en.srt`,
         filters: [{ name: 'Subtitle Files', extensions: ['srt'] }]
       });
 
@@ -471,7 +471,7 @@ function App() {
       const baseName = (originalVideoPath.split(/[\\/]/).pop() || 'subtitle').replace(/\.[^/.]+$/, '');
       const result = await window.api.showSaveDialog({
         title: '导出翻译字幕',
-        defaultPath: outputDirOverride ? `${outputDirOverride}\\${baseName}.en.srt` : `${baseName}.en.srt`,
+        defaultPath: outputDirOverride ? `${outputDirOverride}\\${baseName}.zh-CN.srt` : `${baseName}.zh-CN.srt`,
         filters: [{ name: 'Subtitle Files', extensions: ['srt'] }]
       });
 
@@ -629,8 +629,7 @@ function App() {
 
         themeMode={'dark'}
       />
-      <div className="content-wrapper" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', padding: '20px', position: 'relative' }}>
-        <ModernBackground mode="dark" />
+        <div className="content-wrapper" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', padding: '20px', position: 'relative' }}>
         {/* Workflow Step Bar */}
         <div style={{ marginTop: '0px', marginBottom: '20px', display: 'flex', justifyContent: 'center', position: 'relative' }}>
           <div style={{ position: 'absolute', left: 0, top: '50%', transform: 'translateY(-50%)' }}>

@@ -8,8 +8,8 @@ export function buildOutputArtifacts(outputDir: string, fileName: string) {
     const baseName = sanitizeBaseName(fileName);
     return {
         baseName,
-        originalSubtitlePath: `${outputDir}\\${baseName}.original.srt`,
-        translatedSubtitlePath: `${outputDir}\\${baseName}.en.srt`,
+        originalSubtitlePath: `${outputDir}\\${baseName}.en.srt`,
+        translatedSubtitlePath: `${outputDir}\\${baseName}.zh-CN.srt`,
         mergedVideoPath: `${outputDir}\\${fileName}`
     };
 }

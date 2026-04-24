@@ -54,8 +54,8 @@ export function buildSingleOutputPaths(
         sessionKey,
         finalDir,
         finalVideoPath: `${finalDir}\\${fileName}`,
-        originalSubtitlePath: `${finalDir}\\${baseName}.original.srt`,
-        translatedSubtitlePath: `${finalDir}\\${baseName}.en.srt`,
+        originalSubtitlePath: `${finalDir}\\${baseName}.en.srt`,
+        translatedSubtitlePath: `${finalDir}\\${baseName}.zh-CN.srt`,
         sessionCacheDir,
         sessionAudioDir: `${sessionCacheDir}\\audio`,
         sessionTempDir: `${sessionCacheDir}\\temp`
@@ -79,8 +79,8 @@ export function buildBatchOutputPaths(
         sessionKey,
         finalDir,
         finalVideoPath: `${finalDir}\\${fileName}`,
-        originalSubtitlePath: `${finalDir}\\${baseName}.original.srt`,
-        translatedSubtitlePath: `${finalDir}\\${baseName}.en.srt`,
+        originalSubtitlePath: `${finalDir}\\${baseName}.en.srt`,
+        translatedSubtitlePath: `${finalDir}\\${baseName}.zh-CN.srt`,
         sessionCacheDir,
         sessionAudioDir: `${sessionCacheDir}\\audio`,
         sessionTempDir: `${sessionCacheDir}\\temp`
