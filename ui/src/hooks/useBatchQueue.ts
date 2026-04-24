@@ -545,16 +545,13 @@ export function useBatchQueue(_options: UseBatchQueueOptions = {}) {
         const startPreparation = async (item: BatchQueueItem) => {
             if (stopRequestedRef.current) return null;
 
-            const itemStartedAt = Date.now();
             updateItem(item.id, current => ({
                 ...current,
-                startedAt: current.startedAt ?? itemStartedAt,
                 finishedAt: undefined,
                 elapsedMs: undefined
             }));
             updateItem(item.id, current => ({
                 ...current,
-                status: 'processing',
                 ...createStage(BATCH_QUEUE_STAGE.preparing, '准备处理中'),
                 error: undefined
             }));
@@ -588,7 +585,11 @@ export function useBatchQueue(_options: UseBatchQueueOptions = {}) {
             }
         };
 
-        const finalizePreparedItem = async (preparedEntry: { item: BatchQueueItem; prepared: PreparedBatchQueueItem }) => {
+        const finalizePreparedItem = async (
+            preparedEntry: { item: BatchQueueItem; prepared: PreparedBatchQueueItem },
+            nextItem: BatchQueueItem | undefined,
+            onMergeStage: () => void
+        ) => {
             const { item, prepared } = preparedEntry;
 
             if (stopRequestedRef.current) {
@@ -602,9 +603,24 @@ export function useBatchQueue(_options: UseBatchQueueOptions = {}) {
 
             setActiveItemId(item.id);
             try {
+                const itemStartedAt = Date.now();
+                updateItem(item.id, current => ({
+                    ...current,
+                    status: 'processing',
+                    startedAt: itemStartedAt,
+                    finishedAt: undefined,
+                    elapsedMs: undefined
+                }));
+
                 const outputPath = await finalizeQueueItem(item, prepared, options, stage => {
                     updateItem(item.id, current => ({ ...current, stage }));
                     options.setStatus(`批量处理中：${item.fileName} - ${stage}`);
+                    if (
+                        nextItem &&
+                        (stage === '合成视频' || stage === '部分片段失败，继续合成')
+                    ) {
+                        onMergeStage();
+                    }
                 });
 
                 if (stopRequestedRef.current) {
@@ -650,17 +666,22 @@ export function useBatchQueue(_options: UseBatchQueueOptions = {}) {
                 : null;
 
             for (let index = 0; index < queue.length; index += 1) {
-                const preparedEntry = preparedPromise ? await preparedPromise : null;
+                const preparedEntry = preparedPromise
+                    ? await preparedPromise
+                    : await startPreparation(queue[index]);
                 const nextItem = queue[index + 1];
-                preparedPromise = !stopRequestedRef.current && nextItem
-                    ? startPreparation(nextItem)
-                    : null;
+                preparedPromise = null;
 
                 if (!preparedEntry) {
                     continue;
                 }
 
-                await finalizePreparedItem(preparedEntry);
+                await finalizePreparedItem(preparedEntry, nextItem, () => {
+                    if (preparedPromise || stopRequestedRef.current || !nextItem) {
+                        return;
+                    }
+                    preparedPromise = startPreparation(nextItem);
+                });
             }
         } finally {
             const wasStopped = stopRequestedRef.current;
@@ -1008,10 +1029,6 @@ interface PreparedBatchQueueItem {
     projectPaths: Awaited<ReturnType<typeof prepareBatchProjectPaths>>['projectPaths'];
     sourceSegments: SrtSegment[];
     translatedSegments: SrtSegment[];
-    fallbackReferenceAudio?: {
-        audioPath: string;
-        refText: string;
-    };
 }
 
 async function prepareQueueItem(
@@ -1081,20 +1098,12 @@ async function prepareQueueItem(
             translatedSubtitleContent: item.translatedSubtitleContent || segmentsToSRT(translatedSegments)
         });
 
-        applyStage(BATCH_QUEUE_STAGE.preparingOutput, '准备参考音频');
-        const fallbackReferenceAudio = await prepareFallbackReferenceAudio(
-            item.sourcePath,
-            projectPaths.sessionTempDir,
-            translatedSegments
-        );
-
         return {
             outputPath,
             workDir,
             projectPaths,
             sourceSegments,
-            translatedSegments,
-            fallbackReferenceAudio
+            translatedSegments
         };
     } finally {
         // Keep session cache so interrupted batch tasks can resume from saved subtitles/audio fragments.
@@ -1111,7 +1120,7 @@ async function finalizeQueueItem(
         onStageChange(stage);
     };
 
-    const { outputPath, workDir, projectPaths, sourceSegments, translatedSegments, fallbackReferenceAudio } = prepared;
+    const { outputPath, workDir, projectPaths, sourceSegments, translatedSegments } = prepared;
 
     applyStage(BATCH_QUEUE_STAGE.generatingDubbing, '生成配音');
     const mergedSegments = translatedSegments.map(segment => ({ ...segment }));
@@ -1165,8 +1174,7 @@ async function finalizeQueueItem(
             sourceSegments,
             translatedSegments: mergedSegments,
             failedIndexes,
-            options,
-            fallbackReferenceAudio
+            options
         });
     }
 
