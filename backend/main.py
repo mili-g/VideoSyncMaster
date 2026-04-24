@@ -744,18 +744,12 @@ def dub_video(input_path, target_lang, output_path, asr_service="whisperx", vad_
         )
         return {"success": False, "error": "Merging failed."}
 
+WORKER_RESULT_PREFIX = "__WORKER_RESULT__"
 
 
-def main():
-    # Setup GPU paths early to prevent DLL load errors
-    setup_gpu_paths()
-
-    parser = build_parser()
-    args = parser.parse_args()
+def execute_with_args(args):
     tts_kwargs = build_tts_kwargs(args)
     extra_kwargs = build_translation_kwargs(args)
-
-    result_data = None
 
     handled, basic_result = dispatch_basic_action(
         args,
@@ -772,9 +766,10 @@ def main():
         dub_video=dub_video
     )
     if handled:
-        result_data = basic_result
-    elif args.action == "generate_single_tts":
-        result_data, should_return = handle_generate_single_tts(
+        return basic_result
+
+    if args.action == "generate_single_tts":
+        result_data, _ = handle_generate_single_tts(
             args,
             tts_kwargs,
             get_tts_runner=get_tts_runner,
@@ -784,10 +779,10 @@ def main():
             librosa=librosa,
             sf=sf
         )
-        if should_return:
-            return
-    elif args.action == "generate_batch_tts":
-        result_data = handle_generate_batch_tts(
+        return result_data
+
+    if args.action == "generate_batch_tts":
+        return handle_generate_batch_tts(
             args,
             tts_kwargs,
             get_tts_runner=get_tts_runner,
@@ -796,45 +791,81 @@ def main():
             librosa=librosa,
             sf=sf
         )
-    elif args.action == "prepare_reference_audio":
-        result_data, should_return = handle_prepare_reference_audio(
+
+    if args.action == "prepare_reference_audio":
+        result_data, _ = handle_prepare_reference_audio(
             args,
             ffmpeg=ffmpeg,
             librosa=librosa,
             sf=sf
         )
-        if should_return:
-            return
-    else:
-        print(f"Unknown action: {args.action}")
+        return result_data
+
+    print(f"Unknown action: {args.action}")
+    return None
+
+
+def run_worker_loop(base_args):
+    parser = build_parser()
+    print("[Worker] Backend worker started", flush=True)
+
+    for raw_line in sys.stdin:
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        request_id = None
+        try:
+            request_payload = json.loads(line)
+            request_id = str(request_payload.get("id") or "")
+            request_args = request_payload.get("args") or []
+            if not isinstance(request_args, list):
+                raise ValueError("Worker request args must be a list")
+
+            parsed_args = parser.parse_args(base_args + ["--json"] + request_args)
+            result = execute_with_args(parsed_args)
+            response = {
+                "id": request_id,
+                "success": True,
+                "result": result
+            }
+        except Exception as e:
+            debug_log(f"Worker request failed: {e}")
+            response = {
+                "id": request_id,
+                "success": False,
+                "error": str(e)
+            }
+
+        print(f"{WORKER_RESULT_PREFIX}{json.dumps(response, ensure_ascii=False)}", flush=True)
+
+
+def main():
+    setup_gpu_paths()
+
+    parser = build_parser()
+    args = parser.parse_args()
+    result_data = execute_with_args(args)
 
     if result_data is not None and args.json:
         print("\n__JSON_START__\n")
-        print(json.dumps(result_data, indent=None)) # Compact JSON
-        print("\n__JSON_END__\n", flush=True) # Ensure flush so UI receives it immediately
-
-    try:
-        if args.action == 'asr':
-            debug_log(f"Running ASR on: {args.input}")
-            # Setup GPU environment lazily
-            setup_gpu_paths()
-            # Pass output_dir if provided
-            result_data = run_asr(args.input, args.model, service=args.asr, output_dir=args.output_dir)
-        elif args.action == 'translate_text':
-             pass 
-             
-    except Exception as e:
-        debug_log(f"CRITICAL ERROR: {e}")
-        import traceback
-        debug_log(traceback.format_exc())
-        raise e
-
+        print(json.dumps(result_data, indent=None, ensure_ascii=False))
+        print("\n__JSON_END__\n", flush=True)
 
 
 if __name__ == "__main__":
     debug_log("Entering main block")
+    worker_mode = "--worker" in sys.argv
     try:
-        main()
+        if worker_mode:
+            base_args = []
+            if "--model_dir" in sys.argv:
+                idx = sys.argv.index("--model_dir")
+                if idx + 1 < len(sys.argv):
+                    base_args.extend(["--model_dir", sys.argv[idx + 1]])
+            run_worker_loop(base_args)
+        else:
+            main()
     except Exception as e:
         import traceback
         err_msg = traceback.format_exc()
@@ -844,10 +875,11 @@ if __name__ == "__main__":
         sys.exit(1)
         
     debug_log("Main finished normally")
-    print("Force exiting...")
-    try:
-        sys.stdout.close()
-        sys.stderr.close()
-    except:
-        pass
-    os._exit(0)
+    if not worker_mode:
+        print("Force exiting...")
+        try:
+            sys.stdout.close()
+            sys.stderr.close()
+        except:
+            pass
+        os._exit(0)

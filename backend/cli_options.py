@@ -49,6 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--api_key", type=str, help="API Key for External Translation", default=None)
     parser.add_argument("--base_url", type=str, help="Base URL for External Translation", default=None)
     parser.add_argument("--model", type=str, help="Model Name for External Translation", default=None)
+    parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     return parser
 
 

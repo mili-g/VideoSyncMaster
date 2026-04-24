@@ -81,6 +81,7 @@ function App() {
     retryFailed: retryFailedBatchQueue,
     openOutput: openBatchQueueOutput,
     generateMissingSubtitles: generateBatchQueueSubtitles,
+    generateTranslatedSubtitles: generateBatchQueueTranslations,
     startQueue: startBatchQueue,
     stopQueue: stopBatchQueue
   } = useBatchQueue({ outputDirOverride });
@@ -1037,6 +1038,7 @@ function App() {
               summary={batchQueueSummary}
               isRunning={isBatchQueueRunning}
               canGenerateSubtitles={!loading && !dubbingLoading && generatingSegmentId === null && !isBatchQueueRunning && batchQueueItems.some(item => item.status !== 'success')}
+              canGenerateTranslations={!loading && !dubbingLoading && generatingSegmentId === null && !isBatchQueueRunning && batchQueueItems.some(item => item.status !== 'success' && item.originalSubtitleContent)}
               onAddAssets={addBatchQueueAssets}
               onAssignUnmatchedSubtitle={assignBatchQueueUnmatchedSubtitle}
               onRemoveUnmatchedSubtitle={removeBatchQueueUnmatchedSubtitle}
@@ -1047,6 +1049,11 @@ function App() {
                 outputDirOverride,
                 asrService,
                 asrOriLang,
+                setStatus
+              })}
+              onGenerateTranslations={() => generateBatchQueueTranslations({
+                outputDirOverride,
+                targetLang,
                 setStatus
               })}
               onRetryFailed={retryFailedBatchQueue}

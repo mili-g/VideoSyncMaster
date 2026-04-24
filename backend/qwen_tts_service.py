@@ -6,6 +6,7 @@ import traceback
 import json
 from audio_validation import validate_generated_audio
 from event_protocol import emit_issue, emit_partial_result, emit_progress, emit_stage
+from gpu_runtime import choose_adaptive_batch_size, format_gpu_snapshot
 
 # Ensure environment requirements
 try:
@@ -437,8 +438,10 @@ def run_batch_qwen_tts(tasks, language="Auto", **kwargs):
             print("[QwenTTS] Note: Optimization disabled for stability. (Re-computing prompt each batch)")
             voice_clone_prompt = None
             
-        batch_size = kwargs.get('batch_size', 1)
-        if batch_size < 1: batch_size = 1
+        requested_batch_size = max(int(kwargs.get('batch_size', 1) or 1), 1)
+        batch_size, batch_detail = choose_adaptive_batch_size(requested_batch_size, "qwen_tts")
+        if batch_detail:
+            print(f"[QwenTTS] Adaptive batch size selected: {format_gpu_snapshot(batch_detail)}")
         
         print(f"[QwenTTS] Processing with batch size: {batch_size}")
         

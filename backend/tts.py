@@ -11,6 +11,7 @@ import torchaudio
 from torch.nn.utils.rnn import pad_sequence
 from audio_validation import validate_generated_audio
 from event_protocol import emit_issue, emit_partial_result, emit_progress, emit_stage
+from gpu_runtime import choose_adaptive_batch_size, format_gpu_snapshot
 
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 if BACKEND_DIR not in sys.path:
@@ -659,9 +660,6 @@ def run_batch_tts(tasks, model_dir=None, config_path=None, language="English", *
     if config_path is None:
         config_path = DEFAULT_CONFIG_PATH
 
-    # Retrieve batch size (default 1)
-    batch_size = kwargs.get('batch_size', 1)
-    
     try:
         tts = _get_indextts_instance(model_dir=model_dir, config_path=config_path)
         if tts is None:
@@ -669,6 +667,12 @@ def run_batch_tts(tasks, model_dir=None, config_path=None, language="English", *
         
         total = len(tasks)
         requested_batch_size = max(int(kwargs.get('batch_size', 1) or 1), 1)
+        adaptive_batch_size, adaptive_detail = choose_adaptive_batch_size(requested_batch_size, "indextts")
+        if adaptive_detail:
+            print(f"[IndexTTS] Adaptive batch size selected: {format_gpu_snapshot(adaptive_detail)}")
+
+        runtime_kwargs = dict(kwargs or {})
+        runtime_kwargs['batch_size'] = adaptive_batch_size
         reference_cache = {}
         emit_stage(
             "generate_batch_tts",
@@ -676,7 +680,7 @@ def run_batch_tts(tasks, model_dir=None, config_path=None, language="English", *
             f"正在生成 {total} 条 IndexTTS 配音",
             stage_label="正在生成配音"
         )
-        batchable_tasks, sequential_tasks = _build_indextts_batch_plan(tts, tasks, kwargs)
+        batchable_tasks, sequential_tasks = _build_indextts_batch_plan(tts, tasks, runtime_kwargs)
         processed = 0
 
         def emit_task_result(result, *, item_position):
@@ -693,9 +697,9 @@ def run_batch_tts(tasks, model_dir=None, config_path=None, language="English", *
                 item_total=total
             )
 
-        dynamic_buckets = _build_dynamic_batch_buckets(batchable_tasks, requested_batch_size)
+        dynamic_buckets = _build_dynamic_batch_buckets(batchable_tasks, adaptive_batch_size)
 
-        if dynamic_buckets and requested_batch_size > 1:
+        if dynamic_buckets and adaptive_batch_size > 1:
             for batch_entries in dynamic_buckets:
                 batch_start_position = processed + 1
                 batch_end_position = min(processed + len(batch_entries), total)
@@ -712,18 +716,19 @@ def run_batch_tts(tasks, model_dir=None, config_path=None, language="English", *
                     detail=(
                         f"IndexTTS bucket x{len(batch_entries)} | "
                         f"tokens {min(token_counts)}-{max(token_counts)} | "
-                        f"frames {min(frame_counts)}-{max(frame_counts)}"
+                        f"frames {min(frame_counts)}-{max(frame_counts)} | "
+                        f"batch {adaptive_batch_size}"
                     )
                 )
                 try:
-                    batch_results = _run_indextts_true_batch(tts, batch_entries, kwargs, reference_cache)
+                    batch_results = _run_indextts_true_batch(tts, batch_entries, runtime_kwargs, reference_cache)
                 except Exception as batch_error:
                     print(f"[BatchTTS] True batch execution failed, falling back to single inference: {batch_error}")
                     batch_results = []
                     for entry in batch_entries:
                         task = entry["task"]
                         try:
-                            valid_kwargs = _build_indextts_kwargs(task["text"], kwargs)
+                            valid_kwargs = _build_indextts_kwargs(task["text"], runtime_kwargs)
                             tts.infer(
                                 spk_audio_prompt=task["ref_audio_path"],
                                 text=task["text"],
@@ -789,7 +794,7 @@ def run_batch_tts(tasks, model_dir=None, config_path=None, language="English", *
             os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
 
             try:
-                valid_kwargs = _build_indextts_kwargs(text, kwargs)
+                valid_kwargs = _build_indextts_kwargs(text, runtime_kwargs)
 
                 tts.infer(
                     spk_audio_prompt=ref,

@@ -51,7 +51,10 @@ export const BATCH_QUEUE_STAGE = {
     sourceSubtitleGenerating: 'source-subtitle-generating',
     sourceSubtitleReady: 'source-subtitle-ready',
     sourceSubtitleRefreshed: 'source-subtitle-refreshed',
-    sourceSubtitleFailed: 'source-subtitle-failed'
+    sourceSubtitleFailed: 'source-subtitle-failed',
+    translatedSubtitleReady: 'translated-subtitle-ready',
+    translatedSubtitleRefreshed: 'translated-subtitle-refreshed',
+    translatedSubtitleFailed: 'translated-subtitle-failed'
 } as const;
 
 type BatchQueueStageKey = typeof BATCH_QUEUE_STAGE[keyof typeof BATCH_QUEUE_STAGE];
@@ -78,6 +81,12 @@ interface BatchSubtitleGenerationOptions {
     outputDirOverride?: string;
     asrService: string;
     asrOriLang: string;
+    setStatus: (value: string) => void;
+}
+
+interface BatchSubtitleTranslationOptions {
+    outputDirOverride?: string;
+    targetLang: string;
     setStatus: (value: string) => void;
 }
 
@@ -533,75 +542,125 @@ export function useBatchQueue(_options: UseBatchQueueOptions = {}) {
         stopRequestedRef.current = false;
         options.setStatus(`批量任务启动，共 ${queue.length} 个文件待处理`);
 
-        try {
-            for (const item of queue) {
+        const startPreparation = async (item: BatchQueueItem) => {
+            if (stopRequestedRef.current) return null;
+
+            const itemStartedAt = Date.now();
+            updateItem(item.id, current => ({
+                ...current,
+                startedAt: current.startedAt ?? itemStartedAt,
+                finishedAt: undefined,
+                elapsedMs: undefined
+            }));
+            updateItem(item.id, current => ({
+                ...current,
+                status: 'processing',
+                ...createStage(BATCH_QUEUE_STAGE.preparing, '准备处理中'),
+                error: undefined
+            }));
+
+            try {
+                const prepared = await prepareQueueItem(item, options, stage => {
+                    updateItem(item.id, current => ({ ...current, stage }));
+                }, patch => {
+                    updateItem(item.id, current => ({ ...current, ...patch }));
+                });
+                return { item, prepared };
+            } catch (error: any) {
+                if (stopRequestedRef.current || isBackendCanceledError(error)) {
+                    updateItem(item.id, current => ({
+                        ...current,
+                        status: 'pending',
+                        ...createStage(BATCH_QUEUE_STAGE.stopped, '队列已停止，可继续处理')
+                    }));
+                    return null;
+                }
+
+                updateItem(item.id, current => ({
+                    ...current,
+                    status: 'error',
+                    ...createStage(BATCH_QUEUE_STAGE.failed, '处理失败'),
+                    error: error?.message || String(error),
+                    finishedAt: Date.now(),
+                    elapsedMs: current.startedAt ? Math.max(0, Date.now() - current.startedAt) : current.elapsedMs
+                }));
+                return null;
+            }
+        };
+
+        const finalizePreparedItem = async (preparedEntry: { item: BatchQueueItem; prepared: PreparedBatchQueueItem }) => {
+            const { item, prepared } = preparedEntry;
+
+            if (stopRequestedRef.current) {
+                updateItem(item.id, current => ({
+                    ...current,
+                    status: 'pending',
+                    ...createStage(BATCH_QUEUE_STAGE.stopped, '队列已停止，可继续处理')
+                }));
+                return;
+            }
+
+            setActiveItemId(item.id);
+            try {
+                const outputPath = await finalizeQueueItem(item, prepared, options, stage => {
+                    updateItem(item.id, current => ({ ...current, stage }));
+                    options.setStatus(`批量处理中：${item.fileName} - ${stage}`);
+                });
+
                 if (stopRequestedRef.current) {
                     updateItem(item.id, current => ({
                         ...current,
                         status: 'pending',
                         ...createStage(BATCH_QUEUE_STAGE.stopped, '队列已停止，可继续处理')
                     }));
+                } else {
+                    updateItem(item.id, current => ({
+                        ...current,
+                        status: 'success',
+                        ...createStage(BATCH_QUEUE_STAGE.completed, '处理完成'),
+                        outputPath,
+                        error: undefined,
+                        finishedAt: Date.now(),
+                        elapsedMs: current.startedAt ? Math.max(0, Date.now() - current.startedAt) : current.elapsedMs
+                    }));
+                }
+            } catch (error: any) {
+                if (stopRequestedRef.current || isBackendCanceledError(error)) {
+                    updateItem(item.id, current => ({
+                        ...current,
+                        status: 'pending',
+                        ...createStage(BATCH_QUEUE_STAGE.stopped, '队列已停止，可继续处理')
+                    }));
+                } else {
+                    updateItem(item.id, current => ({
+                        ...current,
+                        status: 'error',
+                        ...createStage(BATCH_QUEUE_STAGE.failed, '处理失败'),
+                        error: error?.message || String(error),
+                        finishedAt: Date.now(),
+                        elapsedMs: current.startedAt ? Math.max(0, Date.now() - current.startedAt) : current.elapsedMs
+                    }));
+                }
+            }
+        };
+
+        try {
+            let preparedPromise: Promise<{ item: BatchQueueItem; prepared: PreparedBatchQueueItem } | null> | null = queue.length > 0
+                ? startPreparation(queue[0])
+                : null;
+
+            for (let index = 0; index < queue.length; index += 1) {
+                const preparedEntry = preparedPromise ? await preparedPromise : null;
+                const nextItem = queue[index + 1];
+                preparedPromise = !stopRequestedRef.current && nextItem
+                    ? startPreparation(nextItem)
+                    : null;
+
+                if (!preparedEntry) {
                     continue;
                 }
 
-                const itemStartedAt = Date.now();
-                setActiveItemId(item.id);
-                updateItem(item.id, current => ({
-                    ...current,
-                    startedAt: itemStartedAt,
-                    finishedAt: undefined,
-                    elapsedMs: undefined
-                }));
-                updateItem(item.id, current => ({
-                    ...current,
-                    status: 'processing',
-                    ...createStage(BATCH_QUEUE_STAGE.preparing, '准备处理中'),
-                    error: undefined
-                }));
-
-                try {
-                    const outputPath = await processQueueItem(item, options, stage => {
-                        updateItem(item.id, current => ({ ...current, stage }));
-                        options.setStatus(`批量处理中：${item.fileName} - ${stage}`);
-                    }, patch => {
-                        updateItem(item.id, current => ({ ...current, ...patch }));
-                    });
-
-                    if (stopRequestedRef.current) {
-                        updateItem(item.id, current => ({
-                            ...current,
-                            status: 'pending',
-                            ...createStage(BATCH_QUEUE_STAGE.stopped, '队列已停止，可继续处理')
-                        }));
-                    } else {
-                        updateItem(item.id, current => ({
-                            ...current,
-                            status: 'success',
-                            ...createStage(BATCH_QUEUE_STAGE.completed, '处理完成'),
-                            outputPath,
-                            error: undefined,
-                            finishedAt: Date.now(),
-                            elapsedMs: current.startedAt ? Math.max(0, Date.now() - current.startedAt) : current.elapsedMs
-                        }));
-                    }
-                } catch (error: any) {
-                    if (stopRequestedRef.current) {
-                        updateItem(item.id, current => ({
-                            ...current,
-                            status: 'pending',
-                            ...createStage(BATCH_QUEUE_STAGE.stopped, '队列已停止，可继续处理')
-                        }));
-                    } else {
-                        updateItem(item.id, current => ({
-                            ...current,
-                            status: 'error',
-                            ...createStage(BATCH_QUEUE_STAGE.failed, '处理失败'),
-                            error: error?.message || String(error),
-                            finishedAt: Date.now(),
-                            elapsedMs: current.startedAt ? Math.max(0, Date.now() - current.startedAt) : current.elapsedMs
-                        }));
-                    }
-                }
+                await finalizePreparedItem(preparedEntry);
             }
         } finally {
             const wasStopped = stopRequestedRef.current;
@@ -738,6 +797,143 @@ export function useBatchQueue(_options: UseBatchQueueOptions = {}) {
         }
     };
 
+    const generateTranslatedSubtitles = async (options: BatchSubtitleTranslationOptions) => {
+        if (runLockRef.current || isRunning) return;
+
+        const eligibleItems = itemsRef.current.filter(item => item.status !== 'success');
+        const translatableItems = eligibleItems.filter(item => item.originalSubtitleContent);
+        const missingTranslatedItems = translatableItems.filter(item => !item.translatedSubtitleContent);
+        const queue = missingTranslatedItems.length > 0 ? missingTranslatedItems : translatableItems;
+
+        if (translatableItems.length === 0) {
+            options.setStatus('当前没有可执行字幕翻译的批量任务。请先生成或导入原字幕。');
+            return;
+        }
+
+        if (queue.length === 0) {
+            options.setStatus('当前没有需要翻译的批量任务。');
+            return;
+        }
+
+        runLockRef.current = true;
+        const startedAt = Date.now();
+        setIsRunning(true);
+        setQueueStartedAt(startedAt);
+        setQueueFinishedElapsedMs(0);
+        setNow(startedAt);
+        stopRequestedRef.current = false;
+        let successCount = 0;
+        let failedCount = 0;
+        const isRerun = missingTranslatedItems.length === 0;
+        options.setStatus(
+            isRerun
+                ? `正在重新翻译全部 ${queue.length} 个任务的字幕...`
+                : `开始翻译缺失字幕的 ${queue.length} 个任务...`
+        );
+
+        try {
+            for (const item of queue) {
+                if (stopRequestedRef.current) {
+                    break;
+                }
+
+                const itemStartedAt = Date.now();
+                setActiveItemId(item.id);
+                updateItem(item.id, current => ({
+                    ...current,
+                    status: 'processing',
+                    ...createStage(BATCH_QUEUE_STAGE.translatingSubtitles, '正在翻译字幕'),
+                    error: undefined,
+                    startedAt: itemStartedAt,
+                    finishedAt: undefined,
+                    elapsedMs: undefined
+                }));
+                options.setStatus(
+                    isRerun
+                        ? `正在重新翻译字幕：${item.fileName}`
+                        : `正在翻译字幕：${item.fileName}`
+                );
+
+                try {
+                    const { projectPaths } = await prepareBatchProjectPaths(item.fileName, item.id, options.outputDirOverride);
+                    const sourceSegments = resolveSourceSegments(item);
+                    if (sourceSegments.length === 0) {
+                        throw new Error('缺少可翻译的原字幕内容');
+                    }
+
+                    const translatedSegments = await translateSegments(sourceSegments, options);
+                    const translatedSubtitleContent = segmentsToSRT(translatedSegments);
+                    await saveSubtitleArtifacts(projectPaths.finalDir, item.fileName, sourceSegments, translatedSegments);
+
+                    if (stopRequestedRef.current) {
+                        updateItem(item.id, current => ({
+                            ...current,
+                            status: 'pending',
+                            ...createStage(BATCH_QUEUE_STAGE.stopped, '队列已停止，可继续翻译或开始批量处理'),
+                            finishedAt: Date.now(),
+                            elapsedMs: current.startedAt ? Math.max(0, Date.now() - current.startedAt) : current.elapsedMs
+                        }));
+                        continue;
+                    }
+
+                    successCount += 1;
+                    updateItem(item.id, current => ({
+                        ...current,
+                        status: 'pending',
+                        ...createStage(
+                            isRerun ? BATCH_QUEUE_STAGE.translatedSubtitleRefreshed : BATCH_QUEUE_STAGE.translatedSubtitleReady,
+                            isRerun ? '翻译字幕已刷新，可继续批量处理' : '翻译字幕已生成，可继续批量处理'
+                        ),
+                        translatedSubtitlePath: projectPaths.translatedSubtitlePath,
+                        translatedSubtitleContent,
+                        error: undefined,
+                        finishedAt: Date.now(),
+                        elapsedMs: current.startedAt ? Math.max(0, Date.now() - current.startedAt) : current.elapsedMs
+                    }));
+                } catch (error: any) {
+                    if (stopRequestedRef.current || isBackendCanceledError(error)) {
+                        updateItem(item.id, current => ({
+                            ...current,
+                            status: 'pending',
+                            ...createStage(BATCH_QUEUE_STAGE.stopped, '队列已停止，可继续翻译或开始批量处理'),
+                            error: undefined,
+                            finishedAt: Date.now(),
+                            elapsedMs: current.startedAt ? Math.max(0, Date.now() - current.startedAt) : current.elapsedMs
+                        }));
+                        continue;
+                    }
+
+                    failedCount += 1;
+                    updateItem(item.id, current => ({
+                        ...current,
+                        status: 'pending',
+                        ...createStage(BATCH_QUEUE_STAGE.translatedSubtitleFailed, '字幕翻译失败，可稍后重试或继续完整流程'),
+                        error: error?.message || String(error),
+                        finishedAt: Date.now(),
+                        elapsedMs: current.startedAt ? Math.max(0, Date.now() - current.startedAt) : current.elapsedMs
+                    }));
+                }
+            }
+        } finally {
+            const elapsed = Math.max(0, Date.now() - startedAt);
+            const wasStopped = stopRequestedRef.current;
+            setActiveItemId(null);
+            activeItemIdRef.current = null;
+            setIsRunning(false);
+            setQueueFinishedElapsedMs(elapsed);
+            setNow(Date.now());
+            runLockRef.current = false;
+            stopRequestedRef.current = false;
+            if (wasStopped) {
+                options.setStatus('批量字幕翻译已停止，可再次启动继续处理。');
+            } else {
+                options.setStatus(
+                    `${isRerun ? '字幕重新翻译' : '字幕翻译'}已完成，耗时 ${Math.floor(elapsed / 1000)} 秒。成功 ${successCount} 项，失败 ${failedCount} 项，跳过 ${Math.max(0, queue.length - successCount - failedCount)} 项。`
+                );
+            }
+        }
+    };
+
     useEffect(() => {
         const missingDurationItems = itemsRef.current
             .filter(item => !item.sourceDurationSec)
@@ -766,6 +962,7 @@ export function useBatchQueue(_options: UseBatchQueueOptions = {}) {
         retryFailed,
         openOutput,
         generateMissingSubtitles,
+        generateTranslatedSubtitles,
         startQueue,
         stopQueue
     };
@@ -792,7 +989,7 @@ async function generateSubtitleForItem(
         args.push('--ori_lang', options.asrOriLang);
     }
 
-    const result = await window.api.runBackend(args);
+    const result = await window.api.runBackend(args, { lane: 'prep' });
     if (!Array.isArray(result) || result.length === 0) {
         throw new Error('语音识别未返回有效字幕片段。');
     }
@@ -805,12 +1002,24 @@ async function generateSubtitleForItem(
     };
 }
 
-async function processQueueItem(
+interface PreparedBatchQueueItem {
+    outputPath: string;
+    workDir: string;
+    projectPaths: Awaited<ReturnType<typeof prepareBatchProjectPaths>>['projectPaths'];
+    sourceSegments: SrtSegment[];
+    translatedSegments: SrtSegment[];
+    fallbackReferenceAudio?: {
+        audioPath: string;
+        refText: string;
+    };
+}
+
+async function prepareQueueItem(
     item: BatchQueueItem,
     options: BatchQueueOptions,
     onStageChange: (stage: string) => void,
     onItemPatch: (patch: Partial<BatchQueueItem>) => void
-) {
+): Promise<PreparedBatchQueueItem> {
     const applyStage = (stageKey: BatchQueueStageKey, stage: string) => {
         onItemPatch(createStage(stageKey, stage));
         onStageChange(stage);
@@ -872,92 +1081,122 @@ async function processQueueItem(
             translatedSubtitleContent: item.translatedSubtitleContent || segmentsToSRT(translatedSegments)
         });
 
-        applyStage(BATCH_QUEUE_STAGE.generatingDubbing, '生成配音');
-        const mergedSegments = translatedSegments.map(segment => ({ ...segment }));
-        const recoveredCount = await recoverExistingBatchAudioSegments(mergedSegments, projectPaths.sessionAudioDir);
-        const pendingSegments = mergedSegments
-            .map((segment, index) => ({
-                ...segment,
-                original_index: index,
-                source_text: sourceSegments[index]?.text || ''
-            }))
-            .filter((segment) => !(segment as SrtSegment & { path?: string }).path);
-
-        if (recoveredCount > 0) {
-            applyStage(
-                BATCH_QUEUE_STAGE.generatingDubbing,
-                pendingSegments.length > 0
-                    ? `继续生成剩余配音（已复用 ${recoveredCount} 条）`
-                    : `已复用全部 ${recoveredCount} 条配音`
-            );
-        }
-
-        const failedIndexes: number[] = [];
-        if (pendingSegments.length > 0) {
-            const tempJsonPath = `${workDir}\\segments.json`;
-            await window.api.saveFile(tempJsonPath, JSON.stringify(pendingSegments, null, 2));
-            const ttsResult = await window.api.runBackend(
-                buildBatchTtsArgs(item.sourcePath, projectPaths.sessionAudioDir, tempJsonPath, options)
-            );
-            if (!ttsResult || !ttsResult.success) {
-                throw new Error(ttsResult?.error || '批量配音失败');
-            }
-
-            for (const result of ttsResult.results || []) {
-                const idx = result.index;
-                if (typeof idx !== 'number' || !mergedSegments[idx]) continue;
-                if (result.success && result.audio_path) {
-                    (mergedSegments[idx] as SrtSegment & { path?: string }).path = result.audio_path;
-                } else {
-                    failedIndexes.push(idx);
-                }
-            }
-
-            await cleanupOutputArtifacts(projectPaths.finalDir, [tempJsonPath]);
-        }
-
-        if (failedIndexes.length > 0) {
-            applyStage(BATCH_QUEUE_STAGE.retryingFailedSegments, `重试失败片段 (${failedIndexes.length})`);
-            await retryFailedBatchSegments({
-                sourcePath: item.sourcePath,
-                sessionDir: projectPaths.sessionTempDir,
-                sourceSegments,
-                translatedSegments: mergedSegments,
-                failedIndexes,
-                options
-            });
-        }
-
-        const readySegments = mergedSegments.filter((segment): segment is SrtSegment & { path: string } => Boolean((segment as SrtSegment & { path?: string }).path));
-        if (readySegments.length === 0) {
-            throw new Error('所有配音片段均失败，无法合成');
-        }
-
-        applyStage(
-            failedIndexes.length > 0 ? BATCH_QUEUE_STAGE.partialMerge : BATCH_QUEUE_STAGE.mergingVideo,
-            failedIndexes.length > 0 ? '部分片段失败，继续合成' : '合成视频'
+        applyStage(BATCH_QUEUE_STAGE.preparingOutput, '准备参考音频');
+        const fallbackReferenceAudio = await prepareFallbackReferenceAudio(
+            item.sourcePath,
+            projectPaths.sessionTempDir,
+            translatedSegments
         );
-        const mergeJsonPath = `${workDir}\\merge_segments.json`;
-        await window.api.saveFile(mergeJsonPath, JSON.stringify(readySegments, null, 2));
-        const mergeResult = await window.api.runBackend([
-            '--action', 'merge_video',
-            '--input', item.sourcePath,
-            '--output', outputPath,
-            '--ref', mergeJsonPath,
-            '--strategy', options.videoStrategy,
-            '--audio_mix_mode', options.audioMixMode,
-            '--json'
-        ]);
 
-        if (!mergeResult || !mergeResult.success) {
-            throw new Error(mergeResult?.error || '合成视频失败');
-        }
-
-        await cleanupOutputArtifacts(projectPaths.finalDir, [mergeJsonPath]);
-        return mergeResult.output || outputPath;
+        return {
+            outputPath,
+            workDir,
+            projectPaths,
+            sourceSegments,
+            translatedSegments,
+            fallbackReferenceAudio
+        };
     } finally {
         // Keep session cache so interrupted batch tasks can resume from saved subtitles/audio fragments.
     }
+}
+
+async function finalizeQueueItem(
+    item: BatchQueueItem,
+    prepared: PreparedBatchQueueItem,
+    options: BatchQueueOptions,
+    onStageChange: (stage: string) => void
+) {
+    const applyStage = (_stageKey: BatchQueueStageKey, stage: string) => {
+        onStageChange(stage);
+    };
+
+    const { outputPath, workDir, projectPaths, sourceSegments, translatedSegments, fallbackReferenceAudio } = prepared;
+
+    applyStage(BATCH_QUEUE_STAGE.generatingDubbing, '生成配音');
+    const mergedSegments = translatedSegments.map(segment => ({ ...segment }));
+    const recoveredCount = await recoverExistingBatchAudioSegments(mergedSegments, projectPaths.sessionAudioDir);
+    const pendingSegments = mergedSegments
+        .map((segment, index) => ({
+            ...segment,
+            original_index: index,
+            source_text: sourceSegments[index]?.text || ''
+        }))
+        .filter((segment) => !(segment as SrtSegment & { path?: string }).path);
+
+    if (recoveredCount > 0) {
+        applyStage(
+            BATCH_QUEUE_STAGE.generatingDubbing,
+            pendingSegments.length > 0
+                ? `继续生成剩余配音（已复用 ${recoveredCount} 条）`
+                : `已复用全部 ${recoveredCount} 条配音`
+        );
+    }
+
+    const failedIndexes: number[] = [];
+    if (pendingSegments.length > 0) {
+        const tempJsonPath = `${workDir}\\segments.json`;
+        await window.api.saveFile(tempJsonPath, JSON.stringify(pendingSegments, null, 2));
+        const ttsResult = await window.api.runBackend(
+            buildBatchTtsArgs(item.sourcePath, projectPaths.sessionAudioDir, tempJsonPath, options)
+        );
+        if (!ttsResult || !ttsResult.success) {
+            throw new Error(ttsResult?.error || '批量配音失败');
+        }
+
+        for (const result of ttsResult.results || []) {
+            const idx = result.index;
+            if (typeof idx !== 'number' || !mergedSegments[idx]) continue;
+            if (result.success && result.audio_path) {
+                (mergedSegments[idx] as SrtSegment & { path?: string }).path = result.audio_path;
+            } else {
+                failedIndexes.push(idx);
+            }
+        }
+
+        await cleanupOutputArtifacts(projectPaths.finalDir, [tempJsonPath]);
+    }
+
+    if (failedIndexes.length > 0) {
+        applyStage(BATCH_QUEUE_STAGE.retryingFailedSegments, `重试失败片段 (${failedIndexes.length})`);
+        await retryFailedBatchSegments({
+            sourcePath: item.sourcePath,
+            sessionDir: projectPaths.sessionTempDir,
+            sourceSegments,
+            translatedSegments: mergedSegments,
+            failedIndexes,
+            options,
+            fallbackReferenceAudio
+        });
+    }
+
+    const readySegments = mergedSegments.filter((segment): segment is SrtSegment & { path: string } => Boolean((segment as SrtSegment & { path?: string }).path));
+    if (readySegments.length === 0) {
+        throw new Error('所有配音片段均失败，无法合成');
+    }
+
+    applyStage(
+        failedIndexes.length > 0 ? BATCH_QUEUE_STAGE.partialMerge : BATCH_QUEUE_STAGE.mergingVideo,
+        failedIndexes.length > 0 ? '部分片段失败，继续合成' : '合成视频'
+    );
+    const mergeJsonPath = `${workDir}\\merge_segments.json`;
+    await window.api.saveFile(mergeJsonPath, JSON.stringify(readySegments, null, 2));
+    const mergeResult = await window.api.runBackend([
+        '--action', 'merge_video',
+        '--input', item.sourcePath,
+        '--output', outputPath,
+        '--ref', mergeJsonPath,
+        '--strategy', options.videoStrategy,
+        '--audio_mix_mode', options.audioMixMode,
+        '--json'
+    ]);
+
+    if (!mergeResult || !mergeResult.success) {
+        throw new Error(mergeResult?.error || '合成视频失败');
+    }
+
+    await cleanupOutputArtifacts(projectPaths.finalDir, [mergeJsonPath]);
+    return mergeResult.output || outputPath;
 }
 
 async function recoverExistingBatchAudioSegments(
@@ -995,7 +1234,7 @@ async function prepareFallbackReferenceAudio(
             '--ref', refJsonPath,
             '--output', workDir,
             '--json'
-        ]);
+        ], { lane: 'prep' });
         if (result?.success && result.ref_audio_path) {
             return {
                 audioPath: result.ref_audio_path as string,
@@ -1014,7 +1253,8 @@ async function retryFailedBatchSegments({
     sourceSegments,
     translatedSegments,
     failedIndexes,
-    options
+    options,
+    fallbackReferenceAudio
 }: {
     sourcePath: string;
     sessionDir: string;
@@ -1022,8 +1262,12 @@ async function retryFailedBatchSegments({
     translatedSegments: Array<SrtSegment & { path?: string }>;
     failedIndexes: number[];
     options: BatchQueueOptions;
+    fallbackReferenceAudio?: {
+        audioPath: string;
+        refText: string;
+    };
 }) {
-    const fallbackRefAudio = await prepareFallbackReferenceAudio(sourcePath, sessionDir, translatedSegments);
+    const fallbackRefAudio = fallbackReferenceAudio || await prepareFallbackReferenceAudio(sourcePath, sessionDir, translatedSegments);
 
     for (const index of failedIndexes) {
         const segment = translatedSegments[index];
@@ -1058,7 +1302,10 @@ function resolveSourceSegments(item: BatchQueueItem): SrtSegment[] {
     return [];
 }
 
-async function translateSegments(segments: SrtSegment[], options: BatchQueueOptions) {
+async function translateSegments(
+    segments: SrtSegment[],
+    options: Pick<BatchQueueOptions, 'targetLang'> | BatchSubtitleTranslationOptions
+) {
     const args = [
         '--action', 'translate_text',
         '--input', JSON.stringify(segments),
@@ -1068,7 +1315,7 @@ async function translateSegments(segments: SrtSegment[], options: BatchQueueOpti
 
     appendStoredTranslationArgs(args);
 
-    const result = await window.api.runBackend(args);
+    const result = await window.api.runBackend(args, { lane: 'prep' });
     if (!result || !result.success || !Array.isArray(result.segments)) {
         throw new Error(result?.error || '字幕翻译失败');
     }

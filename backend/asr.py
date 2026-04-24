@@ -14,6 +14,7 @@ import traceback
 from jianying import JianYingASR
 from bcut import BcutASR
 from asr_data import ASRData
+from gpu_runtime import choose_adaptive_batch_size, format_gpu_snapshot
 
 
 
@@ -412,7 +413,10 @@ def run_asr(audio_path, model_path=None, service="whisperx", output_dir=None, va
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     compute_type = "float16" if device == "cuda" else "int8"
-    batch_size = 4 
+    requested_batch_size = 4
+    batch_size, batch_detail = choose_adaptive_batch_size(requested_batch_size, "asr")
+    if batch_detail:
+        print(f"[ASR] Adaptive batch size selected: {format_gpu_snapshot(batch_detail)}")
     
     local_model_path = None
     if os.path.exists(PATH_PROD_1):

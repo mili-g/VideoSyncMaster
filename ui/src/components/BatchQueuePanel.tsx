@@ -23,6 +23,7 @@ interface BatchQueuePanelProps {
     isRunning: boolean;
     canStart: boolean;
     canGenerateSubtitles: boolean;
+    canGenerateTranslations: boolean;
     onAddAssets: (assets: BatchInputAsset[]) => void | Promise<void>;
     onAssignUnmatchedSubtitle: (
         assetPath: string,
@@ -34,6 +35,7 @@ interface BatchQueuePanelProps {
     onClearCompleted: () => void;
     onClearAll: () => void;
     onGenerateSubtitles: () => void;
+    onGenerateTranslations: () => void;
     onRetryFailed: () => void;
     onOpenOutput: (item: BatchQueueItem) => void;
     onStart: () => void;
@@ -71,6 +73,7 @@ export default function BatchQueuePanel({
     isRunning,
     canStart,
     canGenerateSubtitles,
+    canGenerateTranslations,
     onAddAssets,
     onAssignUnmatchedSubtitle,
     onRemoveUnmatchedSubtitle,
@@ -78,6 +81,7 @@ export default function BatchQueuePanel({
     onClearCompleted,
     onClearAll,
     onGenerateSubtitles,
+    onGenerateTranslations,
     onRetryFailed,
     onOpenOutput,
     onStart,
@@ -175,6 +179,9 @@ export default function BatchQueuePanel({
                         </button>
                         <button onClick={onGenerateSubtitles} disabled={!canGenerateSubtitles} style={buttonStyle('rgba(14,165,233,0.28)', !canGenerateSubtitles)}>
                             批量识别字幕
+                        </button>
+                        <button onClick={onGenerateTranslations} disabled={!canGenerateTranslations} style={buttonStyle('rgba(249,115,22,0.28)', !canGenerateTranslations)}>
+                            批量翻译字幕
                         </button>
                         <button onClick={onRetryFailed} style={buttonStyle('rgba(59,130,246,0.28)')}>
                             重试失败项

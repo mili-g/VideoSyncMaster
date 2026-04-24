@@ -42,8 +42,11 @@ contextBridge.exposeInMainWorld('api', {
   getPaths() {
     return ipcRenderer.invoke('get-paths')
   },
-  async runBackend(args: string[]) {
-    const result = await ipcRenderer.invoke('run-backend', args)
+  async runBackend(args: string[], options?: { lane?: 'default' | 'prep' }) {
+    const result = await ipcRenderer.invoke('run-backend', {
+      args,
+      lane: options?.lane || 'default'
+    })
     if (result && typeof result === 'object' && (result as { canceled?: boolean }).canceled) {
       const error = Object.assign(new Error((result as { error?: string }).error || 'Task canceled by user'), {
         canceled: true,

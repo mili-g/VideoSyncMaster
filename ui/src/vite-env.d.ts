@@ -9,7 +9,7 @@ interface DesktopApi {
     deletePath(targetPath: string): Promise<boolean>;
     checkFileExists(filePath: string): Promise<boolean>;
     getPaths(): Promise<{ projectRoot: string; outputDir: string; cacheDir: string }>;
-    runBackend(args: string[]): Promise<any>;
+    runBackend(args: string[], options?: { lane?: 'default' | 'prep' }): Promise<any>;
     analyzeVideoMetadata(filePath: string): Promise<any>;
     cacheVideo(filePath: string): Promise<string>;
     openFolder(filePath: string): Promise<boolean>;

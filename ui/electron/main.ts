@@ -25,9 +25,48 @@ export const RENDERER_DIST = path.join(process.env.APP_ROOT, 'dist')
 process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, 'public') : RENDERER_DIST
 
 let win: BrowserWindow | null
-let activeBackendProcess: any = null
-let activeBackendCancellation: { requested: boolean } | null = null
-let backendRunQueue: Promise<unknown> = Promise.resolve()
+type BackendLane = 'default' | 'prep'
+
+interface ActiveBackendRequest {
+  requestId: string
+  sender: Electron.WebContents
+  resolve: (value: unknown) => void
+  reject: (reason?: unknown) => void
+  cancellationState: { requested: boolean }
+  outputData: string
+  errorData: string
+}
+
+interface BackendWorkerState {
+  process: ChildProcess | null
+  activeCancellation: { requested: boolean } | null
+  runQueue: Promise<unknown>
+  stdoutBuffer: string
+  stderrBuffer: string
+  requestCounter: number
+  activeRequest: ActiveBackendRequest | null
+}
+
+const backendWorkers: Record<BackendLane, BackendWorkerState> = {
+  default: {
+    process: null,
+    activeCancellation: null,
+    runQueue: Promise.resolve(),
+    stdoutBuffer: '',
+    stderrBuffer: '',
+    requestCounter: 0,
+    activeRequest: null
+  },
+  prep: {
+    process: null,
+    activeCancellation: null,
+    runQueue: Promise.resolve(),
+    stdoutBuffer: '',
+    stderrBuffer: '',
+    requestCounter: 0,
+    activeRequest: null
+  }
+}
 
 const utf8Decoder = new TextDecoder('utf-8', { fatal: false })
 const gbkDecoder = new TextDecoder('gbk', { fatal: false })
@@ -79,9 +118,14 @@ function normalizeKnownProcessMessage(message: string) {
   return message
 }
 
-function enqueueBackendRun<T>(runner: () => Promise<T>): Promise<T> {
-  const task = backendRunQueue.then(runner, runner)
-  backendRunQueue = task.catch(() => undefined)
+function getBackendWorkerState(lane: BackendLane) {
+  return backendWorkers[lane]
+}
+
+function enqueueBackendRun<T>(lane: BackendLane, runner: () => Promise<T>): Promise<T> {
+  const workerState = getBackendWorkerState(lane)
+  const task = workerState.runQueue.then(runner, runner)
+  workerState.runQueue = task.catch(() => undefined)
   return task
 }
 
@@ -94,6 +138,7 @@ interface BackendStructuredEvent {
 }
 
 const BACKEND_EVENT_PREFIX = '__EVENT__'
+const BACKEND_WORKER_RESULT_PREFIX = '__WORKER_RESULT__'
 
 function parseBackendStructuredEvent(line: string): BackendStructuredEvent | null {
   const trimmed = line.trim()
@@ -160,6 +205,217 @@ function getAppPaths() {
     outputDir: path.join(projectRoot, 'output'),
     cacheDir: path.join(projectRoot, '.cache')
   }
+}
+
+function parseBackendWorkerResult(line: string) {
+  const trimmed = line.trim()
+  if (!trimmed.startsWith(BACKEND_WORKER_RESULT_PREFIX)) return null
+
+  try {
+    return JSON.parse(trimmed.slice(BACKEND_WORKER_RESULT_PREFIX.length))
+  } catch (error) {
+    console.error('Failed to parse backend worker result:', trimmed, error)
+    return null
+  }
+}
+
+function createBackendProcessLineHandler(lane: BackendLane, source: 'stdout' | 'stderr') {
+  return (line: string) => {
+    const workerState = getBackendWorkerState(lane)
+    const normalizedLine = normalizeKnownProcessMessage(line)
+    if (!normalizedLine) return
+
+    const workerResult = source === 'stdout' ? parseBackendWorkerResult(normalizedLine) : null
+    if (workerResult) {
+      if (workerState.activeRequest && workerResult.id === workerState.activeRequest.requestId) {
+        const currentRequest = workerState.activeRequest
+        workerState.activeRequest = null
+        workerState.activeCancellation = null
+
+        if (currentRequest.cancellationState.requested) {
+          currentRequest.resolve({ success: false, canceled: true, error: 'Task canceled by user' })
+          return
+        }
+
+        if (workerResult.success) {
+          currentRequest.resolve(workerResult.result)
+        } else {
+          currentRequest.reject(new Error(workerResult.error || 'Backend worker request failed'))
+        }
+      }
+      return
+    }
+
+    const structuredEvent = parseBackendStructuredEvent(normalizedLine)
+    if (structuredEvent) {
+      if (workerState.activeRequest) {
+        dispatchBackendStructuredEvent(workerState.activeRequest.sender, structuredEvent)
+      }
+      return
+    }
+
+    if (workerState.activeRequest) {
+      if (source === 'stdout') {
+        workerState.activeRequest.outputData += `${normalizedLine}\n`
+      } else {
+        workerState.activeRequest.errorData += `${normalizedLine}\n`
+      }
+    }
+
+    if (source === 'stdout') {
+      if (workerState.activeRequest) {
+        const progressMatch = normalizedLine.match(/\[PROGRESS\]\s*(\d+)/)
+        if (progressMatch) {
+          const p = parseInt(progressMatch[1], 10)
+          workerState.activeRequest.sender.send('backend-progress', { percent: p, message: `当前进度 ${p}%` })
+        }
+
+        const partialMatch = normalizedLine.match(/\[PARTIAL\]\s*(.*)/)
+        if (partialMatch) {
+          try {
+            const pData = JSON.parse(partialMatch[1].trim())
+            workerState.activeRequest.sender.send('backend-partial-result', pData)
+          } catch (e) {
+            console.error('Failed to parse partial:', e)
+          }
+        }
+
+        const depsMatch = normalizedLine.match(/\[DEPS_INSTALLING\]\s*(.*)/)
+        if (depsMatch) {
+          const packageDesc = depsMatch[1].trim()
+          workerState.activeRequest.sender.send('backend-deps-installing', packageDesc)
+        }
+
+        const depsDoneMatch = normalizedLine.match(/\[DEPS_DONE\]\s*(.*)/)
+        if (depsDoneMatch) {
+          workerState.activeRequest.sender.send('backend-deps-done')
+        }
+      }
+
+      console.log(`[Py Stdout:${lane}]`, normalizedLine)
+      return
+    }
+
+    console.error(`[Py Stderr:${lane}]:`, normalizedLine)
+  }
+}
+
+const processBackendStdoutLine = {
+  default: createBackendProcessLineHandler('default', 'stdout'),
+  prep: createBackendProcessLineHandler('prep', 'stdout')
+}
+const processBackendStderrLine = {
+  default: createBackendProcessLineHandler('default', 'stderr'),
+  prep: createBackendProcessLineHandler('prep', 'stderr')
+}
+
+function consumeBackendProcessChunk(lane: BackendLane, chunk: string, source: 'stdout' | 'stderr') {
+  const workerState = getBackendWorkerState(lane)
+  const normalized = normalizeKnownProcessMessage(decodeProcessChunk(chunk))
+  let buffer = source === 'stdout' ? workerState.stdoutBuffer : workerState.stderrBuffer
+  buffer += normalized
+  const parts = buffer.split(/\r?\n/)
+  buffer = parts.pop() || ''
+
+  for (const line of parts) {
+    if (source === 'stdout') processBackendStdoutLine[lane](line)
+    else processBackendStderrLine[lane](line)
+  }
+
+  if (source === 'stdout') workerState.stdoutBuffer = buffer
+  else workerState.stderrBuffer = buffer
+}
+
+function getBackendLaunchConfig() {
+  const { projectRoot } = getAppPaths()
+  const pythonExe = path.join(projectRoot, 'python', 'python.exe')
+  const scriptPath = path.join(projectRoot, 'backend', 'main.py')
+  const modelsDir = path.join(projectRoot, 'models', 'index-tts', 'hub')
+  const finalPythonExe = (app.isPackaged || fs.existsSync(pythonExe)) ? pythonExe : 'python'
+
+  return {
+    projectRoot,
+    scriptPath,
+    modelsDir,
+    finalPythonExe
+  }
+}
+
+async function ensureBackendWorker(lane: BackendLane) {
+  const workerState = getBackendWorkerState(lane)
+  if (workerState.process && workerState.process.exitCode === null && !workerState.process.killed) {
+    return workerState.process as ChildProcess
+  }
+
+  const { scriptPath, modelsDir, finalPythonExe } = getBackendLaunchConfig()
+  console.log(`Starting persistent backend worker [${lane}]:`, { finalPythonExe, scriptPath, modelsDir })
+
+  if (finalPythonExe !== 'python' && !fs.existsSync(finalPythonExe)) {
+    throw new Error(`Python environment not found at ${finalPythonExe}`)
+  }
+
+  if (!fs.existsSync(scriptPath)) {
+    throw new Error(`Backend script not found at ${scriptPath}`)
+  }
+
+  workerState.stdoutBuffer = ''
+  workerState.stderrBuffer = ''
+
+  const backendProcess = spawn(finalPythonExe, [scriptPath, '--worker', '--model_dir', modelsDir], {
+    env: getPythonProcessEnv()
+  })
+
+  workerState.process = backendProcess
+
+  backendProcess.stdout.on('data', (data: any) => {
+    consumeBackendProcessChunk(lane, data, 'stdout')
+  })
+
+  backendProcess.stderr.on('data', (data: any) => {
+    consumeBackendProcessChunk(lane, data, 'stderr')
+  })
+
+  backendProcess.on('close', (code: number) => {
+    if (workerState.stdoutBuffer.trim()) processBackendStdoutLine[lane](workerState.stdoutBuffer)
+    if (workerState.stderrBuffer.trim()) processBackendStderrLine[lane](workerState.stderrBuffer)
+    workerState.stdoutBuffer = ''
+    workerState.stderrBuffer = ''
+    if (workerState.process === backendProcess) {
+      workerState.process = null
+    }
+
+    if (workerState.activeRequest) {
+      const currentRequest = workerState.activeRequest
+      workerState.activeRequest = null
+      workerState.activeCancellation = null
+
+      if (currentRequest.cancellationState.requested) {
+        currentRequest.resolve({ success: false, canceled: true, error: 'Task canceled by user' })
+      } else {
+        currentRequest.reject(new Error(`Python worker exited with code ${code}. Error: ${currentRequest.errorData}`))
+      }
+    }
+  })
+
+  backendProcess.on('error', (error: Error) => {
+    if (workerState.process === backendProcess) {
+      workerState.process = null
+    }
+
+    if (workerState.activeRequest) {
+      const currentRequest = workerState.activeRequest
+      workerState.activeRequest = null
+      workerState.activeCancellation = null
+
+      if (currentRequest.cancellationState.requested) {
+        currentRequest.resolve({ success: false, canceled: true, error: 'Task canceled by user' })
+      } else {
+        currentRequest.reject(error)
+      }
+    }
+  })
+
+  return backendProcess
 }
 
 function getFfprobePath() {
@@ -492,201 +748,42 @@ app.whenReady().then(async () => {
   })
 
   // IPC Handler for Python Backend
-  ipcMain.handle('run-backend', async (_event: any, args: any[]) => {
-    return enqueueBackendRun(() => new Promise((resolve, reject) => {
-      console.log('Running backend with args:', args)
+  ipcMain.handle('run-backend', async (_event: any, payload: any) => {
+    const requestArgs = Array.isArray(payload) ? payload : payload?.args
+    const lane = (Array.isArray(payload) ? 'default' : payload?.lane) === 'prep' ? 'prep' : 'default'
+    if (!Array.isArray(requestArgs)) {
+      throw new Error('run-backend payload must provide an args array')
+    }
 
-      const { projectRoot } = getAppPaths()
-
-      // Uniform logic for Dev and Prod since structures are now identical
-      const pythonExe = path.join(projectRoot, 'python', 'python.exe');
-      const scriptPath = path.join(projectRoot, 'backend', 'main.py');
-      const modelsDir = path.join(projectRoot, 'models', 'index-tts', 'hub');
-
-      console.log('Spawning Backend:', { pythonExe, scriptPath, modelsDir });
-
-      const finalPythonExe = (app.isPackaged || fs.existsSync(pythonExe)) ? pythonExe : 'python';
-
-      if (finalPythonExe !== 'python' && !fs.existsSync(finalPythonExe)) {
-        reject(new Error(`Python environment not found at ${finalPythonExe}`));
-        return;
-      }
-
-      if (!fs.existsSync(scriptPath)) {
-        reject(new Error(`Backend script not found at ${scriptPath}`));
-        return;
-      }
-
-      const backendProcess = spawn(finalPythonExe, [scriptPath, '--json', '--model_dir', modelsDir, ...args], {
-        env: getPythonProcessEnv()
-      });
-
-      activeBackendProcess = backendProcess
+    return enqueueBackendRun(lane, async () => {
+      console.log(`Running backend with args via worker [${lane}]:`, requestArgs)
+      const backendProcess = await ensureBackendWorker(lane)
+      const workerState = getBackendWorkerState(lane)
+      const requestId = `req-${Date.now()}-${++workerState.requestCounter}`
       const cancellationState = { requested: false }
-      activeBackendCancellation = cancellationState
 
+      return await new Promise((resolve, reject) => {
+        workerState.activeRequest = {
+          requestId,
+          sender: _event.sender,
+          resolve,
+          reject,
+          cancellationState,
+          outputData: '',
+          errorData: ''
+        }
+        workerState.activeCancellation = cancellationState
 
-      let outputData = ''
-      let errorData = ''
-      let stdoutBuffer = ''
-      let stderrBuffer = ''
-
-      const processBackendLine = (line: string, source: 'stdout' | 'stderr') => {
-        const normalizedLine = normalizeKnownProcessMessage(line)
-        if (!normalizedLine) return
-
-        const structuredEvent = parseBackendStructuredEvent(normalizedLine)
-        if (structuredEvent) {
-          dispatchBackendStructuredEvent(_event.sender, structuredEvent)
+        if (!backendProcess.stdin || backendProcess.stdin.destroyed || !backendProcess.stdin.writable) {
+          workerState.activeRequest = null
+          workerState.activeCancellation = null
+          reject(new Error('Backend worker stdin is not writable'))
           return
         }
 
-        if (source === 'stdout') {
-          const progressMatch = normalizedLine.match(/\[PROGRESS\]\s*(\d+)/);
-          if (progressMatch) {
-            const p = parseInt(progressMatch[1], 10);
-            _event.sender.send('backend-progress', { percent: p, message: `当前进度 ${p}%` });
-          }
-
-          const partialMatch = normalizedLine.match(/\[PARTIAL\]\s*(.*)/);
-          if (partialMatch) {
-            try {
-              const pData = JSON.parse(partialMatch[1].trim());
-              _event.sender.send('backend-partial-result', pData);
-            } catch (e) {
-              console.error("Failed to parse partial:", e);
-            }
-          }
-
-          const depsMatch = normalizedLine.match(/\[DEPS_INSTALLING\]\s*(.*)/);
-          if (depsMatch) {
-            const packageDesc = depsMatch[1].trim();
-            _event.sender.send('backend-deps-installing', packageDesc);
-          }
-
-          const depsDoneMatch = normalizedLine.match(/\[DEPS_DONE\]\s*(.*)/);
-          if (depsDoneMatch) {
-            _event.sender.send('backend-deps-done');
-          }
-
-          console.log('[Py Stdout]:', normalizedLine)
-          return
-        }
-
-        console.error('[Py Stderr]:', normalizedLine)
-      }
-
-      const consumeProcessChunk = (chunk: string, source: 'stdout' | 'stderr') => {
-        const normalized = normalizeKnownProcessMessage(decodeProcessChunk(chunk))
-        let buffer = source === 'stdout' ? stdoutBuffer : stderrBuffer
-        buffer += normalized
-        const parts = buffer.split(/\r?\n/)
-        buffer = parts.pop() || ''
-
-        for (const line of parts) {
-          processBackendLine(line, source)
-        }
-
-        if (source === 'stdout') stdoutBuffer = buffer
-        else stderrBuffer = buffer
-      }
-
-      if (backendProcess) {
-        backendProcess.stdout.on('data', (data: any) => {
-          const str = decodeProcessChunk(data)
-          consumeProcessChunk(str, 'stdout')
-          outputData += normalizeKnownProcessMessage(str)
-        })
-
-        backendProcess.stderr.on('data', (data: any) => {
-          const str = decodeProcessChunk(data)
-          consumeProcessChunk(str, 'stderr')
-          errorData += normalizeKnownProcessMessage(str)
-        })
-
-        backendProcess.on('close', (code: number) => {
-          if (activeBackendProcess === backendProcess) activeBackendProcess = null;
-          if (activeBackendCancellation === cancellationState) activeBackendCancellation = null;
-          if (stdoutBuffer.trim()) processBackendLine(stdoutBuffer, 'stdout')
-          if (stderrBuffer.trim()) processBackendLine(stderrBuffer, 'stderr')
-          if (cancellationState.requested) {
-            resolve({ success: false, canceled: true, error: 'Task canceled by user' })
-            return
-          }
-          if (code !== 0) {
-            reject(new Error(`Python process exited with code ${code}. Error: ${errorData}`))
-            return
-          }
-
-          // Parse JSON output
-          try {
-            const startMarker = '__JSON_START__'
-            const endMarker = '__JSON_END__'
-            const startIndex = outputData.indexOf(startMarker)
-            const endIndex = outputData.lastIndexOf(endMarker) // Use lastIndexOf for safety
-
-            if (startIndex !== -1 && endIndex !== -1 && endIndex > startIndex) {
-              let jsonFullStr = outputData.substring(startIndex + startMarker.length, endIndex).trim()
-
-              // [ROBUST] Find the actual JSON object boundaries within the markers
-              const firstBrace = jsonFullStr.indexOf('{')
-              const lastBrace = jsonFullStr.lastIndexOf('}')
-              const firstBracket = jsonFullStr.indexOf('[')
-              const lastBracket = jsonFullStr.lastIndexOf(']')
-
-              // Determine if it's an object or array based on what comes first
-              let startIdx = -1;
-              let endIdx = -1;
-
-              // If both exist, take the earlier one. If only one exists, take it.
-              if (firstBrace !== -1 && firstBracket !== -1) {
-                if (firstBrace < firstBracket) {
-                  startIdx = firstBrace;
-                  endIdx = lastBrace;
-                } else {
-                  startIdx = firstBracket;
-                  endIdx = lastBracket;
-                }
-              } else if (firstBrace !== -1) {
-                startIdx = firstBrace;
-                endIdx = lastBrace;
-              } else if (firstBracket !== -1) {
-                startIdx = firstBracket;
-                endIdx = lastBracket;
-              }
-
-              if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
-                const cleanJsonStr = jsonFullStr.substring(startIdx, endIdx + 1)
-                const result = JSON.parse(cleanJsonStr)
-                resolve(result)
-              } else {
-                // Fallback (e.g. simple primitives or clean string)
-                const result = JSON.parse(jsonFullStr)
-                resolve(result)
-              }
-            } else {
-              console.warn('JSON markers not found or invalid in output')
-              resolve({ rawOutput: outputData, rawError: errorData })
-            }
-          } catch (e) {
-            console.error('Failed to parse backend output. Raw:', outputData);
-            reject(new Error(`Failed to parse backend output: ${e}`))
-          }
-        })
-
-        backendProcess.on('error', (error: Error) => {
-          if (activeBackendProcess === backendProcess) activeBackendProcess = null;
-          if (activeBackendCancellation === cancellationState) activeBackendCancellation = null;
-          if (cancellationState.requested) {
-            resolve({ success: false, canceled: true, error: 'Task canceled by user' })
-            return
-          }
-          reject(error)
-        })
-      } else {
-        reject(new Error("Failed to spawn backend process"));
-      }
-    }))
+        backendProcess.stdin.write(`${JSON.stringify({ id: requestId, args: requestArgs })}\n`, 'utf8')
+      })
+    })
   })
 
   ipcMain.handle('cache-video', async (_event, filePath: string) => {
@@ -768,22 +865,31 @@ app.whenReady().then(async () => {
 
   // IPC Handler to kill backend
   ipcMain.handle('kill-backend', async () => {
-    if (!activeBackendProcess) {
-      return true;
+    const processesToKill = (Object.keys(backendWorkers) as BackendLane[])
+      .map((lane) => {
+        const workerState = getBackendWorkerState(lane)
+        const processToKill = workerState.process
+        if (workerState.activeCancellation) {
+          workerState.activeCancellation.requested = true
+        }
+        workerState.process = null
+        return processToKill
+      })
+      .filter((proc): proc is ChildProcess => Boolean(proc))
+
+    if (processesToKill.length === 0) {
+      return true
     }
 
-      const processToKill = activeBackendProcess as ChildProcess;
-      if (activeBackendCancellation) {
-        activeBackendCancellation.requested = true;
-      }
-      activeBackendProcess = null;
-
     try {
-      console.log(`Killing python process ${processToKill.pid}...`);
-      return await terminateProcessTree(processToKill);
+      const results = await Promise.all(processesToKill.map(async (proc) => {
+        console.log(`Killing python process ${proc.pid}...`)
+        return terminateProcessTree(proc)
+      }))
+      return results.every(Boolean)
     } catch (e) {
-      console.error("Failed to kill backend:", e);
-      return false;
+      console.error("Failed to kill backend:", e)
+      return false
     }
   })
   // IPC Handler to open backend log
