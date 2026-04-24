@@ -46,6 +46,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--qwen_ref_text", type=str, help="Reference text for Qwen Clone mode", default="")
     parser.add_argument("--batch_size", type=int, help="Batch Size for TTS", default=10)
     parser.add_argument("--dub_retry_attempts", type=int, help="Retry attempts for failed dubbing segments", default=3)
+    parser.add_argument("--resume_completed", type=int, help="Recovered/resumed completed segment count", default=0)
+    parser.add_argument("--resume_total", type=int, help="Original total segment count before resume filtering", default=0)
     parser.add_argument("--api_key", type=str, help="API Key for External Translation", default=None)
     parser.add_argument("--base_url", type=str, help="Base URL for External Translation", default=None)
     parser.add_argument("--model", type=str, help="Model Name for External Translation", default=None)

@@ -1,5 +1,6 @@
 import sys
 import os
+import re
 import torch
 import soundfile as sf
 import traceback
@@ -7,9 +8,11 @@ import json
 import subprocess
 import atexit
 import threading
+import time
+import math
 import torchaudio
 from torch.nn.utils.rnn import pad_sequence
-from audio_validation import validate_generated_audio
+from audio_validation import validate_generated_audio, validate_generated_audio_array
 from event_protocol import emit_issue, emit_partial_result, emit_progress, emit_stage
 from gpu_runtime import choose_adaptive_batch_size, format_gpu_snapshot
 
@@ -49,10 +52,45 @@ INDEXTTS_ALLOWED_INFER_KWARGS = {
     "temperature",
     "repetition_penalty"
 }
+INDEXTTS_ENABLE_TRUE_BATCH = False
+INDEXTTS_BATCH_RUNTIME_ALLOWED_KWARGS = {
+    "do_sample",
+    "top_k",
+    "top_p",
+    "temperature",
+    "length_penalty",
+    "num_beams",
+    "repetition_penalty",
+    "max_mel_tokens",
+    "max_text_tokens_per_segment",
+    "inference_cfg_rate",
+    "diffusion_steps",
+    "batch_size"
+}
 
 _INDEXTTS_INSTANCE = None
 _INDEXTTS_INSTANCE_KEY = None
 _INDEXTTS_INSTANCE_LOCK = threading.Lock()
+
+
+def _is_fatal_cuda_runtime_error(error):
+    message = str(error or "").lower()
+    return (
+        "device-side assert triggered" in message
+        or ("cuda error" in message and "device-side assert" in message)
+        or "cuda kernel errors might be asynchronously reported" in message
+    )
+
+
+def _handle_fatal_indextts_cuda_error(error, context):
+    if not _is_fatal_cuda_runtime_error(error):
+        return
+
+    print(f"[IndexTTS] Fatal CUDA runtime error during {context}. Dropping loaded instance before next retry.")
+    try:
+        _cleanup_indextts_instance()
+    except Exception as cleanup_error:
+        print(f"[IndexTTS] Cleanup after fatal CUDA error failed: {cleanup_error}")
 
 
 def _build_indextts_kwargs(text, kwargs):
@@ -83,6 +121,18 @@ def _build_indextts_kwargs(text, kwargs):
         valid_kwargs['repetition_penalty'] = max(float(valid_kwargs.get('repetition_penalty', 1.0)), 1.08)
 
     return valid_kwargs
+
+
+def _sanitize_indextts_batch_runtime_kwargs(kwargs):
+    return {
+        key: value
+        for key, value in (kwargs or {}).items()
+        if key in INDEXTTS_BATCH_RUNTIME_ALLOWED_KWARGS
+    }
+
+
+def _should_use_indextts_true_batch(adaptive_batch_size):
+    return INDEXTTS_ENABLE_TRUE_BATCH and int(adaptive_batch_size or 1) > 1
 
 
 def _validate_indextts_duration(audio_path, text):
@@ -130,6 +180,31 @@ def _validate_indextts_output(audio_path, text):
     return duration
 
 
+def _validate_indextts_array_output(audio_array, sample_rate, text):
+    is_valid, validation_info = validate_generated_audio_array(audio_array, sample_rate)
+    if not is_valid:
+        raise Exception(f"Generated audio rejected: {validation_info}")
+
+    duration = None
+    if isinstance(validation_info, dict):
+        duration = float(validation_info.get("duration") or 0.0)
+
+    if not duration:
+        duration = float(len(audio_array) / float(sample_rate or 1))
+
+    text_len = len((text or '').strip())
+    if 29.8 < duration < 30.2 and text_len < 50:
+        raise Exception(f"Generated audio is suspiciously long ({duration:.2f}s) for short text '{text[:20]}...'. Likely timeout/hallucination.")
+    if duration > 60:
+        raise Exception(f"Generated audio too long ({duration:.2f}s).")
+    if text_len < 10 and duration > 15.0:
+        raise Exception(f"Generated audio too long ({duration:.2f}s) for very short text '{text[:20]}...'.")
+    if text_len < 24 and duration > 18.0:
+        raise Exception(f"Generated audio too long ({duration:.2f}s) for short text '{text[:20]}...'.")
+
+    return duration
+
+
 def _chunk_list(values, chunk_size):
     if chunk_size <= 0:
         chunk_size = 1
@@ -139,6 +214,18 @@ def _chunk_list(values, chunk_size):
 
 def _estimate_target_frames(duration_sec):
     return max(int(max(float(duration_sec or 0.1), 0.1) * 86), 1)
+
+
+def _estimate_max_generate_tokens_for_duration(duration_sec, requested_cap):
+    safe_duration = max(float(duration_sec or 0.1), 0.1)
+    cap = max(int(requested_cap or 1500), 1)
+
+    # IndexTTS typically needs around 50 GPT tokens per second of output audio.
+    # Keep a large safety margin so short segments can stop naturally without
+    # clipping quality, while still avoiding the extremely loose global cap.
+    estimated_tokens = (safe_duration * 50.0 * 2.8) + 96.0
+    dynamic_cap = max(320, int(math.ceil(estimated_tokens)))
+    return min(dynamic_cap, cap)
 
 
 def _pad_last_dim_tensors(tensors, pad_value=0.0):
@@ -233,15 +320,82 @@ def _prepare_indextts_reference_features(tts, ref_audio_path, reference_cache, v
     return prepared
 
 
+_MIXED_LATIN_RE = re.compile(r"[A-Za-z]")
+_CODE_STYLE_RE = re.compile(r"(</?[A-Za-z][^>]*>|[A-Za-z_]+\.[A-Za-z_]+|[A-Za-z_]+/[A-Za-z_]+|[A-Za-z_]+\([^\)]*\))")
+_IDENTIFIER_DOT_RE = re.compile(r"(?<=[A-Za-z0-9_])\.(?=[A-Za-z0-9_])")
+_IDENTIFIER_SLASH_RE = re.compile(r"(?<=[A-Za-z0-9_])/(?=[A-Za-z0-9_])")
+_CAMEL_CASE_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+
+
+def _normalize_identifier_fragment(fragment):
+    value = str(fragment or "").strip()
+    if not value:
+        return ""
+
+    value = _CAMEL_CASE_BOUNDARY_RE.sub(" ", value)
+    value = value.replace("_", " ")
+    value = value.replace("-", " ")
+    value = re.sub(r"\s+", " ", value).strip()
+    return value.lower()
+
+
+def _normalize_indextts_text(text):
+    original = str(text or "")
+    normalized = original
+
+    normalized = _IDENTIFIER_DOT_RE.sub(" dot ", normalized)
+    normalized = _IDENTIFIER_SLASH_RE.sub(" slash ", normalized)
+    normalized = re.sub(r"(?<=[A-Za-z0-9_])\\(?=[A-Za-z0-9_])", " slash ", normalized)
+    normalized = re.sub(r"(?<=[A-Za-z0-9_])::(?=[A-Za-z0-9_])", " dot dot ", normalized)
+
+    def replace_identifier(match):
+        return _normalize_identifier_fragment(match.group(0))
+
+    normalized = re.sub(r"[A-Za-z][A-Za-z0-9_\-]*", replace_identifier, normalized)
+    normalized = normalized.replace("_", " ")
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized or original
+
+
+def _classify_indextts_risk(task, token_count):
+    text = str(task.get("text") or "").strip()
+    duration = max(float(task.get("duration", 0.0) or 0.0), 0.0)
+    ref_text = str(task.get("ref_text") or "").strip()
+
+    has_latin = bool(_MIXED_LATIN_RE.search(text))
+    has_code_style = bool(_CODE_STYLE_RE.search(text))
+    has_symbol_noise = any(ch in text for ch in ("<", ">", "/", "_", "`", "=", "{", "}", "[", "]"))
+    punctuation_count = sum(text.count(ch) for ch in ("，", "。", "、", ",", ".", ":", "：", ";", "；"))
+
+    if has_code_style or has_symbol_noise:
+        return True, "code_style"
+    if has_latin and len(text) <= 40:
+        return True, "mixed_latin"
+    if duration < 1.25:
+        return True, "very_short_duration"
+    if len(text) <= 5:
+        return True, "very_short_text"
+    if token_count <= 6:
+        return True, "very_short_tokens"
+    if punctuation_count >= 4 and len(text) <= 24:
+        return True, "dense_punctuation"
+    if ref_text and len(ref_text) <= 3:
+        return True, "very_short_ref_text"
+
+    return False, "batchable"
+
+
 def _build_indextts_batch_plan(tts, tasks, kwargs):
     max_text_tokens_per_segment = int(kwargs.get("max_text_tokens_per_segment", 120) or 120)
     stop_text_token = int(tts.gpt.stop_text_token)
     batchable = []
     sequential = []
+    sequential_reason_counts = {}
 
     for task in tasks:
         text = task.get("text", "")
-        text_tokens_list = tts.tokenizer.tokenize(text)
+        normalized_text = _normalize_indextts_text(text)
+        text_tokens_list = tts.tokenizer.tokenize(normalized_text)
         segments = tts.tokenizer.split_segments(text_tokens_list, max_text_tokens_per_segment)
         if len(segments) != 1:
             sequential.append(task)
@@ -252,15 +406,28 @@ def _build_indextts_batch_plan(tts, tasks, kwargs):
             sequential.append(task)
             continue
 
+        token_count = len(token_ids)
+        is_high_risk, risk_reason = _classify_indextts_risk(task, token_count)
+        if is_high_risk:
+            sequential.append(task)
+            sequential_reason_counts[risk_reason] = sequential_reason_counts.get(risk_reason, 0) + 1
+            continue
+
         batchable.append({
             "task": task,
-            "token_count": len(token_ids),
+            "normalized_text": normalized_text,
+            "token_count": token_count,
             "token_tensor": torch.tensor(token_ids, dtype=torch.int32),
             "text_padding_value": stop_text_token,
             "estimated_frames": _estimate_target_frames(task.get("duration", 0.1))
         })
 
     batchable.sort(key=lambda item: (item["token_count"], item["estimated_frames"], item["task"].get("duration", 0.0)))
+    reason_parts = ", ".join(f"{key}={value}" for key, value in sorted(sequential_reason_counts.items()))
+    print(
+        f"[BatchPlan] total={len(tasks)} batchable={len(batchable)} sequential={len(sequential)}"
+        + (f" reasons: {reason_parts}" if reason_parts else "")
+    )
     return batchable, sequential
 
 
@@ -287,14 +454,20 @@ def _should_flush_dynamic_bucket(bucket, candidate, max_batch_size):
     frame_padding_ratio = padded_frame_cost / max(actual_frame_cost, 1)
     token_span = next_max_tokens - min(token_counts + [candidate["token_count"]])
     frame_span = next_max_frames - min(frame_counts + [candidate["estimated_frames"]])
+    duration_values = [float(entry["task"].get("duration", 0.0) or 0.0) for entry in bucket] + [float(candidate["task"].get("duration", 0.0) or 0.0)]
+    max_duration = max(duration_values)
+    min_duration = max(min(duration_values), 0.1)
+    duration_ratio = max_duration / min_duration
 
-    if next_size >= 2 and token_padding_ratio > 1.35:
+    if next_size >= 2 and token_padding_ratio > 1.22:
         return True
-    if next_size >= 2 and frame_padding_ratio > 1.4:
+    if next_size >= 2 and frame_padding_ratio > 1.25:
         return True
-    if next_size >= 2 and token_span > 24:
+    if next_size >= 2 and token_span > 18:
         return True
-    if next_size >= 2 and frame_span > 180:
+    if next_size >= 2 and frame_span > 120:
+        return True
+    if next_size >= 2 and duration_ratio > 1.8:
         return True
 
     return False
@@ -348,6 +521,22 @@ def _run_indextts_true_batch(tts, batch_entries, kwargs, reference_cache):
             **entry,
             "prepared_ref": prepared_ref
         })
+
+    dynamic_max_generate_length = min(
+        max_mel_tokens,
+        max(
+            _estimate_max_generate_tokens_for_duration(
+                entry["task"].get("duration", 0.1),
+                max_mel_tokens
+            )
+            for entry in prepared_items
+        )
+    )
+    dynamic_max_generate_length = max(240, int(dynamic_max_generate_length * 0.92))
+    temperature = min(float(temperature), 0.62)
+    top_p = min(float(top_p), 0.82)
+    top_k = min(int(top_k), 18)
+    repetition_penalty = max(float(repetition_penalty), 1.12)
 
     _ensure_indextts_batch_capacity(tts, batch_size)
 
@@ -404,7 +593,7 @@ def _run_indextts_true_batch(tts, batch_entries, kwargs, reference_cache):
                 length_penalty=length_penalty,
                 num_beams=num_beams,
                 repetition_penalty=repetition_penalty,
-                max_generate_length=max_mel_tokens,
+                max_generate_length=dynamic_max_generate_length,
                 **generation_kwargs
             )
 
@@ -461,15 +650,16 @@ def _run_indextts_true_batch(tts, batch_entries, kwargs, reference_cache):
         with torch.no_grad():
             wav = tts.bigvgan(mel_slice.float()).squeeze(1)
         wav = torch.clamp(32767 * wav, -32767.0, 32767.0).cpu()
+        wav_int16 = wav.type(torch.int16)
+        wav_np = wav_int16.squeeze(0).numpy()
+        duration = _validate_indextts_array_output(wav_np, sampling_rate, task["text"])
 
         if os.path.isfile(output_path):
             os.remove(output_path)
         output_dir = os.path.dirname(output_path)
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
-        torchaudio.save(output_path, wav.type(torch.int16), sampling_rate)
-
-        duration = _validate_indextts_output(output_path, task["text"])
+        torchaudio.save(output_path, wav_int16, sampling_rate)
         results.append({
             "index": task.get("index"),
             "success": True,
@@ -605,37 +795,50 @@ def run_tts(text, ref_audio_path, output_path, model_dir=None, config_path=None,
         config_path = DEFAULT_CONFIG_PATH
         
     print(f"TTS Text with tag: {text}")
+    normalized_text = _normalize_indextts_text(text)
+    if normalized_text != text:
+        print(f"[TextNorm] {text} -> {normalized_text}")
     
 
     
+    started_at = time.perf_counter()
     try:
         tts = _get_indextts_instance(model_dir=model_dir, config_path=config_path)
         if tts is None:
             return False
         
-        print(f"Synthesizing text: '{text}' using ref: {ref_audio_path}")
+        print(f"Synthesizing text: '{normalized_text}' using ref: {ref_audio_path}")
         
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
         
-        valid_kwargs = _build_indextts_kwargs(text, kwargs)
+        valid_kwargs = _build_indextts_kwargs(normalized_text, kwargs)
 
         # Explicitly pass advanced params if present in kwargs
         # (Though they are auto-passed by kwargs filter, we just ensure they are valid)
 
         tts.infer(
             spk_audio_prompt=ref_audio_path, 
-            text=text, 
+            text=normalized_text, 
             output_path=output_path,
             verbose=True,
             **valid_kwargs
         )
 
-        _validate_indextts_output(output_path, text)
+        duration = _validate_indextts_output(output_path, text)
+        elapsed_ms = (time.perf_counter() - started_at) * 1000.0
+        rtf = (elapsed_ms / 1000.0) / max(float(duration or 0.001), 0.001)
+        print(
+            f"[TTSTiming] mode=single total={elapsed_ms:.0f}ms "
+            f"audio={duration:.2f}s rtf={rtf:.3f} path={output_path}"
+        )
         
         print(f"TTS complete. Saved to {output_path}")
         return True
         
     except Exception as e:
+        _handle_fatal_indextts_cuda_error(e, "single_tts")
+        elapsed_ms = (time.perf_counter() - started_at) * 1000.0
+        print(f"[TTSTiming] mode=single_failed total={elapsed_ms:.0f}ms path={output_path}")
         print(f"Error during TTS: {e}")
         import traceback
         traceback.print_exc()
@@ -666,18 +869,21 @@ def run_batch_tts(tasks, model_dir=None, config_path=None, language="English", *
             raise RuntimeError("IndexTTS2 instance initialization failed")
         
         total = len(tasks)
+        progress_completed_offset = max(int(kwargs.get("progress_completed_offset", 0) or 0), 0)
+        progress_total_override = max(int(kwargs.get("progress_total_override", 0) or 0), 0)
+        progress_total = max(progress_total_override, progress_completed_offset + total, total)
         requested_batch_size = max(int(kwargs.get('batch_size', 1) or 1), 1)
         adaptive_batch_size, adaptive_detail = choose_adaptive_batch_size(requested_batch_size, "indextts")
         if adaptive_detail:
             print(f"[IndexTTS] Adaptive batch size selected: {format_gpu_snapshot(adaptive_detail)}")
 
-        runtime_kwargs = dict(kwargs or {})
+        runtime_kwargs = _sanitize_indextts_batch_runtime_kwargs(kwargs)
         runtime_kwargs['batch_size'] = adaptive_batch_size
         reference_cache = {}
         emit_stage(
             "generate_batch_tts",
             "tts_generate",
-            f"正在生成 {total} 条 IndexTTS 配音",
+            f"正在生成 {progress_total} 条 IndexTTS 配音",
             stage_label="正在生成配音"
         )
         batchable_tasks, sequential_tasks = _build_indextts_batch_plan(tts, tasks, runtime_kwargs)
@@ -687,32 +893,40 @@ def run_batch_tts(tasks, model_dir=None, config_path=None, language="English", *
             nonlocal processed
             processed += 1
             emit_partial_result("generate_batch_tts", result)
+            display_position = min(progress_completed_offset + processed, progress_total) if progress_total else processed
             emit_progress(
                 "generate_batch_tts",
                 "tts_generate",
-                int(processed / total * 100) if total else 100,
-                f"第 {processed}/{total} 条已完成",
+                int(display_position / progress_total * 100) if progress_total else 100,
+                f"第 {display_position}/{progress_total} 条已完成",
                 stage_label="正在生成配音",
-                item_index=item_position,
-                item_total=total
+                item_index=display_position,
+                item_total=progress_total
             )
 
         dynamic_buckets = _build_dynamic_batch_buckets(batchable_tasks, adaptive_batch_size)
 
-        if dynamic_buckets and adaptive_batch_size > 1:
+        if dynamic_buckets and not _should_use_indextts_true_batch(adaptive_batch_size):
+            print("[IndexTTS] True batch temporarily disabled due to CUDA instability. Using sequential generation.")
+            sequential_tasks = [entry["task"] for bucket in dynamic_buckets for entry in bucket] + sequential_tasks
+            dynamic_buckets = []
+
+        if dynamic_buckets and _should_use_indextts_true_batch(adaptive_batch_size):
             for batch_entries in dynamic_buckets:
                 batch_start_position = processed + 1
                 batch_end_position = min(processed + len(batch_entries), total)
+                display_start_position = min(progress_completed_offset + batch_start_position, progress_total) if progress_total else batch_start_position
+                display_end_position = min(progress_completed_offset + batch_end_position, progress_total) if progress_total else batch_end_position
                 token_counts = [entry["token_count"] for entry in batch_entries]
                 frame_counts = [entry["estimated_frames"] for entry in batch_entries]
                 emit_progress(
                     "generate_batch_tts",
                     "tts_generate",
-                    int(processed / total * 100) if total else 0,
-                    f"第 {batch_start_position}-{batch_end_position}/{total} 条批量生成中",
+                    int((progress_completed_offset + processed) / progress_total * 100) if progress_total else 0,
+                    f"第 {display_start_position}-{display_end_position}/{progress_total} 条批量生成中",
                     stage_label="正在生成配音",
-                    item_index=batch_start_position,
-                    item_total=total,
+                    item_index=display_start_position,
+                    item_total=progress_total,
                     detail=(
                         f"IndexTTS bucket x{len(batch_entries)} | "
                         f"tokens {min(token_counts)}-{max(token_counts)} | "
@@ -721,17 +935,28 @@ def run_batch_tts(tasks, model_dir=None, config_path=None, language="English", *
                     )
                 )
                 try:
+                    batch_started_at = time.perf_counter()
                     batch_results = _run_indextts_true_batch(tts, batch_entries, runtime_kwargs, reference_cache)
+                    batch_elapsed_ms = (time.perf_counter() - batch_started_at) * 1000.0
+                    success_count = sum(1 for result in batch_results if result.get("success"))
+                    output_duration_total = sum(float(result.get("duration") or 0.0) for result in batch_results if result.get("success"))
+                    bucket_rtf = (batch_elapsed_ms / 1000.0) / max(output_duration_total, 0.001)
+                    print(
+                        f"[TTSTiming] mode=true_batch size={len(batch_entries)} success={success_count}/{len(batch_entries)} "
+                        f"total={batch_elapsed_ms:.0f}ms audio={output_duration_total:.2f}s rtf={bucket_rtf:.3f}"
+                    )
                 except Exception as batch_error:
+                    _handle_fatal_indextts_cuda_error(batch_error, "true_batch")
                     print(f"[BatchTTS] True batch execution failed, falling back to single inference: {batch_error}")
                     batch_results = []
                     for entry in batch_entries:
                         task = entry["task"]
+                        normalized_text = entry.get("normalized_text") or _normalize_indextts_text(task["text"])
                         try:
-                            valid_kwargs = _build_indextts_kwargs(task["text"], runtime_kwargs)
+                            valid_kwargs = _build_indextts_kwargs(normalized_text, runtime_kwargs)
                             tts.infer(
                                 spk_audio_prompt=task["ref_audio_path"],
-                                text=task["text"],
+                                text=normalized_text,
                                 output_path=task["output_path"],
                                 verbose=False,
                                 **valid_kwargs
@@ -744,6 +969,7 @@ def run_batch_tts(tasks, model_dir=None, config_path=None, language="English", *
                                 "duration": duration
                             })
                         except Exception as single_error:
+                            _handle_fatal_indextts_cuda_error(single_error, "true_batch_fallback_single")
                             error_result = {
                                 "index": task.get("index"),
                                 "success": False,
@@ -776,6 +1002,7 @@ def run_batch_tts(tasks, model_dir=None, config_path=None, language="English", *
 
         for task in sequential_tasks:
             text = task['text']
+            normalized_text = _normalize_indextts_text(text)
             ref = task['ref_audio_path']
             out = task['output_path']
             item_position = processed + 1
@@ -784,27 +1011,34 @@ def run_batch_tts(tasks, model_dir=None, config_path=None, language="English", *
             emit_progress(
                 "generate_batch_tts",
                 "tts_generate",
-                int(processed / total * 100) if total else 0,
-                f"第 {item_position}/{total} 条正在生成",
+                int((progress_completed_offset + processed) / progress_total * 100) if progress_total else 0,
+                f"第 {min(progress_completed_offset + item_position, progress_total) if progress_total else item_position}/{progress_total} 条正在生成",
                 stage_label="正在生成配音",
-                item_index=item_position,
-                item_total=total
+                item_index=min(progress_completed_offset + item_position, progress_total) if progress_total else item_position,
+                item_total=progress_total
             )
 
             os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
 
             try:
-                valid_kwargs = _build_indextts_kwargs(text, runtime_kwargs)
+                single_started_at = time.perf_counter()
+                valid_kwargs = _build_indextts_kwargs(normalized_text, runtime_kwargs)
 
                 tts.infer(
                     spk_audio_prompt=ref,
-                    text=text,
+                    text=normalized_text,
                     output_path=out,
                     verbose=False,
                     **valid_kwargs
                 )
 
                 dur = _validate_indextts_output(out, text)
+                single_elapsed_ms = (time.perf_counter() - single_started_at) * 1000.0
+                single_rtf = (single_elapsed_ms / 1000.0) / max(float(dur or 0.001), 0.001)
+                print(
+                    f"[TTSTiming] mode=sequential total={single_elapsed_ms:.0f}ms "
+                    f"audio={dur:.2f}s rtf={single_rtf:.3f} index={task.get('index')}"
+                )
                 result = {
                     "index": task.get('index'),
                     "audio_path": out,
@@ -815,6 +1049,9 @@ def run_batch_tts(tasks, model_dir=None, config_path=None, language="English", *
                 yield result
 
             except Exception as e:
+                _handle_fatal_indextts_cuda_error(e, "sequential_tts")
+                single_elapsed_ms = (time.perf_counter() - single_started_at) * 1000.0
+                print(f"[TTSTiming] mode=sequential_failed total={single_elapsed_ms:.0f}ms index={task.get('index')}")
                 print(f"Failed task {item_position - 1}: {e}")
                 emit_issue(
                     "generate_batch_tts",

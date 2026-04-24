@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 import traceback
+import time
 from event_protocol import emit_issue, emit_progress, emit_stage
 
 
@@ -52,24 +53,33 @@ def _extract_reference_audio(
 ):
     ref_clip_path = output_audio.replace(".wav", "_ref.wav")
     meta = {"trim_duration": None, "too_short": False}
+    total_started_at = time.perf_counter()
 
     if ref_audio_override and os.path.exists(ref_audio_override):
         print(f"Using explicit reference audio: {ref_audio_override}")
+        print(
+            f"[RefTiming] mode=explicit_reuse extract=0ms trim=0ms total=0ms "
+            f"start={start_time:.2f}s dur={duration:.2f}s path={ref_audio_override}"
+        )
         return ref_audio_override, False, meta
 
     raw_dir = os.path.join(os.path.dirname(output_audio), ".cache", "raw")
     os.makedirs(raw_dir, exist_ok=True)
     raw_ref_path = os.path.join(raw_dir, f"ref_raw_{start_time}.wav")
 
+    extract_started_at = time.perf_counter()
     ffmpeg.input(video_path, ss=start_time, t=duration).output(
         raw_ref_path, acodec="pcm_s16le", ac=1, ar=24000, loglevel="error"
     ).run(overwrite_output=True)
+    extract_elapsed_ms = (time.perf_counter() - extract_started_at) * 1000.0
 
+    trim_started_at = time.perf_counter()
     try:
         y, sr = librosa.load(raw_ref_path, sr=None)
         y_trim, _ = librosa.effects.trim(y, top_db=20)
         trim_dur = len(y_trim) / sr
         meta["trim_duration"] = trim_dur
+        trim_elapsed_ms = (time.perf_counter() - trim_started_at) * 1000.0
 
         if trim_dur < 0.5:
             print(f"Warning: Extracted ref audio too short after trim ({trim_dur:.2f}s < 0.5s). May cause hallucination!")
@@ -81,9 +91,20 @@ def _extract_reference_audio(
             sf.write(ref_clip_path, y_trim, sr)
         else:
             shutil.copy(raw_ref_path, ref_clip_path)
+        total_elapsed_ms = (time.perf_counter() - total_started_at) * 1000.0
+        print(
+            f"[RefTiming] extract={extract_elapsed_ms:.0f}ms trim={trim_elapsed_ms:.0f}ms total={total_elapsed_ms:.0f}ms "
+            f"start={start_time:.2f}s dur={duration:.2f}s"
+        )
     except Exception as trim_err:
+        trim_elapsed_ms = (time.perf_counter() - trim_started_at) * 1000.0
         print(f"Warning: Failed to trim silence from ref: {trim_err}")
         shutil.copy(raw_ref_path, ref_clip_path)
+        total_elapsed_ms = (time.perf_counter() - total_started_at) * 1000.0
+        print(
+            f"[RefTiming] extract={extract_elapsed_ms:.0f}ms trim_failed_after={trim_elapsed_ms:.0f}ms total={total_elapsed_ms:.0f}ms "
+            f"start={start_time:.2f}s dur={duration:.2f}s"
+        )
 
     return ref_clip_path, True, meta
 
@@ -193,6 +214,10 @@ def _build_batch_tts_tasks(
     log_prefix
 ):
     tasks = []
+    total_extract_ms = 0.0
+    total_trim_ms = 0.0
+    total_ref_ms = 0.0
+    prepared_ref_count = 0
 
     for i, seg in enumerate(segments):
         final_idx = seg.get("original_index", i)
@@ -218,6 +243,10 @@ def _build_batch_tts_tasks(
 
         if args_ref_audio and os.path.exists(args_ref_audio):
             ref_path = args_ref_audio
+            print(
+                f"[RefTiming] segment={i} mode=explicit_reuse extract=0ms trim=0ms total=0ms "
+                f"range={extract_start:.2f}-{extract_start + extract_duration:.2f}s path={ref_path}"
+            )
         else:
             raw_dir = os.path.join(work_dir, ".cache", "raw")
             os.makedirs(raw_dir, exist_ok=True)
@@ -226,9 +255,12 @@ def _build_batch_tts_tasks(
             ref_path = os.path.join(work_dir, f"ref_{i}_{start}.wav")
 
             try:
+                ref_total_started_at = time.perf_counter()
+                extract_started_at = time.perf_counter()
                 ffmpeg.input(video_path, ss=extract_start, t=extract_duration).output(
                     raw_ref_path, acodec="pcm_s16le", ac=1, ar=24000, loglevel="error"
                 ).run(overwrite_output=True)
+                extract_elapsed_ms = (time.perf_counter() - extract_started_at) * 1000.0
 
                 try:
                     raw_dur = get_audio_duration(raw_ref_path)
@@ -237,10 +269,12 @@ def _build_batch_tts_tasks(
                     pass
 
                 try:
+                    trim_started_at = time.perf_counter()
                     y, sr = librosa.load(raw_ref_path, sr=None)
                     y_trim, _ = librosa.effects.trim(y, top_db=20)
                     trim_dur = len(y_trim) / sr
                     segment_trim_dur = trim_dur
+                    trim_elapsed_ms = (time.perf_counter() - trim_started_at) * 1000.0
 
                     if trim_dur < 0.1:
                         print(f"  [Ref Check] Segment {i} warning: trimmed duration {trim_dur:.2f}s is very short.")
@@ -252,8 +286,19 @@ def _build_batch_tts_tasks(
                     else:
                         shutil.copy(raw_ref_path, ref_path)
                 except Exception as trim_err:
+                    trim_elapsed_ms = (time.perf_counter() - trim_started_at) * 1000.0
                     print(f"  [Ref Check] Segment {i} trim failed: {trim_err}")
                     shutil.copy(raw_ref_path, ref_path)
+
+                ref_total_elapsed_ms = (time.perf_counter() - ref_total_started_at) * 1000.0
+                total_extract_ms += extract_elapsed_ms
+                total_trim_ms += trim_elapsed_ms
+                total_ref_ms += ref_total_elapsed_ms
+                prepared_ref_count += 1
+                print(
+                    f"[RefTiming] segment={i} extract={extract_elapsed_ms:.0f}ms trim={trim_elapsed_ms:.0f}ms "
+                    f"total={ref_total_elapsed_ms:.0f}ms range={extract_start:.2f}-{extract_start + extract_duration:.2f}s"
+                )
             except Exception as e:
                 print(f"{log_prefix} Segment {i} failed to extract reference audio: {e}")
                 continue
@@ -276,6 +321,13 @@ def _build_batch_tts_tasks(
             "end": end
         })
 
+    if prepared_ref_count > 0:
+        print(
+            f"[RefTiming] batch_total segments={prepared_ref_count} "
+            f"extract_total={total_extract_ms:.0f}ms trim_total={total_trim_ms:.0f}ms total={total_ref_ms:.0f}ms "
+            f"avg_total={total_ref_ms / prepared_ref_count:.0f}ms"
+        )
+
     return tasks
 
 
@@ -290,23 +342,38 @@ def _finalize_batch_tts_results(
     target_lang,
     max_retry_attempts,
     get_audio_duration,
-    log_prefix
+    log_prefix,
+    progress_completed_offset=0,
+    progress_total_override=0
 ):
     final_output_list = []
     task_result_map = {}
     task_lookup = {int(task["index"]): task for task in tasks}
+    task_position_lookup = {
+        int(task["index"]): position
+        for position, task in enumerate(tasks, start=1)
+    }
     nearby_success_map = {}
     total_segments = len(segments)
+    total_task_count = len(tasks)
+    progress_completed_offset = max(int(progress_completed_offset or 0), 0)
+    progress_total = max(int(progress_total_override or 0), progress_completed_offset + total_task_count, total_task_count, total_segments)
+    retry_attempts = 0
+    retry_successes = 0
+    retry_failures = 0
+    retry_elapsed_ms = 0.0
 
     def emit_retry_status(item_index, message, *, detail=None):
+        safe_total = progress_total if progress_total > 0 else (total_task_count if total_task_count > 0 else total_segments)
+        safe_index = max(1, min(int(item_index), safe_total)) if safe_total > 0 else 1
         emit_progress(
             "generate_batch_tts",
             "tts_generate",
-            int((max(int(item_index), 1) / total_segments) * 100) if total_segments else 100,
+            int((safe_index / safe_total) * 100) if safe_total else 100,
             message,
             stage_label="正在生成配音",
-            item_index=max(int(item_index), 1),
-            item_total=total_segments,
+            item_index=safe_index,
+            item_total=safe_total,
             detail=detail
         )
 
@@ -321,6 +388,8 @@ def _finalize_batch_tts_results(
     for i, seg in enumerate(segments):
         final_idx = seg.get("original_index", i)
         task = task_lookup.get(int(final_idx))
+        task_position = task_position_lookup.get(int(final_idx), min(i + 1, total_task_count) if total_task_count > 0 else i + 1)
+        display_task_position = min(progress_completed_offset + task_position, progress_total) if progress_total > 0 else task_position
 
         if final_idx in task_result_map:
             res = task_result_map[final_idx]
@@ -358,8 +427,8 @@ def _finalize_batch_tts_results(
                     for attempt in range(1, effective_retry_attempts + 1):
                         try:
                             emit_retry_status(
-                                final_idx + 1,
-                                f"第 {final_idx + 1}/{total_segments} 条重试中",
+                                display_task_position,
+                                f"第 {display_task_position}/{progress_total or total_task_count or total_segments} 条重试中",
                                 detail=f"使用片段参考重试 {attempt}/{effective_retry_attempts}"
                             )
                             print(f"{log_prefix} Retrying segment {final_idx} ({attempt}/{effective_retry_attempts}) with segment reference...")
@@ -374,6 +443,7 @@ def _finalize_batch_tts_results(
                                 tts_service_name,
                                 task.get("ref_text", "")
                             )
+                            retry_started_at = time.perf_counter()
                             retry_success = run_tts_func(
                                 task["text"],
                                 task["ref_audio_path"],
@@ -381,6 +451,15 @@ def _finalize_batch_tts_results(
                                 language=target_lang,
                                 **attempt_kwargs
                             )
+                            attempt_elapsed_ms = (time.perf_counter() - retry_started_at) * 1000.0
+                            retry_attempts += 1
+                            retry_elapsed_ms += attempt_elapsed_ms
+                            if retry_success:
+                                retry_successes += 1
+                                print(f"[RetryTiming] segment={final_idx} mode=segment_ref attempt={attempt} total={attempt_elapsed_ms:.0f}ms success=1")
+                            else:
+                                retry_failures += 1
+                                print(f"[RetryTiming] segment={final_idx} mode=segment_ref attempt={attempt} total={attempt_elapsed_ms:.0f}ms success=0")
                             if retry_success:
                                 retry_error = None
                                 break
@@ -396,8 +475,8 @@ def _finalize_batch_tts_results(
                     for nearby_idx, nearby_ref in enumerate(nearby_refs, start=1):
                         try:
                             emit_retry_status(
-                                final_idx + 1,
-                                f"第 {final_idx + 1}/{total_segments} 条重试中",
+                                display_task_position,
+                                f"第 {display_task_position}/{progress_total or total_task_count or total_segments} 条重试中",
                                 detail=f"使用邻近成功参考重试 {nearby_idx}/{len(nearby_refs)}"
                             )
                             print(f"{log_prefix} Segment {final_idx} trying nearby successful reference {nearby_idx}/{len(nearby_refs)}...")
@@ -412,6 +491,7 @@ def _finalize_batch_tts_results(
                                 tts_service_name,
                                 nearby_ref.get("ref_text", "")
                             )
+                            retry_started_at = time.perf_counter()
                             retry_success = run_tts_func(
                                 task["text"],
                                 nearby_ref.get("audio_path"),
@@ -419,6 +499,15 @@ def _finalize_batch_tts_results(
                                 language=target_lang,
                                 **nearby_kwargs
                             )
+                            attempt_elapsed_ms = (time.perf_counter() - retry_started_at) * 1000.0
+                            retry_attempts += 1
+                            retry_elapsed_ms += attempt_elapsed_ms
+                            if retry_success:
+                                retry_successes += 1
+                                print(f"[RetryTiming] segment={final_idx} mode=nearby_ref attempt={nearby_idx} total={attempt_elapsed_ms:.0f}ms success=1")
+                            else:
+                                retry_failures += 1
+                                print(f"[RetryTiming] segment={final_idx} mode=nearby_ref attempt={nearby_idx} total={attempt_elapsed_ms:.0f}ms success=0")
                             if retry_success:
                                 retry_error = None
                                 break
@@ -431,8 +520,8 @@ def _finalize_batch_tts_results(
                 if not retry_success and task.get("fallback_ref_audio"):
                     try:
                         emit_retry_status(
-                            final_idx + 1,
-                            f"第 {final_idx + 1}/{total_segments} 条重试中",
+                            display_task_position,
+                            f"第 {display_task_position}/{progress_total or total_task_count or total_segments} 条重试中",
                             detail="切换共享兜底参考音频"
                         )
                         print(f"{log_prefix} Segment {final_idx} switching to shared fallback reference audio...")
@@ -447,6 +536,7 @@ def _finalize_batch_tts_results(
                             tts_service_name,
                             task.get("fallback_ref_text", "")
                         )
+                        retry_started_at = time.perf_counter()
                         retry_success = run_tts_func(
                             task["text"],
                             task["fallback_ref_audio"],
@@ -454,6 +544,15 @@ def _finalize_batch_tts_results(
                             language=target_lang,
                             **fallback_kwargs
                         )
+                        attempt_elapsed_ms = (time.perf_counter() - retry_started_at) * 1000.0
+                        retry_attempts += 1
+                        retry_elapsed_ms += attempt_elapsed_ms
+                        if retry_success:
+                            retry_successes += 1
+                            print(f"[RetryTiming] segment={final_idx} mode=shared_fallback attempt=1 total={attempt_elapsed_ms:.0f}ms success=1")
+                        else:
+                            retry_failures += 1
+                            print(f"[RetryTiming] segment={final_idx} mode=shared_fallback attempt=1 total={attempt_elapsed_ms:.0f}ms success=0")
                         if retry_success:
                             retry_error = None
                         else:
@@ -499,11 +598,15 @@ def _finalize_batch_tts_results(
                     for attempt in range(1, effective_retry_attempts + 1):
                         try:
                             emit_retry_status(
-                                final_idx + 1,
-                                f"第 {final_idx + 1}/{total_segments} 条重试中",
+                                display_task_position,
+                                f"第 {display_task_position}/{progress_total or total_task_count or total_segments} 条重试中",
                                 detail=f"缺失片段补生成 {attempt}/{effective_retry_attempts}"
                             )
                             print(f"{log_prefix} Retrying missing segment {final_idx} ({attempt}/{effective_retry_attempts}) with segment reference...")
+                            print(
+                                f"[RefTiming] segment={final_idx} mode=reuse_prepared_ref "
+                                f"extract=0ms trim=0ms total=0ms path={task['ref_audio_path']}"
+                            )
                             attempt_kwargs = _build_retry_tts_kwargs(
                                 tts_kwargs,
                                 tts_service_name=tts_service_name,
@@ -515,6 +618,7 @@ def _finalize_batch_tts_results(
                                 tts_service_name,
                                 task.get("ref_text", "")
                             )
+                            retry_started_at = time.perf_counter()
                             retry_success = run_tts_func(
                                 task["text"],
                                 task["ref_audio_path"],
@@ -522,6 +626,15 @@ def _finalize_batch_tts_results(
                                 language=target_lang,
                                 **attempt_kwargs
                             )
+                            attempt_elapsed_ms = (time.perf_counter() - retry_started_at) * 1000.0
+                            retry_attempts += 1
+                            retry_elapsed_ms += attempt_elapsed_ms
+                            if retry_success:
+                                retry_successes += 1
+                                print(f"[RetryTiming] segment={final_idx} mode=missing_segment_ref attempt={attempt} total={attempt_elapsed_ms:.0f}ms success=1")
+                            else:
+                                retry_failures += 1
+                                print(f"[RetryTiming] segment={final_idx} mode=missing_segment_ref attempt={attempt} total={attempt_elapsed_ms:.0f}ms success=0")
                             if retry_success:
                                 retry_error = None
                                 break
@@ -537,11 +650,15 @@ def _finalize_batch_tts_results(
                     for nearby_idx, nearby_ref in enumerate(nearby_refs, start=1):
                         try:
                             emit_retry_status(
-                                final_idx + 1,
-                                f"第 {final_idx + 1}/{total_segments} 条重试中",
+                                display_task_position,
+                                f"第 {display_task_position}/{progress_total or total_task_count or total_segments} 条重试中",
                                 detail=f"缺失片段使用邻近成功参考 {nearby_idx}/{len(nearby_refs)}"
                             )
                             print(f"{log_prefix} Missing segment {final_idx} trying nearby successful reference {nearby_idx}/{len(nearby_refs)}...")
+                            print(
+                                f"[RefTiming] segment={final_idx} mode=reuse_nearby_ref "
+                                f"extract=0ms trim=0ms total=0ms path={nearby_ref.get('audio_path', '')}"
+                            )
                             nearby_kwargs = _build_retry_tts_kwargs(
                                 tts_kwargs,
                                 tts_service_name=tts_service_name,
@@ -553,6 +670,7 @@ def _finalize_batch_tts_results(
                                 tts_service_name,
                                 nearby_ref.get("ref_text", "")
                             )
+                            retry_started_at = time.perf_counter()
                             retry_success = run_tts_func(
                                 task["text"],
                                 nearby_ref.get("audio_path"),
@@ -560,6 +678,15 @@ def _finalize_batch_tts_results(
                                 language=target_lang,
                                 **nearby_kwargs
                             )
+                            attempt_elapsed_ms = (time.perf_counter() - retry_started_at) * 1000.0
+                            retry_attempts += 1
+                            retry_elapsed_ms += attempt_elapsed_ms
+                            if retry_success:
+                                retry_successes += 1
+                                print(f"[RetryTiming] segment={final_idx} mode=missing_nearby_ref attempt={nearby_idx} total={attempt_elapsed_ms:.0f}ms success=1")
+                            else:
+                                retry_failures += 1
+                                print(f"[RetryTiming] segment={final_idx} mode=missing_nearby_ref attempt={nearby_idx} total={attempt_elapsed_ms:.0f}ms success=0")
                             if retry_success:
                                 retry_error = None
                                 break
@@ -572,8 +699,8 @@ def _finalize_batch_tts_results(
                 if not retry_success and task.get("fallback_ref_audio"):
                     try:
                         emit_retry_status(
-                            final_idx + 1,
-                            f"第 {final_idx + 1}/{total_segments} 条重试中",
+                            display_task_position,
+                            f"第 {display_task_position}/{progress_total or total_task_count or total_segments} 条重试中",
                             detail="缺失片段切换共享兜底参考音频"
                         )
                         print(f"{log_prefix} Missing segment {final_idx} switching to shared fallback reference audio...")
@@ -588,6 +715,7 @@ def _finalize_batch_tts_results(
                             tts_service_name,
                             task.get("fallback_ref_text", "")
                         )
+                        retry_started_at = time.perf_counter()
                         retry_success = run_tts_func(
                             task["text"],
                             task["fallback_ref_audio"],
@@ -595,6 +723,15 @@ def _finalize_batch_tts_results(
                             language=target_lang,
                             **fallback_kwargs
                         )
+                        attempt_elapsed_ms = (time.perf_counter() - retry_started_at) * 1000.0
+                        retry_attempts += 1
+                        retry_elapsed_ms += attempt_elapsed_ms
+                        if retry_success:
+                            retry_successes += 1
+                            print(f"[RetryTiming] segment={final_idx} mode=missing_shared_fallback attempt=1 total={attempt_elapsed_ms:.0f}ms success=1")
+                        else:
+                            retry_failures += 1
+                            print(f"[RetryTiming] segment={final_idx} mode=missing_shared_fallback attempt=1 total={attempt_elapsed_ms:.0f}ms success=0")
                         if retry_success:
                             retry_error = None
                         else:
@@ -622,6 +759,13 @@ def _finalize_batch_tts_results(
 
             final_output_list.append(retry_result)
 
+    if retry_attempts > 0:
+        print(
+            f"[RetryTiming] total attempts={retry_attempts} success={retry_successes} "
+            f"fail={retry_failures} total={retry_elapsed_ms:.0f}ms "
+            f"avg={retry_elapsed_ms / retry_attempts:.0f}ms"
+        )
+
     return final_output_list
 
 
@@ -641,6 +785,8 @@ def generate_batch_tts_results(
     ffmpeg,
     librosa,
     sf,
+    progress_completed_offset=0,
+    progress_total_override=0,
     log_prefix="[BatchTTS]"
 ):
     emit_stage(
@@ -706,10 +852,13 @@ def generate_batch_tts_results(
         )
 
         print(f"\n[Stage 2] Running TTS for {len(tasks)} tasks (skipped {len(segments) - len(tasks)} invalid items)...")
+        progress_completed_offset = max(int(progress_completed_offset or 0), 0)
+        progress_total_override = max(int(progress_total_override or 0), 0)
+
         emit_stage(
             "generate_batch_tts",
             "tts_generate",
-            f"正在为 {len(tasks)} 条任务生成配音",
+            f"正在为 {max(progress_total_override, progress_completed_offset + len(tasks), len(tasks))} 条任务生成配音",
             stage_label="正在生成配音"
         )
 
@@ -719,6 +868,8 @@ def generate_batch_tts_results(
 
         batch_runtime_kwargs = dict(tts_kwargs)
         batch_runtime_kwargs["batch_size"] = int(batch_runtime_kwargs.get("batch_size") or 1)
+        batch_runtime_kwargs["progress_completed_offset"] = progress_completed_offset
+        batch_runtime_kwargs["progress_total_override"] = progress_total_override
         batch_results = list(run_batch_tts_func(tasks, language=target_lang, **batch_runtime_kwargs))
 
         final_output_list = _finalize_batch_tts_results(
@@ -731,7 +882,9 @@ def generate_batch_tts_results(
             target_lang=target_lang,
             max_retry_attempts=max_retry_attempts,
             get_audio_duration=get_audio_duration,
-            log_prefix=log_prefix
+            log_prefix=log_prefix,
+            progress_completed_offset=progress_completed_offset,
+            progress_total_override=progress_total_override
         )
 
         return {"success": True, "results": final_output_list}
@@ -1096,6 +1249,8 @@ def handle_generate_batch_tts(
             ffmpeg=ffmpeg,
             librosa=librosa,
             sf=sf,
+            progress_completed_offset=int(getattr(args, "resume_completed", 0) or 0),
+            progress_total_override=int(getattr(args, "resume_total", 0) or 0),
             log_prefix="[BatchTTS]"
         )
     except Exception as e:

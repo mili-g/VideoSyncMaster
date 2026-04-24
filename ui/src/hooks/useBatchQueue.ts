@@ -1148,7 +1148,14 @@ async function finalizeQueueItem(
         const tempJsonPath = `${workDir}\\segments.json`;
         await window.api.saveFile(tempJsonPath, JSON.stringify(pendingSegments, null, 2));
         const ttsResult = await window.api.runBackend(
-            buildBatchTtsArgs(item.sourcePath, projectPaths.sessionAudioDir, tempJsonPath, options)
+            buildBatchTtsArgs(
+                item.sourcePath,
+                projectPaths.sessionAudioDir,
+                tempJsonPath,
+                options,
+                recoveredCount,
+                mergedSegments.length
+            )
         );
         if (!ttsResult || !ttsResult.success) {
             throw new Error(ttsResult?.error || '批量配音失败');
@@ -1331,7 +1338,14 @@ async function translateSegments(
     return result.segments as SrtSegment[];
 }
 
-function buildBatchTtsArgs(sourcePath: string, outputDir: string, refJsonPath: string, options: BatchQueueOptions) {
+function buildBatchTtsArgs(
+    sourcePath: string,
+    outputDir: string,
+    refJsonPath: string,
+    options: BatchQueueOptions,
+    resumeCompleted = 0,
+    resumeTotal = 0
+) {
     const args = [
         '--action', 'generate_batch_tts',
         '--input', sourcePath,
@@ -1343,6 +1357,8 @@ function buildBatchTtsArgs(sourcePath: string, outputDir: string, refJsonPath: s
         '--batch_size', String(options.ttsService === 'qwen' ? options.cloneBatchSize : options.batchSize),
         '--max_new_tokens', String(options.maxNewTokens),
         '--dub_retry_attempts', '3',
+        '--resume_completed', String(Math.max(0, resumeCompleted)),
+        '--resume_total', String(Math.max(0, resumeTotal)),
         '--lang', options.targetLang,
         '--json'
     ];
