@@ -66,6 +66,8 @@ def build_tts_kwargs(args: argparse.Namespace) -> dict:
         "num_beams": args.num_beams,
         "length_penalty": args.length_penalty,
         "max_new_tokens": args.max_new_tokens,
+        "max_mel_tokens": args.max_new_tokens,
+        "target_duration": args.duration,
         "qwen_mode": args.qwen_mode,
         "voice_instruct": args.voice_instruct,
         "preset_voice": args.preset_voice,

@@ -12,16 +12,32 @@ def _build_retry_tts_kwargs(base_kwargs, *, tts_service_name, attempt, use_fallb
         return adjusted_kwargs
 
     attempt = max(int(attempt or 1), 1)
+    requested_mel_cap = adjusted_kwargs.get("max_mel_tokens", adjusted_kwargs.get("max_new_tokens", 1500))
+    try:
+        requested_mel_cap = max(int(requested_mel_cap), 240)
+    except Exception:
+        requested_mel_cap = 1500
+    requested_segment_limit = adjusted_kwargs.get("max_text_tokens_per_segment", 80)
+    try:
+        requested_segment_limit = max(int(requested_segment_limit), 24)
+    except Exception:
+        requested_segment_limit = 80
 
     if use_fallback_reference:
         adjusted_kwargs["temperature"] = min(float(adjusted_kwargs.get("temperature", 0.8)), 0.6)
         adjusted_kwargs["top_p"] = min(float(adjusted_kwargs.get("top_p", 0.8)), 0.82)
         adjusted_kwargs["top_k"] = min(int(adjusted_kwargs.get("top_k", 5)), 18)
         adjusted_kwargs["repetition_penalty"] = max(float(adjusted_kwargs.get("repetition_penalty", 1.0)), 1.18)
+        adjusted_kwargs["max_text_tokens_per_segment"] = min(requested_segment_limit, 56)
+        adjusted_kwargs["max_mel_tokens"] = min(requested_mel_cap, 520)
+        adjusted_kwargs["max_new_tokens"] = adjusted_kwargs["max_mel_tokens"]
         adjusted_kwargs["do_sample"] = True
         return adjusted_kwargs
 
     if attempt == 1:
+        adjusted_kwargs["max_text_tokens_per_segment"] = min(requested_segment_limit, 72)
+        adjusted_kwargs["max_mel_tokens"] = min(requested_mel_cap, 840)
+        adjusted_kwargs["max_new_tokens"] = adjusted_kwargs["max_mel_tokens"]
         return adjusted_kwargs
 
     if attempt == 2:
@@ -29,6 +45,9 @@ def _build_retry_tts_kwargs(base_kwargs, *, tts_service_name, attempt, use_fallb
         adjusted_kwargs["top_p"] = min(float(adjusted_kwargs.get("top_p", 0.8)), 0.9)
         adjusted_kwargs["top_k"] = min(int(adjusted_kwargs.get("top_k", 5)), 30)
         adjusted_kwargs["repetition_penalty"] = max(float(adjusted_kwargs.get("repetition_penalty", 1.0)), 1.10)
+        adjusted_kwargs["max_text_tokens_per_segment"] = min(requested_segment_limit, 64)
+        adjusted_kwargs["max_mel_tokens"] = min(requested_mel_cap, 680)
+        adjusted_kwargs["max_new_tokens"] = adjusted_kwargs["max_mel_tokens"]
         adjusted_kwargs["do_sample"] = True
         return adjusted_kwargs
 
@@ -36,6 +55,9 @@ def _build_retry_tts_kwargs(base_kwargs, *, tts_service_name, attempt, use_fallb
     adjusted_kwargs["top_p"] = min(float(adjusted_kwargs.get("top_p", 0.8)), 0.84)
     adjusted_kwargs["top_k"] = min(int(adjusted_kwargs.get("top_k", 5)), 20)
     adjusted_kwargs["repetition_penalty"] = max(float(adjusted_kwargs.get("repetition_penalty", 1.0)), 1.16)
+    adjusted_kwargs["max_text_tokens_per_segment"] = min(requested_segment_limit, 56)
+    adjusted_kwargs["max_mel_tokens"] = min(requested_mel_cap, 560)
+    adjusted_kwargs["max_new_tokens"] = adjusted_kwargs["max_mel_tokens"]
     adjusted_kwargs["do_sample"] = True
     return adjusted_kwargs
 

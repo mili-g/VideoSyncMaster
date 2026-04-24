@@ -50,7 +50,12 @@ INDEXTTS_ALLOWED_INFER_KWARGS = {
     "top_k",
     "top_p",
     "temperature",
-    "repetition_penalty"
+    "repetition_penalty",
+    "length_penalty",
+    "num_beams",
+    "max_mel_tokens",
+    "max_text_tokens_per_segment",
+    "inference_cfg_rate"
 }
 INDEXTTS_ENABLE_TRUE_BATCH = False
 INDEXTTS_BATCH_RUNTIME_ALLOWED_KWARGS = {
@@ -121,6 +126,156 @@ def _build_indextts_kwargs(text, kwargs):
         valid_kwargs['repetition_penalty'] = max(float(valid_kwargs.get('repetition_penalty', 1.0)), 1.08)
 
     return valid_kwargs
+
+
+def _resolve_requested_indextts_max_mel_tokens(kwargs):
+    requested = (kwargs or {}).get("max_mel_tokens")
+    if requested in (None, "", 0):
+        requested = (kwargs or {}).get("max_new_tokens")
+    if requested in (None, "", 0):
+        requested = 1500
+    try:
+        return max(int(requested), 240)
+    except Exception:
+        return 1500
+
+
+def _resolve_requested_indextts_segment_limit(kwargs):
+    requested = (kwargs or {}).get("max_text_tokens_per_segment")
+    if requested in (None, "", 0):
+        requested = 80
+    try:
+        return max(int(requested), 24)
+    except Exception:
+        return 80
+
+
+def _compute_indextts_segment_limit(text, requested_limit, *, safe_mode=False):
+    text_len = len((text or "").strip())
+    recommended_limit = 80
+
+    if text_len <= 16:
+        recommended_limit = 48 if safe_mode else 56
+    elif text_len <= 32:
+        recommended_limit = 56 if safe_mode else 64
+    elif text_len <= 64:
+        recommended_limit = 64 if safe_mode else 72
+
+    return max(24, min(int(requested_limit or 80), recommended_limit))
+
+
+def _compute_indextts_max_mel_tokens(text, requested_cap, *, target_duration=None, safe_mode=False):
+    cap = max(int(requested_cap or 1500), 240)
+    text_len = len((text or "").strip())
+
+    if target_duration and float(target_duration) > 0:
+        buffered_duration = float(target_duration) * (1.55 if not safe_mode else 1.25) + (0.45 if not safe_mode else 0.20)
+        return max(240, _estimate_max_generate_tokens_for_duration(buffered_duration, cap))
+
+    if text_len <= 8:
+        recommended = 320 if safe_mode else 420
+    elif text_len <= 16:
+        recommended = 360 if safe_mode else 480
+    elif text_len <= 32:
+        recommended = 440 if safe_mode else 600
+    elif text_len <= 56:
+        recommended = 560 if safe_mode else 760
+    elif text_len <= 96:
+        recommended = 760 if safe_mode else 980
+    else:
+        recommended = 920 if safe_mode else 1200
+
+    return max(240, min(cap, recommended))
+
+
+def _build_indextts_infer_kwargs(text, kwargs, *, target_duration=None, safe_mode=False):
+    base_kwargs = _build_indextts_kwargs(text, kwargs)
+    requested_cap = _resolve_requested_indextts_max_mel_tokens(kwargs)
+    requested_segment_limit = _resolve_requested_indextts_segment_limit(kwargs)
+
+    base_kwargs["max_mel_tokens"] = _compute_indextts_max_mel_tokens(
+        text,
+        requested_cap,
+        target_duration=target_duration,
+        safe_mode=safe_mode
+    )
+    base_kwargs["max_text_tokens_per_segment"] = _compute_indextts_segment_limit(
+        text,
+        requested_segment_limit,
+        safe_mode=safe_mode
+    )
+
+    if safe_mode:
+        base_kwargs["do_sample"] = True
+        base_kwargs["top_k"] = min(int(base_kwargs.get("top_k", 50)), 16)
+        base_kwargs["top_p"] = min(float(base_kwargs.get("top_p", 1.0)), 0.82)
+        base_kwargs["temperature"] = min(float(base_kwargs.get("temperature", 0.9)), 0.62)
+        base_kwargs["repetition_penalty"] = max(float(base_kwargs.get("repetition_penalty", 1.0)), 1.16)
+        base_kwargs["num_beams"] = min(int(base_kwargs.get("num_beams", 1)), 1)
+        base_kwargs["length_penalty"] = min(float(base_kwargs.get("length_penalty", 1.0)), 0.9)
+
+    return base_kwargs
+
+
+def _should_retry_indextts_with_safe_mode(error):
+    message = str(error or "").lower()
+    return (
+        "suspiciously long" in message
+        or "generated audio too long" in message
+        or "hallucination" in message
+    )
+
+
+def _run_indextts_with_safe_retry(
+    tts,
+    *,
+    ref_audio_path,
+    text,
+    normalized_text,
+    output_path,
+    kwargs,
+    target_duration=None,
+    verbose=False
+):
+    attempts = [("primary", False)]
+    if len((text or "").strip()) <= 96:
+        attempts.append(("safe_retry", True))
+
+    last_error = None
+    used_label = "primary"
+
+    for attempt_index, (attempt_label, safe_mode) in enumerate(attempts, start=1):
+        infer_kwargs = _build_indextts_infer_kwargs(
+            normalized_text,
+            kwargs,
+            target_duration=target_duration,
+            safe_mode=safe_mode
+        )
+        try:
+            if attempt_index > 1:
+                print(
+                    f"[IndexTTS] Retrying short-text generation with safer settings "
+                    f"(segment_limit={infer_kwargs.get('max_text_tokens_per_segment')}, "
+                    f"max_mel_tokens={infer_kwargs.get('max_mel_tokens')})."
+                )
+
+            tts.infer(
+                spk_audio_prompt=ref_audio_path,
+                text=normalized_text,
+                output_path=output_path,
+                verbose=verbose,
+                **infer_kwargs
+            )
+            duration = _validate_indextts_output(output_path, text)
+            used_label = attempt_label
+            return duration, used_label
+        except Exception as error:
+            last_error = error
+            if attempt_index >= len(attempts) or not _should_retry_indextts_with_safe_mode(error):
+                raise
+            print(f"[IndexTTS] Detected unstable generation, switching to safe retry: {error}")
+
+    raise last_error
 
 
 def _sanitize_indextts_batch_runtime_kwargs(kwargs):
@@ -811,25 +966,21 @@ def run_tts(text, ref_audio_path, output_path, model_dir=None, config_path=None,
         
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
         
-        valid_kwargs = _build_indextts_kwargs(normalized_text, kwargs)
-
-        # Explicitly pass advanced params if present in kwargs
-        # (Though they are auto-passed by kwargs filter, we just ensure they are valid)
-
-        tts.infer(
-            spk_audio_prompt=ref_audio_path, 
-            text=normalized_text, 
+        duration, retry_mode = _run_indextts_with_safe_retry(
+            tts,
+            ref_audio_path=ref_audio_path,
+            text=text,
+            normalized_text=normalized_text,
             output_path=output_path,
-            verbose=True,
-            **valid_kwargs
+            kwargs=kwargs,
+            target_duration=kwargs.get("target_duration"),
+            verbose=True
         )
-
-        duration = _validate_indextts_output(output_path, text)
         elapsed_ms = (time.perf_counter() - started_at) * 1000.0
         rtf = (elapsed_ms / 1000.0) / max(float(duration or 0.001), 0.001)
         print(
             f"[TTSTiming] mode=single total={elapsed_ms:.0f}ms "
-            f"audio={duration:.2f}s rtf={rtf:.3f} path={output_path}"
+            f"audio={duration:.2f}s rtf={rtf:.3f} retry={retry_mode} path={output_path}"
         )
         
         print(f"TTS complete. Saved to {output_path}")
@@ -953,20 +1104,22 @@ def run_batch_tts(tasks, model_dir=None, config_path=None, language="English", *
                         task = entry["task"]
                         normalized_text = entry.get("normalized_text") or _normalize_indextts_text(task["text"])
                         try:
-                            valid_kwargs = _build_indextts_kwargs(normalized_text, runtime_kwargs)
-                            tts.infer(
-                                spk_audio_prompt=task["ref_audio_path"],
-                                text=normalized_text,
+                            duration, retry_mode = _run_indextts_with_safe_retry(
+                                tts,
+                                ref_audio_path=task["ref_audio_path"],
+                                text=task["text"],
+                                normalized_text=normalized_text,
                                 output_path=task["output_path"],
-                                verbose=False,
-                                **valid_kwargs
+                                kwargs=runtime_kwargs,
+                                target_duration=task.get("duration"),
+                                verbose=False
                             )
-                            duration = _validate_indextts_output(task["output_path"], task["text"])
                             batch_results.append({
                                 "index": task.get("index"),
                                 "success": True,
                                 "audio_path": task["output_path"],
-                                "duration": duration
+                                "duration": duration,
+                                "retry_mode": retry_mode
                             })
                         except Exception as single_error:
                             _handle_fatal_indextts_cuda_error(single_error, "true_batch_fallback_single")
@@ -1022,28 +1175,28 @@ def run_batch_tts(tasks, model_dir=None, config_path=None, language="English", *
 
             try:
                 single_started_at = time.perf_counter()
-                valid_kwargs = _build_indextts_kwargs(normalized_text, runtime_kwargs)
-
-                tts.infer(
-                    spk_audio_prompt=ref,
-                    text=normalized_text,
+                dur, retry_mode = _run_indextts_with_safe_retry(
+                    tts,
+                    ref_audio_path=ref,
+                    text=text,
+                    normalized_text=normalized_text,
                     output_path=out,
-                    verbose=False,
-                    **valid_kwargs
+                    kwargs=runtime_kwargs,
+                    target_duration=task.get("duration"),
+                    verbose=False
                 )
-
-                dur = _validate_indextts_output(out, text)
                 single_elapsed_ms = (time.perf_counter() - single_started_at) * 1000.0
                 single_rtf = (single_elapsed_ms / 1000.0) / max(float(dur or 0.001), 0.001)
                 print(
                     f"[TTSTiming] mode=sequential total={single_elapsed_ms:.0f}ms "
-                    f"audio={dur:.2f}s rtf={single_rtf:.3f} index={task.get('index')}"
+                    f"audio={dur:.2f}s rtf={single_rtf:.3f} retry={retry_mode} index={task.get('index')}"
                 )
                 result = {
                     "index": task.get('index'),
                     "audio_path": out,
                     "success": True,
-                    "duration": dur
+                    "duration": dur,
+                    "retry_mode": retry_mode
                 }
                 emit_task_result(result, item_position=item_position)
                 yield result
