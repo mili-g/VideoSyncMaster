@@ -66,10 +66,7 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFileSelected, onTimeUpdate,
             onFileSelected(cachedPath);
 
             console.log("Analyzing video codec...");
-            const analysis = await window.api.runBackend([
-                '--action', 'analyze_video',
-                '--input', cachedPath
-            ]);
+            const analysis = await window.api.analyzeVideoMetadata(cachedPath);
 
             if (analysis && analysis.success && analysis.info) {
                 const { video_codec } = analysis.info;

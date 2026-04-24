@@ -16,11 +16,33 @@ export interface DesktopProjectPaths {
     cacheDir: string;
 }
 
+export interface SingleProjectOutputPaths {
+    baseName: string;
+    sessionKey: string;
+    finalDir: string;
+    finalVideoPath: string;
+    originalSubtitlePath: string;
+    translatedSubtitlePath: string;
+    sessionCacheDir: string;
+    sessionAudioDir: string;
+    sessionTempDir: string;
+}
+
+export interface BatchProjectOutputPaths extends SingleProjectOutputPaths {}
+
 function resolveOutputDir(paths: DesktopProjectPaths, outputDirOverride?: string) {
     return outputDirOverride?.trim() || paths.outputDir;
 }
 
-export function buildSingleOutputPaths(paths: DesktopProjectPaths, fileName: string, outputDirOverride?: string) {
+export function getFileNameFromPath(filePath: string, fallback = 'video.mp4') {
+    return filePath.split(/[\\/]/).pop() || fallback;
+}
+
+export function buildSingleOutputPaths(
+    paths: DesktopProjectPaths,
+    fileName: string,
+    outputDirOverride?: string
+): SingleProjectOutputPaths {
     const baseName = sanitizeBaseName(fileName);
     const sessionKey = buildSessionKey(fileName);
     const outputDir = resolveOutputDir(paths, outputDirOverride);
@@ -40,7 +62,12 @@ export function buildSingleOutputPaths(paths: DesktopProjectPaths, fileName: str
     };
 }
 
-export function buildBatchOutputPaths(paths: DesktopProjectPaths, fileName: string, itemId: string, outputDirOverride?: string) {
+export function buildBatchOutputPaths(
+    paths: DesktopProjectPaths,
+    fileName: string,
+    itemId: string,
+    outputDirOverride?: string
+): BatchProjectOutputPaths {
     const baseName = sanitizeBaseName(fileName);
     const sessionKey = `${buildSessionKey(fileName)}_${itemId.slice(-4)}`;
     const outputDir = resolveOutputDir(paths, outputDirOverride);
@@ -57,5 +84,41 @@ export function buildBatchOutputPaths(paths: DesktopProjectPaths, fileName: stri
         sessionCacheDir,
         sessionAudioDir: `${sessionCacheDir}\\audio`,
         sessionTempDir: `${sessionCacheDir}\\temp`
+    };
+}
+
+export async function prepareSingleProjectPaths(filePath: string, outputDirOverride?: string) {
+    const paths = await window.api.getPaths();
+    const fileName = getFileNameFromPath(filePath);
+    const projectPaths = buildSingleOutputPaths(paths, fileName, outputDirOverride);
+    await Promise.all([
+        window.api.ensureDir(projectPaths.finalDir),
+        window.api.ensureDir(projectPaths.sessionCacheDir),
+        window.api.ensureDir(projectPaths.sessionAudioDir),
+        window.api.ensureDir(projectPaths.sessionTempDir)
+    ]);
+    return { fileName, paths, projectPaths };
+}
+
+export async function prepareBatchProjectPaths(fileName: string, itemId: string, outputDirOverride?: string) {
+    const paths = await window.api.getPaths();
+    const projectPaths = buildBatchOutputPaths(paths, fileName, itemId, outputDirOverride);
+    await Promise.all([
+        window.api.ensureDir(projectPaths.finalDir),
+        window.api.ensureDir(projectPaths.sessionCacheDir),
+        window.api.ensureDir(projectPaths.sessionAudioDir),
+        window.api.ensureDir(projectPaths.sessionTempDir)
+    ]);
+    return { paths, projectPaths };
+}
+
+export async function preparePreviewCacheFile(fileName: string) {
+    const paths = await window.api.getPaths();
+    const previewDir = `${paths.cacheDir}\\previews`;
+    await window.api.ensureDir(previewDir);
+    return {
+        paths,
+        previewDir,
+        outputPath: `${previewDir}\\${fileName}`
     };
 }

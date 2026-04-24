@@ -1,6 +1,7 @@
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
 import type { Segment } from './useVideoProject';
 import { isBackendCanceledError } from '../utils/backendCancellation';
+import { appendStoredTranslationArgs } from '../utils/runtimeSettings';
 
 type FeedbackType = 'success' | 'error';
 
@@ -61,21 +62,13 @@ export function useTranslationWorkflow({
             if (abortRef.current) return null;
 
             const inputJson = JSON.stringify(segsToUse);
-            const transApiKey = localStorage.getItem('trans_api_key') || '';
-            const transApiBaseUrl = localStorage.getItem('trans_api_base_url') || '';
-            const transApiModel = localStorage.getItem('trans_api_model') || '';
             const args = [
                 '--action', 'translate_text',
                 '--input', inputJson,
                 '--lang', targetLang,
                 '--json'
             ];
-
-            if (transApiKey) {
-                args.push('--api_key', transApiKey);
-                if (transApiBaseUrl) args.push('--base_url', transApiBaseUrl);
-                if (transApiModel) args.push('--model', transApiModel);
-            }
+            appendStoredTranslationArgs(args);
 
             const result = await window.api.runBackend(args);
 
@@ -120,21 +113,13 @@ export function useTranslationWorkflow({
 
         try {
             const sourceText = segments[index].text;
-            const transApiKey = localStorage.getItem('trans_api_key') || '';
-            const transApiBaseUrl = localStorage.getItem('trans_api_base_url') || '';
-            const transApiModel = localStorage.getItem('trans_api_model') || '';
             const args = [
                 '--action', 'translate_text',
                 '--input', sourceText,
                 '--lang', targetLang,
                 '--json'
             ];
-
-            if (transApiKey) {
-                args.push('--api_key', transApiKey);
-                if (transApiBaseUrl) args.push('--base_url', transApiBaseUrl);
-                if (transApiModel) args.push('--model', transApiModel);
-            }
+            appendStoredTranslationArgs(args);
 
             const result = await window.api.runBackend(args);
 

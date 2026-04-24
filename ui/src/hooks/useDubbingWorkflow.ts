@@ -1,8 +1,9 @@
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
 import type { AudioMixMode, Segment } from './useVideoProject';
 import { cleanupOutputArtifacts, saveSubtitleArtifacts } from '../utils/outputArtifacts';
-import { buildSingleOutputPaths } from '../utils/projectPaths';
+import { prepareSingleProjectPaths } from '../utils/projectPaths';
 import { isBackendCanceledError } from '../utils/backendCancellation';
+import { getStoredQwenTtsSettings } from '../utils/runtimeSettings';
 
 type FeedbackType = 'success' | 'error';
 
@@ -75,12 +76,8 @@ export function useDubbingWorkflow({
         setStatus(`正在重新生成片段 ${index + 1} 的配音...`);
 
         try {
-            const paths = await window.api.getPaths();
-            const filenameWithExt = originalVideoPath.split(/[\\/]/).pop() || 'video.mp4';
-            const projectPaths = buildSingleOutputPaths(paths, filenameWithExt, outputDirOverride);
+            const { projectPaths } = await prepareSingleProjectPaths(originalVideoPath, outputDirOverride);
             const outputPath = `${projectPaths.sessionAudioDir}\\segment_${index}.wav`;
-            await window.api.ensureDir(projectPaths.sessionAudioDir);
-            await window.api.ensureDir(projectPaths.sessionTempDir);
 
             const fallbackRefAudio = await prepareFallbackReferenceAudio(
                 originalVideoPath,
@@ -157,13 +154,9 @@ export function useDubbingWorkflow({
         setIsIndeterminate(false);
 
         try {
-            const paths = await window.api.getPaths();
-            const filenameWithExt = originalVideoPath.split(/[\\/]/).pop() || 'video.mp4';
-            const projectPaths = buildSingleOutputPaths(paths, filenameWithExt, outputDirOverride);
+            const { projectPaths } = await prepareSingleProjectPaths(originalVideoPath, outputDirOverride);
             const tempJsonPath = `${projectPaths.sessionTempDir}\\segments.json`;
 
-            await window.api.ensureDir(projectPaths.sessionAudioDir);
-            await window.api.ensureDir(projectPaths.sessionTempDir);
             await window.api.saveFile(tempJsonPath, JSON.stringify(
                 segmentsToUse.map((segment, index) => ({
                     ...segment,
@@ -268,11 +261,7 @@ export function useDubbingWorkflow({
         setStatus(`正在重试 ${errorSegments.length} 个失败片段...`);
 
         try {
-            const paths = await window.api.getPaths();
-            const filenameWithExt = originalVideoPath.split(/[\\/]/).pop() || 'video.mp4';
-            const projectPaths = buildSingleOutputPaths(paths, filenameWithExt, outputDirOverride);
-            await window.api.ensureDir(projectPaths.sessionAudioDir);
-            await window.api.ensureDir(projectPaths.sessionTempDir);
+            const { projectPaths } = await prepareSingleProjectPaths(originalVideoPath, outputDirOverride);
 
             const fallbackRefAudio = await prepareFallbackReferenceAudio(
                 originalVideoPath,
@@ -357,9 +346,7 @@ export function useDubbingWorkflow({
         let tempJsonPath: string | null = null;
 
         try {
-            const paths = await window.api.getPaths();
-            const filenameWithExt = originalVideoPath.split(/[\\/]/).pop() || 'video.mp4';
-            const projectPaths = buildSingleOutputPaths(paths, filenameWithExt, outputDirOverride);
+            const { fileName, projectPaths } = await prepareSingleProjectPaths(originalVideoPath, outputDirOverride);
             const outputVideoPath = projectPaths.finalVideoPath;
             const segmentsForBackend = segmentsToUse
                 .map(segment => ({ ...segment, path: segment.audioPath }))
@@ -376,8 +363,6 @@ export function useDubbingWorkflow({
             }
 
             tempJsonPath = `${projectPaths.sessionTempDir}\\merge_segments.json`;
-            await window.api.ensureDir(projectPaths.finalDir);
-            await window.api.ensureDir(projectPaths.sessionTempDir);
             await window.api.saveFile(tempJsonPath, JSON.stringify(segmentsForBackend));
 
             const result = await window.api.runBackend([
@@ -394,7 +379,7 @@ export function useDubbingWorkflow({
             if (result && result.success) {
                 await saveSubtitleArtifacts(
                     projectPaths.finalDir,
-                    filenameWithExt,
+                    fileName,
                     sourceSegments.map(segment => ({ start: segment.start, end: segment.end, text: segment.text })),
                     segmentsToUse.map(segment => ({ start: segment.start, end: segment.end, text: segment.text }))
                 );
@@ -575,12 +560,10 @@ function buildTtsExtraArgs(
     let blocked: FeedbackPayload | null = null;
 
     if (ttsService === 'qwen') {
-        const qwenMode = localStorage.getItem('qwen_mode') || 'clone';
-        const qwenTtsModel = localStorage.getItem('qwen_tts_model') || '1.7B';
+        const qwenSettings = getStoredQwenTtsSettings();
 
-        if (qwenMode === 'design') {
-            const designRef = localStorage.getItem('qwen_design_ref_audio');
-            if (!designRef) {
+        if (qwenSettings.mode === 'design') {
+            if (!qwenSettings.designRefAudio) {
                 blocked = {
                     title: '需要预览',
                     message: '您还没有完成“声音设计”测试音频。请先在参数设置中点击“合成”，锁定音色效果后再批量生成。',
@@ -590,23 +573,18 @@ function buildTtsExtraArgs(
             }
         }
 
-        args.push('--qwen_mode', qwenMode);
-        args.push('--qwen_model_size', qwenTtsModel);
+        args.push('--qwen_mode', qwenSettings.mode);
+        args.push('--qwen_model_size', qwenSettings.modelSize);
 
-        if (qwenMode === 'preset') {
-            const preset = localStorage.getItem('qwen_preset_voice') || 'Vivian';
-            args.push('--preset_voice', preset);
-        } else if (qwenMode === 'design') {
-            const instruct = localStorage.getItem('qwen_voice_instruction') || '';
-            const designRef = localStorage.getItem('qwen_design_ref_audio');
-            args.push('--voice_instruct', instruct);
-            if (designRef) args.push('--ref_audio', designRef);
+        if (qwenSettings.mode === 'preset') {
+            args.push('--preset_voice', qwenSettings.presetVoice);
+        } else if (qwenSettings.mode === 'design') {
+            args.push('--voice_instruct', qwenSettings.voiceInstruction);
+            if (qwenSettings.designRefAudio) args.push('--ref_audio', qwenSettings.designRefAudio);
         } else {
             effectiveBatchSize = cloneBatchSize;
-            const refAudio = localStorage.getItem('qwen_ref_audio_path');
-            const refText = localStorage.getItem('qwen_ref_text');
-            if (refAudio) args.push('--ref_audio', refAudio);
-            if (refText) args.push('--qwen_ref_text', refText);
+            if (qwenSettings.refAudio) args.push('--ref_audio', qwenSettings.refAudio);
+            if (qwenSettings.refText) args.push('--qwen_ref_text', qwenSettings.refText);
         }
     } else {
         const refAudio = localStorage.getItem('tts_ref_audio_path');

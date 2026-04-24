@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import ConfirmDialog from './ConfirmDialog';
+import { preparePreviewCacheFile } from '../utils/projectPaths';
 
 interface QwenTTSConfigProps {
     themeMode?: 'light' | 'dark' | 'gradient';
@@ -129,12 +130,7 @@ const QwenTTSConfig: React.FC<QwenTTSConfigProps> = ({ themeMode, isActive, onAc
         setGeneratedPaths(prev => ({ ...prev, [mode]: null }));
 
         try {
-            const paths = await window.api.getPaths();
-            // Distinct output paths for each mode
-            const previewDir = `${paths.cacheDir}\\previews`;
-            const outputPath = `${previewDir}\\preview_qwen_${mode}.wav`;
-
-            await window.api.ensureDir(previewDir);
+            const { outputPath } = await preparePreviewCacheFile(`preview_qwen_${mode}.wav`);
 
             const args = [
                 '--action', 'test_tts',

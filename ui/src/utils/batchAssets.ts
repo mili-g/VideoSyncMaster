@@ -4,25 +4,36 @@ export interface BatchInputAsset {
     path: string;
     name: string;
     textContent?: string;
+    kindOverride?: Extract<BatchAssetKind, 'subtitle-original' | 'subtitle-translated'>;
 }
 
 const TRANSLATED_MARKERS = [
+    'zh',
+    'cn',
+    'chs',
+    'cht',
+    'chinese',
+    '中文',
+    '中文字幕',
     'translated',
     'translation',
     'target',
+    '译',
+    '译文',
+    '翻译'
+];
+
+const ORIGINAL_MARKERS = [
+    'original',
+    'source',
+    'orig',
+    'src',
     'en',
     'eng',
     'english',
     '英文',
-    '译',
-    '译文',
-    '翻译',
-    '中文',
-    '汉化',
-    'zh',
-    'cn',
-    'chs',
-    'cht'
+    '原字幕',
+    '英文字幕'
 ];
 
 const STRIP_MARKERS = [
@@ -57,6 +68,10 @@ const STRIP_MARKERS = [
 ];
 
 export function classifyBatchAsset(asset: BatchInputAsset): BatchAssetKind {
+    if (asset.kindOverride) {
+        return asset.kindOverride;
+    }
+
     const lower = asset.name.toLowerCase();
     if (/\.(mp4|mov|mkv|avi|webm|mp3|wav|m4a)$/i.test(lower)) {
         return 'video';
@@ -70,11 +85,7 @@ export function classifyBatchAsset(asset: BatchInputAsset): BatchAssetKind {
 }
 
 export function buildBatchMatchKey(fileName: string): string {
-    const base = fileName.replace(/\.[^/.]+$/, '').toLowerCase();
-    const normalized = base
-        .replace(/[._()[\]{}\-]+/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim();
+    const normalized = normalizeAssetStem(fileName);
 
     const words = normalized
         .split(' ')
@@ -85,6 +96,29 @@ export function buildBatchMatchKey(fileName: string): string {
 }
 
 export function isTranslatedSubtitleName(fileName: string): boolean {
-    const lower = fileName.toLowerCase();
-    return TRANSLATED_MARKERS.some(marker => lower.includes(marker));
+    const tokens = getAssetNameTokens(fileName);
+    if (tokens.some(token => TRANSLATED_MARKERS.includes(token))) {
+        return true;
+    }
+
+    if (tokens.some(token => ORIGINAL_MARKERS.includes(token))) {
+        return false;
+    }
+
+    return false;
+}
+
+function normalizeAssetStem(fileName: string) {
+    return fileName
+        .replace(/\.[^/.]+$/, '')
+        .toLowerCase()
+        .replace(/[._()[\]{}\-]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function getAssetNameTokens(fileName: string) {
+    return normalizeAssetStem(fileName)
+        .split(' ')
+        .filter(Boolean);
 }

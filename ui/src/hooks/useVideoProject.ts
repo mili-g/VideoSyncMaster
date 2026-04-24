@@ -5,8 +5,9 @@ import { usePersistentSettings } from './usePersistentSettings';
 import { useSubtitleImport } from './useSubtitleImport';
 import { useTranslationWorkflow } from './useTranslationWorkflow';
 import { saveSubtitleArtifacts } from '../utils/outputArtifacts';
-import { buildSingleOutputPaths } from '../utils/projectPaths';
+import { prepareSingleProjectPaths } from '../utils/projectPaths';
 import { isBackendCanceledError } from '../utils/backendCancellation';
+import { getStoredWhisperVadSettings } from '../utils/runtimeSettings';
 
 export interface Segment {
     start: number;
@@ -179,16 +180,6 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
         setMergedVideoPath
     });
 
-    const formatTimeSRT = (seconds: number) => {
-        const pad = (num: number, size: number) => (`000${num}`).slice(size * -1);
-        const hours = Math.floor(seconds / 3600);
-        const minutes = Math.floor((seconds % 3600) / 60);
-        const secs = Math.floor(seconds % 60);
-        const ms = Math.floor((seconds - Math.floor(seconds)) * 1000);
-
-        return `${pad(hours, 2)}:${pad(minutes, 2)}:${pad(secs, 2)},${pad(ms, 3)}`;
-    };
-
     const handleASR = async (): Promise<Segment[] | null> => {
         if (!originalVideoPath) {
             setStatus('请先上传或选择视频');
@@ -202,16 +193,8 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
         setStatus('正在识别字幕...');
 
         try {
-            const paths = await window.api.getPaths();
-            const filenameWithExt = originalVideoPath.split(/[\\/]/).pop() || 'video.mp4';
-            const projectPaths = buildSingleOutputPaths(paths, filenameWithExt, outputDirOverride);
-
-            await window.api.ensureDir(projectPaths.finalDir);
-            await window.api.ensureDir(projectPaths.sessionCacheDir);
-            await window.api.ensureDir(projectPaths.sessionTempDir);
-
-            const vadOnset = localStorage.getItem('whisper_vad_onset') || '0.700';
-            const vadOffset = localStorage.getItem('whisper_vad_offset') || '0.700';
+            const { fileName, projectPaths } = await prepareSingleProjectPaths(originalVideoPath, outputDirOverride);
+            const vad = getStoredWhisperVadSettings();
 
             const result = await window.api.runBackend([
                 '--action', 'test_asr',
@@ -219,8 +202,8 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
                 '--asr', asrService,
                 '--ori_lang', asrOriLang === 'None' ? '' : asrOriLang,
                 '--output_dir', projectPaths.sessionTempDir,
-                '--vad_onset', vadOnset,
-                '--vad_offset', vadOffset
+                '--vad_onset', vad.onset,
+                '--vad_offset', vad.offset
             ]);
 
             if (abortRef.current) return null;
@@ -233,17 +216,12 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
             result.sort((a: Segment, b: Segment) => a.start - b.start);
             setSegments(result);
 
-            const srtContent = result.map((seg: Segment, index: number) => (
-                `${index + 1}\n${formatTimeSRT(seg.start)} --> ${formatTimeSRT(seg.end)}\n${seg.text}\n`
-            )).join('\n');
-
-            const artifacts = await saveSubtitleArtifacts(
+            await saveSubtitleArtifacts(
                 projectPaths.finalDir,
-                filenameWithExt,
+                fileName,
                 result.map((segment: Segment) => ({ start: segment.start, end: segment.end, text: segment.text })),
                 result.map((segment: Segment) => ({ start: segment.start, end: segment.end, text: segment.text }))
             );
-            await window.api.saveFile(artifacts.originalSubtitlePath, srtContent);
 
             setStatus('识别完成，请检查并编辑字幕。');
             return result;
@@ -279,12 +257,10 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
         if (!transSegs) return;
 
         {
-            const paths = await window.api.getPaths();
-            const filenameWithExt = originalVideoPath.split(/[\\/]/).pop() || 'video.mp4';
-            const projectPaths = buildSingleOutputPaths(paths, filenameWithExt, outputDirOverride);
+            const { fileName, projectPaths } = await prepareSingleProjectPaths(originalVideoPath, outputDirOverride);
             await saveSubtitleArtifacts(
                 projectPaths.finalDir,
-                filenameWithExt,
+                fileName,
                 asrSegs.map(segment => ({ start: segment.start, end: segment.end, text: segment.text })),
                 transSegs.map(segment => ({ start: segment.start, end: segment.end, text: segment.text }))
             );
@@ -306,12 +282,10 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
         if (!transSegs) return;
 
         if (segments.length > 0) {
-            const paths = await window.api.getPaths();
-            const filenameWithExt = originalVideoPath.split(/[\\/]/).pop() || 'video.mp4';
-            const projectPaths = buildSingleOutputPaths(paths, filenameWithExt, outputDirOverride);
+            const { fileName, projectPaths } = await prepareSingleProjectPaths(originalVideoPath, outputDirOverride);
             await saveSubtitleArtifacts(
                 projectPaths.finalDir,
-                filenameWithExt,
+                fileName,
                 segments.map(segment => ({ start: segment.start, end: segment.end, text: segment.text })),
                 transSegs.map(segment => ({ start: segment.start, end: segment.end, text: segment.text }))
             );
@@ -381,7 +355,6 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
         handleStop,
 
         hasErrors,
-        abortRef,
-        formatTimeSRT
+        abortRef
     };
 }

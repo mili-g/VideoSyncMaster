@@ -22,8 +22,10 @@ export async function saveSubtitleArtifacts(
 ) {
     const artifacts = buildOutputArtifacts(outputDir, fileName);
     await window.api.ensureDir(outputDir);
-    await window.api.saveFile(artifacts.originalSubtitlePath, segmentsToSRT(originalSegments));
-    await window.api.saveFile(artifacts.translatedSubtitlePath, segmentsToSRT(translatedSegments));
+    await Promise.all([
+        window.api.saveFile(artifacts.originalSubtitlePath, segmentsToSRT(originalSegments)),
+        window.api.saveFile(artifacts.translatedSubtitlePath, segmentsToSRT(translatedSegments))
+    ]);
     return artifacts;
 }
 

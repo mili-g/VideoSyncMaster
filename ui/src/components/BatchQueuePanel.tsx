@@ -1,6 +1,6 @@
-import React, { useRef } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { BATCH_QUEUE_STAGE, type BatchQueueItem } from '../hooks/useBatchQueue';
-import type { BatchInputAsset } from '../utils/batchAssets';
+import { classifyBatchAsset, type BatchInputAsset } from '../utils/batchAssets';
 
 const suspiciousMojibakePattern = /[\uFFFD\u00C3\u00E2\u00D0\u00CF]/;
 
@@ -18,11 +18,18 @@ interface BatchQueueSummary {
 
 interface BatchQueuePanelProps {
     items: BatchQueueItem[];
+    unmatchedSubtitleAssets: BatchInputAsset[];
     summary: BatchQueueSummary;
     isRunning: boolean;
     canStart: boolean;
     canGenerateSubtitles: boolean;
     onAddAssets: (assets: BatchInputAsset[]) => void | Promise<void>;
+    onAssignUnmatchedSubtitle: (
+        assetPath: string,
+        itemId: string,
+        kind: Extract<ReturnType<typeof classifyBatchAsset>, 'subtitle-original' | 'subtitle-translated'>
+    ) => void;
+    onRemoveUnmatchedSubtitle: (assetPath: string) => void;
     onRemoveItem: (id: string) => void;
     onClearCompleted: () => void;
     onClearAll: () => void;
@@ -59,11 +66,14 @@ async function decodeSubtitleFile(file: File) {
 
 export default function BatchQueuePanel({
     items,
+    unmatchedSubtitleAssets,
     summary,
     isRunning,
     canStart,
     canGenerateSubtitles,
     onAddAssets,
+    onAssignUnmatchedSubtitle,
+    onRemoveUnmatchedSubtitle,
     onRemoveItem,
     onClearCompleted,
     onClearAll,
@@ -74,15 +84,36 @@ export default function BatchQueuePanel({
     onStop
 }: BatchQueuePanelProps) {
     const inputRef = useRef<HTMLInputElement>(null);
+    const originalSubtitleInputRef = useRef<HTMLInputElement>(null);
+    const translatedSubtitleInputRef = useRef<HTMLInputElement>(null);
+    const [manualAssignments, setManualAssignments] = useState<Record<string, { itemId: string; kind: 'subtitle-original' | 'subtitle-translated' }>>({});
+    const getSubtitleKind = (asset: BatchInputAsset): 'subtitle-original' | 'subtitle-translated' => (
+        classifyBatchAsset(asset) === 'subtitle-translated' ? 'subtitle-translated' : 'subtitle-original'
+    );
 
-    const consumeFiles = async (fileList: FileList | null) => {
+    const unmatchedSelections = useMemo(() => {
+        const next: Record<string, { itemId: string; kind: 'subtitle-original' | 'subtitle-translated' }> = {};
+        for (const asset of unmatchedSubtitleAssets) {
+            const existing = manualAssignments[asset.path];
+            next[asset.path] = {
+                itemId: existing?.itemId || items[0]?.id || '',
+                kind: existing?.kind || getSubtitleKind(asset)
+            };
+        }
+        return next;
+    }, [items, manualAssignments, unmatchedSubtitleAssets]);
+
+    const consumeFiles = async (
+        fileList: FileList | null,
+        kindOverride?: BatchInputAsset['kindOverride']
+    ) => {
         if (!fileList) return;
         const assets = await Promise.all(
             Array.from(fileList).map(async (file) => {
                 const path = (file as File & { path?: string }).path || '';
                 const name = file.name;
                 const textContent = name.toLowerCase().endsWith('.srt') ? await decodeSubtitleFile(file) : undefined;
-                return { path, name, textContent };
+                return { path, name, textContent, kindOverride };
             })
         );
         await onAddAssets(assets.filter(asset => asset.path));
@@ -106,10 +137,41 @@ export default function BatchQueuePanel({
                             accept="video/*,audio/*,.srt"
                             multiple
                             style={{ display: 'none' }}
-                            onChange={async (event) => { await consumeFiles(event.target.files); }}
+                            onChange={async (event) => {
+                                await consumeFiles(event.target.files);
+                                event.target.value = '';
+                            }}
+                        />
+                        <input
+                            ref={originalSubtitleInputRef}
+                            type="file"
+                            accept=".srt"
+                            multiple
+                            style={{ display: 'none' }}
+                            onChange={async (event) => {
+                                await consumeFiles(event.target.files, 'subtitle-original');
+                                event.target.value = '';
+                            }}
+                        />
+                        <input
+                            ref={translatedSubtitleInputRef}
+                            type="file"
+                            accept=".srt"
+                            multiple
+                            style={{ display: 'none' }}
+                            onChange={async (event) => {
+                                await consumeFiles(event.target.files, 'subtitle-translated');
+                                event.target.value = '';
+                            }}
                         />
                         <button onClick={() => inputRef.current?.click()} style={buttonStyle('#4f46e5')}>
                             添加资源
+                        </button>
+                        <button onClick={() => originalSubtitleInputRef.current?.click()} style={buttonStyle('rgba(34,197,94,0.24)')}>
+                            添加原字幕
+                        </button>
+                        <button onClick={() => translatedSubtitleInputRef.current?.click()} style={buttonStyle('rgba(245,158,11,0.24)')}>
+                            添加翻译字幕
                         </button>
                         <button onClick={onGenerateSubtitles} disabled={!canGenerateSubtitles} style={buttonStyle('rgba(14,165,233,0.28)', !canGenerateSubtitles)}>
                             批量识别字幕
@@ -161,8 +223,116 @@ export default function BatchQueuePanel({
                         background: 'rgba(255,255,255,0.03)'
                     }}
                 >
-                    可以一次拖入视频和字幕文件。系统会按文件名自动匹配到“视频 / 原字幕 / 翻译字幕”三列。
+                    可以一次拖入视频和字幕文件自动匹配。若字幕后缀不符合当前规则，请使用上方“添加原字幕 / 添加翻译字幕”手动指定后再按视频名自动分配。
                 </div>
+
+                {unmatchedSubtitleAssets.length > 0 && (
+                    <div style={{
+                        marginBottom: '20px',
+                        padding: '16px',
+                        borderRadius: '16px',
+                        border: '1px solid rgba(250,204,21,0.22)',
+                        background: 'rgba(250,204,21,0.08)'
+                    }}>
+                        <div style={{ color: '#fde68a', fontWeight: 700, marginBottom: '12px' }}>
+                            未匹配字幕
+                        </div>
+                        <div style={{ color: 'rgba(255,255,255,0.72)', fontSize: '0.9em', marginBottom: '12px' }}>
+                            这些字幕没有自动匹配到视频。可在这里手动选择目标视频和字幕类型后挂载。
+                        </div>
+                        <div style={{ display: 'grid', gap: '10px' }}>
+                            {unmatchedSubtitleAssets.map(asset => {
+                                const selection = unmatchedSelections[asset.path];
+                                return (
+                                    <div
+                                        key={asset.path}
+                                        style={{
+                                            display: 'grid',
+                                            gridTemplateColumns: '1.3fr 1fr 0.8fr auto auto',
+                                            gap: '10px',
+                                            alignItems: 'center',
+                                            padding: '12px',
+                                            borderRadius: '12px',
+                                            background: 'rgba(15,23,42,0.35)',
+                                            border: '1px solid rgba(255,255,255,0.08)'
+                                        }}
+                                    >
+                                        <Cell title="字幕文件" primary={asset.name} secondary={asset.path} />
+                                        <div>
+                                            <div style={{ color: 'rgba(255,255,255,0.5)', fontSize: '0.78em', marginBottom: '4px' }}>目标视频</div>
+                                            <select
+                                                value={selection?.itemId || ''}
+                                                onChange={(event) => {
+                                                    const itemId = event.target.value;
+                                                    setManualAssignments(prev => ({
+                                                        ...prev,
+                                                        [asset.path]: {
+                                                            itemId,
+                                                            kind: prev[asset.path]?.kind || getSubtitleKind(asset)
+                                                        }
+                                                    }));
+                                                }}
+                                                style={selectStyle}
+                                            >
+                                                {items.map(item => (
+                                                    <option key={item.id} value={item.id}>{item.fileName}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <div style={{ color: 'rgba(255,255,255,0.5)', fontSize: '0.78em', marginBottom: '4px' }}>字幕类型</div>
+                                            <select
+                                                value={selection?.kind || getSubtitleKind(asset)}
+                                                onChange={(event) => {
+                                                    const kind = event.target.value as 'subtitle-original' | 'subtitle-translated';
+                                                    setManualAssignments(prev => ({
+                                                        ...prev,
+                                                        [asset.path]: {
+                                                            itemId: prev[asset.path]?.itemId || items[0]?.id || '',
+                                                            kind
+                                                        }
+                                                    }));
+                                                }}
+                                                style={selectStyle}
+                                            >
+                                                <option value="subtitle-original">原字幕</option>
+                                                <option value="subtitle-translated">翻译字幕</option>
+                                            </select>
+                                        </div>
+                                        <button
+                                            onClick={() => {
+                                                if (!selection?.itemId) return;
+                                                onAssignUnmatchedSubtitle(asset.path, selection.itemId, selection.kind);
+                                                setManualAssignments(prev => {
+                                                    const next = { ...prev };
+                                                    delete next[asset.path];
+                                                    return next;
+                                                });
+                                            }}
+                                            disabled={!selection?.itemId}
+                                            style={buttonStyle('rgba(59,130,246,0.22)', !selection?.itemId)}
+                                        >
+                                            挂到视频
+                                        </button>
+                                        <button
+                                            onClick={() => {
+                                                onRemoveUnmatchedSubtitle(asset.path);
+                                                setManualAssignments(prev => {
+                                                    const next = { ...prev };
+                                                    delete next[asset.path];
+                                                    return next;
+                                                });
+                                            }}
+                                            style={buttonStyle('rgba(255,255,255,0.08)')}
+                                        >
+                                            移除
+                                        </button>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+                )}
 
                 <div style={{ display: 'grid', gap: '12px' }}>
                     {items.length === 0 && (
@@ -399,6 +569,15 @@ function buttonStyle(background: string, disabled = false): React.CSSProperties 
         opacity: disabled ? 0.5 : 1
     };
 }
+
+const selectStyle: React.CSSProperties = {
+    width: '100%',
+    padding: '9px 10px',
+    borderRadius: '10px',
+    border: '1px solid rgba(255,255,255,0.12)',
+    background: 'rgba(15,23,42,0.9)',
+    color: '#fff'
+};
 
 function statusLabel(status: BatchQueueItem['status']) {
     switch (status) {

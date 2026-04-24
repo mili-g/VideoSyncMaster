@@ -2,11 +2,13 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { buildBatchMatchKey, classifyBatchAsset, type BatchInputAsset } from '../utils/batchAssets';
 import { parseSRTContent, segmentsToSRT, type SrtSegment } from '../utils/srt';
 import { cleanupOutputArtifacts, saveSubtitleArtifacts } from '../utils/outputArtifacts';
-import { buildBatchOutputPaths } from '../utils/projectPaths';
+import { prepareBatchProjectPaths } from '../utils/projectPaths';
 import { isBackendCanceledError } from '../utils/backendCancellation';
+import { appendStoredTranslationArgs, getStoredQwenTtsSettings, getStoredWhisperVadSettings } from '../utils/runtimeSettings';
 
 const BATCH_QUEUE_ITEMS_STORAGE_KEY = 'batchQueue.items.v1';
 const BATCH_QUEUE_META_STORAGE_KEY = 'batchQueue.meta.v1';
+const DURATION_PROBE_CONCURRENCY = 2;
 
 export type BatchQueueStatus = 'pending' | 'processing' | 'success' | 'error' | 'canceled';
 
@@ -180,9 +182,13 @@ export function useBatchQueue(_options: UseBatchQueueOptions = {}) {
     const stopRequestedRef = useRef(false);
     const runLockRef = useRef(false);
     const pendingSubtitleAssetsRef = useRef<BatchInputAsset[]>([]);
+    const durationProbeQueueRef = useRef<Array<{ id: string; path: string }>>([]);
+    const durationProbeActiveCountRef = useRef(0);
+    const durationProbeTimerRef = useRef<number | null>(null);
     const [queueStartedAt, setQueueStartedAt] = useState<number | null>(() => persistedMetaRef.current.queueStartedAt);
     const [queueFinishedElapsedMs, setQueueFinishedElapsedMs] = useState(() => persistedMetaRef.current.queueFinishedElapsedMs);
     const [shouldResume, setShouldResume] = useState(() => bootstrapRef.current.shouldResume);
+    const [unmatchedSubtitleAssets, setUnmatchedSubtitleAssets] = useState<BatchInputAsset[]>([]);
 
     useEffect(() => {
         if (!isRunning) return;
@@ -251,6 +257,96 @@ export function useBatchQueue(_options: UseBatchQueueOptions = {}) {
         setItems(prev => prev.map(item => item.id === id ? updater(item) : item));
     };
 
+    const applySubtitleAssetToItem = (
+        item: BatchQueueItem,
+        asset: BatchInputAsset,
+        kind: Extract<ReturnType<typeof classifyBatchAsset>, 'subtitle-original' | 'subtitle-translated'>
+    ) => {
+        if (kind === 'subtitle-original') {
+            item.originalSubtitlePath = asset.path;
+            item.originalSubtitleContent = asset.textContent;
+            return;
+        }
+
+        item.translatedSubtitlePath = asset.path;
+        item.translatedSubtitleContent = asset.textContent;
+    };
+
+    const resolveSubtitleAssetKind = (
+        asset: BatchInputAsset
+    ): Extract<ReturnType<typeof classifyBatchAsset>, 'subtitle-original' | 'subtitle-translated'> => {
+        const kind = classifyBatchAsset(asset);
+        return kind === 'subtitle-translated' ? 'subtitle-translated' : 'subtitle-original';
+    };
+
+    const clearDurationProbeTimer = () => {
+        if (durationProbeTimerRef.current !== null) {
+            window.clearTimeout(durationProbeTimerRef.current);
+            durationProbeTimerRef.current = null;
+        }
+    };
+
+    const isDurationProbeEligible = (task: { id: string; path: string }) => (
+        itemsRef.current.some(item => item.id === task.id && !item.sourceDurationSec)
+    );
+
+    const scheduleDurationProbe = (delayMs = 250) => {
+        if (durationProbeTimerRef.current !== null) return;
+        durationProbeTimerRef.current = window.setTimeout(() => {
+            durationProbeTimerRef.current = null;
+            void runDurationProbeQueue();
+        }, delayMs);
+    };
+
+    const enqueueDurationProbes = (tasks: Array<{ id: string; path: string }>) => {
+        if (tasks.length === 0) return;
+
+        const queuedIds = new Set(durationProbeQueueRef.current.map(task => task.id));
+        for (const task of tasks) {
+            if (queuedIds.has(task.id) || !isDurationProbeEligible(task)) continue;
+            durationProbeQueueRef.current.push(task);
+            queuedIds.add(task.id);
+        }
+
+        pumpDurationProbeQueue();
+    };
+
+    const pumpDurationProbeQueue = (delayMs = 250) => {
+        if (durationProbeQueueRef.current.length === 0) return;
+        if (durationProbeActiveCountRef.current >= DURATION_PROBE_CONCURRENCY) return;
+        scheduleDurationProbe(delayMs);
+    };
+
+    const runDurationProbeQueue = async () => {
+        while (
+            durationProbeActiveCountRef.current < DURATION_PROBE_CONCURRENCY &&
+            durationProbeQueueRef.current.length > 0
+        ) {
+            const task = durationProbeQueueRef.current.shift();
+            if (!task || !isDurationProbeEligible(task)) {
+                continue;
+            }
+
+            durationProbeActiveCountRef.current += 1;
+            void window.api.analyzeVideoMetadata(task.path)
+                .then(result => {
+                    if (result?.success && result.info?.duration) {
+                        updateItem(task.id, current => ({
+                            ...current,
+                            sourceDurationSec: Number(result.info.duration) || 0
+                        }));
+                    }
+                })
+                .catch(error => {
+                    console.error('Failed to analyze batch video duration:', task.path, error);
+                })
+                .finally(() => {
+                    durationProbeActiveCountRef.current = Math.max(0, durationProbeActiveCountRef.current - 1);
+                    pumpDurationProbeQueue(50);
+                });
+        }
+    };
+
     const addAssets = async (assets: BatchInputAsset[]) => {
         if (assets.length === 0) return;
 
@@ -283,55 +379,69 @@ export function useBatchQueue(_options: UseBatchQueueOptions = {}) {
 
         const unresolved: BatchInputAsset[] = [];
         for (const asset of subtitleAssets) {
-            const kind = classifyBatchAsset(asset);
+            const kind = resolveSubtitleAssetKind(asset);
             const matchedItem = byMatchKey.get(buildBatchMatchKey(asset.name));
             if (!matchedItem) {
                 unresolved.push(asset);
                 continue;
             }
 
-            if (kind === 'subtitle-original') {
-                matchedItem.originalSubtitlePath = asset.path;
-                matchedItem.originalSubtitleContent = asset.textContent;
-            } else if (kind === 'subtitle-translated') {
-                matchedItem.translatedSubtitlePath = asset.path;
-                matchedItem.translatedSubtitleContent = asset.textContent;
-            }
+            applySubtitleAssetToItem(matchedItem, asset, kind);
         }
 
         pendingSubtitleAssetsRef.current = unresolved;
+        setUnmatchedSubtitleAssets(unresolved);
         itemsRef.current = next;
         setItems([...next]);
+        enqueueDurationProbes(newlyAddedVideos);
+    };
 
-        for (const asset of newlyAddedVideos) {
-            try {
-                const result = await window.api.runBackend([
-                    '--action', 'analyze_video',
-                    '--input', asset.path,
-                    '--json'
-                ]);
-                if (result?.success && result.info?.duration) {
-                    updateItem(asset.id, current => ({
-                        ...current,
-                        sourceDurationSec: Number(result.info.duration) || 0
-                    }));
-                }
-            } catch (error) {
-                console.error('Failed to analyze batch video duration:', asset.path, error);
-            }
-        }
+    const assignUnmatchedSubtitle = (
+        assetPath: string,
+        itemId: string,
+        kind: Extract<ReturnType<typeof classifyBatchAsset>, 'subtitle-original' | 'subtitle-translated'>
+    ) => {
+        const asset = pendingSubtitleAssetsRef.current.find(current => current.path === assetPath);
+        if (!asset) return;
+
+        const nextItems = itemsRef.current.map(item => {
+            if (item.id !== itemId) return item;
+            const cloned = { ...item };
+            applySubtitleAssetToItem(cloned, asset, kind);
+            return cloned;
+        });
+
+        const nextUnmatched = pendingSubtitleAssetsRef.current.filter(current => current.path !== assetPath);
+        pendingSubtitleAssetsRef.current = nextUnmatched;
+        setUnmatchedSubtitleAssets(nextUnmatched);
+        itemsRef.current = nextItems;
+        setItems(nextItems);
+    };
+
+    const removeUnmatchedSubtitle = (assetPath: string) => {
+        const nextUnmatched = pendingSubtitleAssetsRef.current.filter(current => current.path !== assetPath);
+        pendingSubtitleAssetsRef.current = nextUnmatched;
+        setUnmatchedSubtitleAssets(nextUnmatched);
     };
 
     const removeItem = (id: string) => {
+        durationProbeQueueRef.current = durationProbeQueueRef.current.filter(task => task.id !== id);
         setItems(prev => prev.filter(item => item.id !== id || item.status === 'processing'));
     };
 
     const clearCompleted = () => {
+        const activeIds = new Set(itemsRef.current
+            .filter(item => item.status === 'pending' || item.status === 'processing')
+            .map(item => item.id));
+        durationProbeQueueRef.current = durationProbeQueueRef.current.filter(task => activeIds.has(task.id));
         setItems(prev => prev.filter(item => item.status === 'pending' || item.status === 'processing'));
     };
 
     const clearAll = () => {
         pendingSubtitleAssetsRef.current = [];
+        setUnmatchedSubtitleAssets([]);
+        durationProbeQueueRef.current = [];
+        clearDurationProbeTimer();
         setItems([]);
         itemsRef.current = [];
         setActiveItemId(null);
@@ -628,13 +738,27 @@ export function useBatchQueue(_options: UseBatchQueueOptions = {}) {
         }
     };
 
+    useEffect(() => {
+        const missingDurationItems = itemsRef.current
+            .filter(item => !item.sourceDurationSec)
+            .map(item => ({ id: item.id, path: item.sourcePath }));
+        enqueueDurationProbes(missingDurationItems);
+
+        return () => {
+            clearDurationProbeTimer();
+        };
+    }, []);
+
     return {
         items,
+        unmatchedSubtitleAssets,
         summary,
         isRunning,
         shouldResume,
         activeItemId,
         addAssets,
+        assignUnmatchedSubtitle,
+        removeUnmatchedSubtitle,
         removeItem,
         clearCompleted,
         clearAll,
@@ -651,18 +775,16 @@ async function generateSubtitleForItem(
     item: BatchQueueItem,
     options: BatchSubtitleGenerationOptions
 ) {
-    const paths = await window.api.getPaths();
-    const projectPaths = buildBatchOutputPaths(paths, item.fileName, item.id, options.outputDirOverride);
-    await window.api.ensureDir(projectPaths.finalDir);
-    await window.api.ensureDir(projectPaths.sessionTempDir);
+    const { projectPaths } = await prepareBatchProjectPaths(item.fileName, item.id, options.outputDirOverride);
+    const vad = getStoredWhisperVadSettings();
 
     const args = [
         '--action', 'test_asr',
         '--input', item.sourcePath,
         '--asr', options.asrService,
         '--output_dir', projectPaths.sessionTempDir,
-        '--vad_onset', localStorage.getItem('whisper_vad_onset') || '0.700',
-        '--vad_offset', localStorage.getItem('whisper_vad_offset') || '0.700',
+        '--vad_onset', vad.onset,
+        '--vad_offset', vad.offset,
         '--json'
     ];
 
@@ -695,13 +817,9 @@ async function processQueueItem(
     };
 
     applyStage(BATCH_QUEUE_STAGE.preparingOutput, '准备输出目录');
-    const paths = await window.api.getPaths();
-    const projectPaths = buildBatchOutputPaths(paths, item.fileName, item.id, options.outputDirOverride);
+    const { projectPaths } = await prepareBatchProjectPaths(item.fileName, item.id, options.outputDirOverride);
     const outputPath = projectPaths.finalVideoPath;
     const workDir = projectPaths.sessionTempDir;
-    await window.api.ensureDir(projectPaths.finalDir);
-    await window.api.ensureDir(projectPaths.sessionAudioDir);
-    await window.api.ensureDir(workDir);
 
     try {
         if (!item.originalSubtitleContent && !item.translatedSubtitleContent) {
@@ -930,14 +1048,7 @@ async function translateSegments(segments: SrtSegment[], options: BatchQueueOpti
         '--json'
     ];
 
-    const transApiKey = localStorage.getItem('trans_api_key') || '';
-    const transApiBaseUrl = localStorage.getItem('trans_api_base_url') || '';
-    const transApiModel = localStorage.getItem('trans_api_model') || '';
-    if (transApiKey) {
-        args.push('--api_key', transApiKey);
-        if (transApiBaseUrl) args.push('--base_url', transApiBaseUrl);
-        if (transApiModel) args.push('--model', transApiModel);
-    }
+    appendStoredTranslationArgs(args);
 
     const result = await window.api.runBackend(args);
     if (!result || !result.success || !Array.isArray(result.segments)) {
@@ -947,6 +1058,7 @@ async function translateSegments(segments: SrtSegment[], options: BatchQueueOpti
 }
 
 function buildDubVideoArgs(sourcePath: string, outputPath: string, workDir: string, options: BatchQueueOptions) {
+    const vad = getStoredWhisperVadSettings();
     const args = [
         '--action', 'dub_video',
         '--input', sourcePath,
@@ -960,8 +1072,8 @@ function buildDubVideoArgs(sourcePath: string, outputPath: string, workDir: stri
         '--batch_size', String(options.ttsService === 'qwen' ? options.cloneBatchSize : options.batchSize),
         '--max_new_tokens', String(options.maxNewTokens),
         '--dub_retry_attempts', '3',
-        '--vad_onset', localStorage.getItem('whisper_vad_onset') || '0.700',
-        '--vad_offset', localStorage.getItem('whisper_vad_offset') || '0.700',
+        '--vad_onset', vad.onset,
+        '--vad_offset', vad.offset,
         '--json'
     ];
 
@@ -1071,34 +1183,23 @@ function collectNearbySuccessfulAudioPaths(
 }
 
 function appendTranslationArgs(args: string[]) {
-    const transApiKey = localStorage.getItem('trans_api_key') || '';
-    const transApiBaseUrl = localStorage.getItem('trans_api_base_url') || '';
-    const transApiModel = localStorage.getItem('trans_api_model') || '';
-    if (transApiKey) {
-        args.push('--api_key', transApiKey);
-        if (transApiBaseUrl) args.push('--base_url', transApiBaseUrl);
-        if (transApiModel) args.push('--model', transApiModel);
-    }
+    appendStoredTranslationArgs(args);
 }
 
 function appendTtsArgs(args: string[], options: BatchQueueOptions) {
     if (options.ttsService === 'qwen') {
-        const qwenMode = localStorage.getItem('qwen_mode') || 'clone';
-        const qwenModel = localStorage.getItem('qwen_tts_model') || '1.7B';
-        args.push('--qwen_mode', qwenMode);
-        args.push('--qwen_model_size', qwenModel);
+        const qwenSettings = getStoredQwenTtsSettings();
+        args.push('--qwen_mode', qwenSettings.mode);
+        args.push('--qwen_model_size', qwenSettings.modelSize);
 
-        if (qwenMode === 'preset') {
-            args.push('--preset_voice', localStorage.getItem('qwen_preset_voice') || 'Vivian');
-        } else if (qwenMode === 'design') {
-            args.push('--voice_instruct', localStorage.getItem('qwen_voice_instruction') || '');
-            const designRef = localStorage.getItem('qwen_design_ref_audio');
-            if (designRef) args.push('--ref_audio', designRef);
+        if (qwenSettings.mode === 'preset') {
+            args.push('--preset_voice', qwenSettings.presetVoice);
+        } else if (qwenSettings.mode === 'design') {
+            args.push('--voice_instruct', qwenSettings.voiceInstruction);
+            if (qwenSettings.designRefAudio) args.push('--ref_audio', qwenSettings.designRefAudio);
         } else {
-            const refAudio = localStorage.getItem('qwen_ref_audio_path');
-            const refText = localStorage.getItem('qwen_ref_text');
-            if (refAudio) args.push('--ref_audio', refAudio);
-            if (refText) args.push('--qwen_ref_text', refText);
+            if (qwenSettings.refAudio) args.push('--ref_audio', qwenSettings.refAudio);
+            if (qwenSettings.refText) args.push('--qwen_ref_text', qwenSettings.refText);
         }
     } else {
         const refAudio = localStorage.getItem('tts_ref_audio_path');

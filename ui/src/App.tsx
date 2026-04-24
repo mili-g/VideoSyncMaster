@@ -67,10 +67,13 @@ function App() {
   } = useVideoProject({ outputDirOverride });
   const {
     items: batchQueueItems,
+    unmatchedSubtitleAssets: batchQueueUnmatchedSubtitleAssets,
     summary: batchQueueSummary,
     isRunning: isBatchQueueRunning,
     shouldResume: shouldResumeBatchQueue,
     addAssets: addBatchQueueAssets,
+    assignUnmatchedSubtitle: assignBatchQueueUnmatchedSubtitle,
+    removeUnmatchedSubtitle: removeBatchQueueUnmatchedSubtitle,
     removeItem: removeBatchQueueItem,
     clearCompleted: clearCompletedBatchQueue,
     clearAll: clearAllBatchQueue,
@@ -1031,10 +1034,13 @@ function App() {
           {currentView === 'batch' && (
             <BatchQueuePanel
               items={batchQueueItems}
+              unmatchedSubtitleAssets={batchQueueUnmatchedSubtitleAssets}
               summary={batchQueueSummary}
               isRunning={isBatchQueueRunning}
               canGenerateSubtitles={!loading && !dubbingLoading && generatingSegmentId === null && !isBatchQueueRunning && batchQueueItems.some(item => item.status !== 'success')}
               onAddAssets={addBatchQueueAssets}
+              onAssignUnmatchedSubtitle={assignBatchQueueUnmatchedSubtitle}
+              onRemoveUnmatchedSubtitle={removeBatchQueueUnmatchedSubtitle}
               onRemoveItem={removeBatchQueueItem}
               onClearCompleted={clearCompletedBatchQueue}
               onClearAll={clearAllBatchQueue}

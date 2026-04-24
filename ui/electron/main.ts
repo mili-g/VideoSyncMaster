@@ -161,6 +161,57 @@ function getAppPaths() {
   }
 }
 
+function getFfprobePath() {
+  const { projectRoot } = getAppPaths()
+  const bundled = path.join(projectRoot, 'backend', 'ffmpeg', 'bin', process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe')
+  return fs.existsSync(bundled) ? bundled : 'ffprobe'
+}
+
+function analyzeVideoWithFfprobe(filePath: string): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const ffprobePath = getFfprobePath()
+    execFile(
+      ffprobePath,
+      [
+        '-v', 'error',
+        '-print_format', 'json',
+        '-show_format',
+        '-show_streams',
+        filePath
+      ],
+      { windowsHide: true, encoding: 'utf8', maxBuffer: 1024 * 1024 * 8 },
+      (error, stdout, stderr) => {
+        if (error) {
+          reject(new Error((stderr || error.message || 'ffprobe failed').trim()))
+          return
+        }
+
+        try {
+          const parsed = JSON.parse(stdout || '{}')
+          const format = parsed?.format || {}
+          const streams = Array.isArray(parsed?.streams) ? parsed.streams : []
+          const videoStream = streams.find((stream: any) => stream?.codec_type === 'video') || {}
+          const audioStream = streams.find((stream: any) => stream?.codec_type === 'audio') || {}
+
+          resolve({
+            success: true,
+            info: {
+              format_name: format?.format_name || '',
+              duration: Number(format?.duration) || 0,
+              video_codec: videoStream?.codec_name || '',
+              audio_codec: audioStream?.codec_name || '',
+              width: Number(videoStream?.width) || 0,
+              height: Number(videoStream?.height) || 0
+            }
+          })
+        } catch (parseError: any) {
+          reject(new Error(`Failed to parse ffprobe output: ${parseError?.message || String(parseError)}`))
+        }
+      }
+    )
+  })
+}
+
 async function cleanupExpiredCacheSessions() {
   const { cacheDir } = getAppPaths()
   const cleanupRoots = [
@@ -433,6 +484,10 @@ app.whenReady().then(async () => {
   // IPC Handler to get paths
   ipcMain.handle('get-paths', async () => {
     return getAppPaths();
+  })
+
+  ipcMain.handle('analyze-video-metadata', async (_event, filePath: string) => {
+    return analyzeVideoWithFfprobe(filePath)
   })
 
   // IPC Handler for Python Backend

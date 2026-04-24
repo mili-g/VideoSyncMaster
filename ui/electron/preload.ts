@@ -50,6 +50,9 @@ contextBridge.exposeInMainWorld('api', {
     }
     return result
   },
+  analyzeVideoMetadata(filePath: string) {
+    return ipcRenderer.invoke('analyze-video-metadata', filePath)
+  },
   cacheVideo(filePath: string) {
     return ipcRenderer.invoke('cache-video', filePath)
   },
