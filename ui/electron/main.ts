@@ -31,7 +31,8 @@ let backendRunQueue: Promise<unknown> = Promise.resolve()
 
 const utf8Decoder = new TextDecoder('utf-8', { fatal: false })
 const gbkDecoder = new TextDecoder('gbk', { fatal: false })
-const CACHE_RETENTION_DAYS = 3
+// Keep cache sessions for a while so interrupted jobs can resume after app restart.
+const CACHE_RETENTION_DAYS = 7
 const CACHE_RETENTION_MS = CACHE_RETENTION_DAYS * 24 * 60 * 60 * 1000
 
 function countReplacementChars(value: string) {

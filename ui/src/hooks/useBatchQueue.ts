@@ -822,40 +822,26 @@ async function processQueueItem(
     const workDir = projectPaths.sessionTempDir;
 
     try {
-        if (!item.originalSubtitleContent && !item.translatedSubtitleContent) {
-            applyStage(BATCH_QUEUE_STAGE.fullFlow, '执行完整流程');
-            const result = await window.api.runBackend(buildDubVideoArgs(item.sourcePath, outputPath, workDir, options));
-            if (!result || !result.success) {
-                throw new Error(result?.error || '批量处理失败');
-            }
-            if (Array.isArray(result.segments)) {
-                const originalSegments = result.segments.map((segment: any) => ({
-                    start: Number(segment.start) || 0,
-                    end: Number(segment.end) || 0,
-                    text: segment.original_text || segment.text || ''
-                }));
-                const translatedSegments = result.segments.map((segment: any) => ({
-                    start: Number(segment.start) || 0,
-                    end: Number(segment.end) || 0,
-                    text: segment.text || ''
-                }));
-                await saveSubtitleArtifacts(
-                    projectPaths.finalDir,
-                    item.fileName,
-                    originalSegments,
-                    translatedSegments
-                );
-                onItemPatch({
-                    originalSubtitlePath: projectPaths.originalSubtitlePath,
-                    originalSubtitleContent: segmentsToSRT(originalSegments),
-                    translatedSubtitlePath: projectPaths.translatedSubtitlePath,
-                    translatedSubtitleContent: segmentsToSRT(translatedSegments)
-                });
-            }
-            return result.output || outputPath;
+        let sourceSegments: SrtSegment[];
+        let sourceSubtitleContent = item.originalSubtitleContent;
+        if (sourceSubtitleContent) {
+            sourceSegments = resolveSourceSegments(item);
+        } else {
+            applyStage(BATCH_QUEUE_STAGE.sourceSubtitleGenerating, '识别原字幕');
+            const subtitleResult = await generateSubtitleForItem(item, {
+                outputDirOverride: options.outputDirOverride,
+                asrService: options.asrService,
+                asrOriLang: options.asrOriLang,
+                setStatus: options.setStatus
+            });
+            sourceSubtitleContent = subtitleResult.subtitleContent;
+            sourceSegments = parseSRTContent(subtitleResult.subtitleContent);
+            onItemPatch({
+                originalSubtitlePath: subtitleResult.subtitlePath,
+                originalSubtitleContent: subtitleResult.subtitleContent
+            });
         }
 
-        const sourceSegments = resolveSourceSegments(item);
         if (sourceSegments.length === 0) {
             throw new Error('字幕解析失败，未找到有效片段');
         }
@@ -864,7 +850,7 @@ async function processQueueItem(
         await saveSubtitleArtifacts(projectPaths.finalDir, item.fileName, sourceSegments, sourceSegments);
         onItemPatch({
             originalSubtitlePath: projectPaths.originalSubtitlePath,
-            originalSubtitleContent: item.originalSubtitleContent || segmentsToSRT(sourceSegments)
+            originalSubtitleContent: sourceSubtitleContent || segmentsToSRT(sourceSegments)
         });
 
         let translatedSegments: SrtSegment[];
@@ -887,32 +873,47 @@ async function processQueueItem(
         });
 
         applyStage(BATCH_QUEUE_STAGE.generatingDubbing, '生成配音');
-        const tempJsonPath = `${workDir}\\segments.json`;
-        await window.api.saveFile(tempJsonPath, JSON.stringify(
-            translatedSegments.map((segment, index) => ({
+        const mergedSegments = translatedSegments.map(segment => ({ ...segment }));
+        const recoveredCount = await recoverExistingBatchAudioSegments(mergedSegments, projectPaths.sessionAudioDir);
+        const pendingSegments = mergedSegments
+            .map((segment, index) => ({
                 ...segment,
+                original_index: index,
                 source_text: sourceSegments[index]?.text || ''
-            })),
-            null,
-            2
-        ));
-        const ttsResult = await window.api.runBackend(
-            buildBatchTtsArgs(item.sourcePath, projectPaths.sessionAudioDir, tempJsonPath, options)
-        );
-        if (!ttsResult || !ttsResult.success) {
-            throw new Error(ttsResult?.error || '批量配音失败');
+            }))
+            .filter((segment) => !(segment as SrtSegment & { path?: string }).path);
+
+        if (recoveredCount > 0) {
+            applyStage(
+                BATCH_QUEUE_STAGE.generatingDubbing,
+                pendingSegments.length > 0
+                    ? `继续生成剩余配音（已复用 ${recoveredCount} 条）`
+                    : `已复用全部 ${recoveredCount} 条配音`
+            );
         }
 
-        const mergedSegments = translatedSegments.map(segment => ({ ...segment }));
         const failedIndexes: number[] = [];
-        for (const result of ttsResult.results || []) {
-            const idx = result.index;
-            if (typeof idx !== 'number' || !mergedSegments[idx]) continue;
-            if (result.success && result.audio_path) {
-                (mergedSegments[idx] as SrtSegment & { path?: string }).path = result.audio_path;
-            } else {
-                failedIndexes.push(idx);
+        if (pendingSegments.length > 0) {
+            const tempJsonPath = `${workDir}\\segments.json`;
+            await window.api.saveFile(tempJsonPath, JSON.stringify(pendingSegments, null, 2));
+            const ttsResult = await window.api.runBackend(
+                buildBatchTtsArgs(item.sourcePath, projectPaths.sessionAudioDir, tempJsonPath, options)
+            );
+            if (!ttsResult || !ttsResult.success) {
+                throw new Error(ttsResult?.error || '批量配音失败');
             }
+
+            for (const result of ttsResult.results || []) {
+                const idx = result.index;
+                if (typeof idx !== 'number' || !mergedSegments[idx]) continue;
+                if (result.success && result.audio_path) {
+                    (mergedSegments[idx] as SrtSegment & { path?: string }).path = result.audio_path;
+                } else {
+                    failedIndexes.push(idx);
+                }
+            }
+
+            await cleanupOutputArtifacts(projectPaths.finalDir, [tempJsonPath]);
         }
 
         if (failedIndexes.length > 0) {
@@ -952,11 +953,28 @@ async function processQueueItem(
             throw new Error(mergeResult?.error || '合成视频失败');
         }
 
-        await cleanupOutputArtifacts(projectPaths.finalDir, [tempJsonPath, mergeJsonPath]);
+        await cleanupOutputArtifacts(projectPaths.finalDir, [mergeJsonPath]);
         return mergeResult.output || outputPath;
     } finally {
-        await cleanupOutputArtifacts(projectPaths.finalDir, [projectPaths.sessionCacheDir]);
+        // Keep session cache so interrupted batch tasks can resume from saved subtitles/audio fragments.
     }
+}
+
+async function recoverExistingBatchAudioSegments(
+    segments: Array<SrtSegment & { path?: string }>,
+    sessionAudioDir: string
+) {
+    const recovered = await Promise.all(segments.map(async (segment, index) => {
+        const audioPath = `${sessionAudioDir}\\segment_${index}.wav`;
+        const exists = await window.api.checkFileExists(audioPath);
+        if (!exists) {
+            return false;
+        }
+        segment.path = audioPath;
+        return true;
+    }));
+
+    return recovered.filter(Boolean).length;
 }
 
 async function prepareFallbackReferenceAudio(
@@ -1057,35 +1075,6 @@ async function translateSegments(segments: SrtSegment[], options: BatchQueueOpti
     return result.segments as SrtSegment[];
 }
 
-function buildDubVideoArgs(sourcePath: string, outputPath: string, workDir: string, options: BatchQueueOptions) {
-    const vad = getStoredWhisperVadSettings();
-    const args = [
-        '--action', 'dub_video',
-        '--input', sourcePath,
-        '--output', outputPath,
-        '--work_dir', workDir,
-        '--lang', options.targetLang,
-        '--asr', options.asrService,
-        '--tts_service', options.ttsService,
-        '--strategy', options.videoStrategy,
-        '--audio_mix_mode', options.audioMixMode,
-        '--batch_size', String(options.ttsService === 'qwen' ? options.cloneBatchSize : options.batchSize),
-        '--max_new_tokens', String(options.maxNewTokens),
-        '--dub_retry_attempts', '3',
-        '--vad_onset', vad.onset,
-        '--vad_offset', vad.offset,
-        '--json'
-    ];
-
-    if (options.asrOriLang) {
-        args.push('--ori_lang', options.asrOriLang);
-    }
-
-    appendTranslationArgs(args);
-    appendTtsArgs(args, options);
-    return args;
-}
-
 function buildBatchTtsArgs(sourcePath: string, outputDir: string, refJsonPath: string, options: BatchQueueOptions) {
     const args = [
         '--action', 'generate_batch_tts',
@@ -1180,10 +1169,6 @@ function collectNearbySuccessfulAudioPaths(
     }
 
     return refs;
-}
-
-function appendTranslationArgs(args: string[]) {
-    appendStoredTranslationArgs(args);
 }
 
 function appendTtsArgs(args: string[], options: BatchQueueOptions) {

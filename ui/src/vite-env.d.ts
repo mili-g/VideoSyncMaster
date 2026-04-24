@@ -7,6 +7,7 @@ interface DesktopApi {
     saveFile(filePath: string, content: string): Promise<boolean>;
     ensureDir(dirPath: string): Promise<boolean>;
     deletePath(targetPath: string): Promise<boolean>;
+    checkFileExists(filePath: string): Promise<boolean>;
     getPaths(): Promise<{ projectRoot: string; outputDir: string; cacheDir: string }>;
     runBackend(args: string[]): Promise<any>;
     analyzeVideoMetadata(filePath: string): Promise<any>;

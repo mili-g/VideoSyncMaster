@@ -36,6 +36,9 @@ contextBridge.exposeInMainWorld('api', {
   deletePath(targetPath: string) {
     return ipcRenderer.invoke('delete-path', targetPath)
   },
+  checkFileExists(filePath: string) {
+    return ipcRenderer.invoke('check-file-exists', filePath)
+  },
   getPaths() {
     return ipcRenderer.invoke('get-paths')
   },
