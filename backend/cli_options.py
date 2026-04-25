@@ -32,13 +32,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--audio_mix_mode",
         type=str,
-        help="Audio mix mode: preserve_background or replace_original",
+        help="Audio mix mode: preserve_background (source-separate and keep only background stem) or replace_original",
         default="preserve_background"
     )
     parser.add_argument("--output_dir", type=str, help="Output directory for debug/intermediate files")
     parser.add_argument("--vad_onset", type=float, help="VAD onset threshold", default=0.700)
     parser.add_argument("--vad_offset", type=float, help="VAD offset threshold", default=0.700)
     parser.add_argument("--tts_service", type=str, help="TTS Service: indextts or qwen", default="indextts")
+    parser.add_argument("--voice_mode", type=str, help="Voice mode: clone or narration", default="clone")
     parser.add_argument("--qwen_mode", type=str, help="Qwen TTS Mode: clone, design, preset", default="clone")
     parser.add_argument("--voice_instruct", type=str, help="Voice Design Instruction", default="")
     parser.add_argument("--preset_voice", type=str, help="Preset Voice for Qwen3", default="Vivian")
@@ -74,6 +75,7 @@ def build_tts_kwargs(args: argparse.Namespace) -> dict:
         "qwen_model_size": args.qwen_model_size,
         "qwen_ref_text": args.qwen_ref_text,
         "batch_size": args.batch_size,
+        "voice_mode": args.voice_mode,
         "ref_audio": args.ref_audio,
         "fallback_ref_audio": args.fallback_ref_audio,
         "fallback_ref_text": args.fallback_ref_text,

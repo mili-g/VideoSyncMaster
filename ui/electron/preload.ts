@@ -86,7 +86,7 @@ contextBridge.exposeInMainWorld('api', {
   downloadModel(payload: { key: string; model: string; localDir: string }) {
     return ipcRenderer.invoke('download-model', payload)
   },
-  downloadFile(payload: { key: string; url: string; targetDir: string; name: string }) {
+  downloadFile(payload: { key: string; url: string; targetDir: string; name: string; outputFileName?: string }) {
     return ipcRenderer.invoke('download-file', payload)
   },
   cancelDownload(payload: { key: string }) {

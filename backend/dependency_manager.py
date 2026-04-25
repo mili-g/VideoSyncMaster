@@ -4,6 +4,7 @@ import subprocess
 import os
 import shutil
 import glob
+import importlib.util
 import importlib.metadata
 from event_protocol import emit_event, emit_issue, emit_progress, emit_stage
 
@@ -77,6 +78,17 @@ def install_package(package_spec):
             suggestion="请检查网络、磁盘空间或完整日志"
         )
         return False
+
+
+def ensure_package_installed(package_name, package_spec=None):
+    """
+    Ensure a Python package is importable; install it on demand if missing.
+    """
+    if importlib.util.find_spec(package_name) is not None or get_installed_version(package_name):
+        print(f"[DependencyManager] {package_name} already installed.")
+        return True
+
+    return install_package(package_spec or package_name)
 
 
 def _move_package_folders(source_dir, dest_dir, packages):

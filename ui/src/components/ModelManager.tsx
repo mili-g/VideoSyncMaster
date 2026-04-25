@@ -5,6 +5,7 @@ interface ModelStatus {
     whisperx: boolean;
     alignment: boolean;
     index_tts: boolean;
+    source_separation: boolean;
     qwen_tokenizer: boolean;
     qwen_17b_base: boolean;
     qwen_17b_design: boolean;
@@ -73,6 +74,11 @@ const ModelManager: React.FC<ModelManagerProps> = ({ themeMode, onStatusChange, 
             if (modelKey === 'index_tts') {
                 modelId = 'Tiandong/Index-TTS';
                 localDir = 'models/index-tts';
+            } else if (modelKey === 'source_separation') {
+                isGenericFile = true;
+                modelId = 'HDemucs Background Separation';
+                localDir = 'source_separation';
+                downloadUrl = 'https://download.pytorch.org/torchaudio/models/hdemucs_high_trained.pt';
             } else if (modelKey === 'whisperx') {
                 modelId = 'Tiandong/faster-whisper-large-v3-turbo-ct2';
                 localDir = 'models/faster-whisper-large-v3-turbo-ct2';
@@ -122,7 +128,8 @@ const ModelManager: React.FC<ModelManagerProps> = ({ themeMode, onStatusChange, 
                     key: modelKey,
                     url: downloadUrl,
                     targetDir: localDir,
-                    name: modelId
+                    name: modelId,
+                    outputFileName: modelKey === 'source_separation' ? 'hdemucs_high_musdb_plus.pt' : undefined
                 });
             } else {
                 result = await window.api.downloadModel({
@@ -181,6 +188,7 @@ const ModelManager: React.FC<ModelManagerProps> = ({ themeMode, onStatusChange, 
         { key: 'whisperx', name: 'WhisperX', desc: '核心语音识别模型 (ASR)', link: 'Models/faster-whisper-large-v3-turbo-ct2' },
         { key: 'alignment', name: 'Forced Alignment', desc: '语音强制对齐模型 (Wav2Vec2)', link: 'Models/alignment' },
         { key: 'index_tts', name: 'Index-TTS', desc: 'Index-TTS 语音克隆模型', link: 'Models/index-tts' },
+        { key: 'source_separation', name: 'HDemucs 分离模型', desc: '背景音保留模式使用的人声/背景分离模型', link: 'Models/source_separation/hdemucs_high_musdb_plus.pt' },
 
         { key: 'qwen', name: 'Qwen 2.5 7B', desc: 'Qwen 2.5 7B Instruct 模型', link: 'Models/Qwen2.5-7B-Instruct' },
         { key: 'qwen_tokenizer', name: 'Qwen3 Tokenizer', desc: 'Qwen3 分词器 (Tokenizer-12Hz)', link: 'Models/Qwen3-TTS-Tokenizer-12Hz' },
@@ -280,7 +288,7 @@ const ModelManager: React.FC<ModelManagerProps> = ({ themeMode, onStatusChange, 
                                 </div>
 
                                 {/* Download Button for Index-TTS & WhisperX & Alignment & Qwen & RIFE */}
-                                {(m.key === 'index_tts' || m.key === 'whisperx' || m.key === 'alignment' || m.key.startsWith('qwen') || m.key === 'rife') && !isInstalled && (
+                                {(m.key === 'index_tts' || m.key === 'source_separation' || m.key === 'whisperx' || m.key === 'alignment' || m.key.startsWith('qwen') || m.key === 'rife') && !isInstalled && (
                                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '8px' }}>
                                         {isDownloadingThis ? (
                                             <>

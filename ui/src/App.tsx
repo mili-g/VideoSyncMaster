@@ -62,7 +62,7 @@ function App() {
     isIndeterminate,
     targetLang, setTargetLang,
     asrService, handleAsrServiceChange,
-    asrOriLang, setAsrOriLang,
+    asrOriLang,
     ttsService, handleTtsServiceChange,
     batchSize, setBatchSize,
     cloneBatchSize, setCloneBatchSize,
@@ -700,34 +700,6 @@ function App() {
                 <span style={{ color: 'rgba(255,255,255,0.7)' }}>
                   ASR: <b style={{ color: '#fff' }}>{asrService === 'qwen' ? 'Qwen3' : (asrService === 'whisperx' ? 'WhisperX' : asrService.toUpperCase())}</b>
                 </span>
-                {asrService === 'qwen' && (
-                  <select
-                    value={asrOriLang}
-                    onChange={(e) => setAsrOriLang(e.target.value)}
-                    style={{
-                      background: 'rgba(255, 255, 255, 0.1)',
-                      color: '#a7f3d0',
-                      border: 'none',
-                      borderRadius: '12px',
-                      padding: '2px 8px',
-                      fontSize: '0.9em',
-                      fontWeight: 'bold',
-                      cursor: 'pointer',
-                      outline: 'none',
-                      marginLeft: '5px'
-                    }}
-                  >
-                    <option value="Chinese" style={{ background: '#2d3748' }}>中文</option>
-                    <option value="English" style={{ background: '#2d3748' }}>英语</option>
-                    <option value="Cantonese" style={{ background: '#2d3748' }}>粤语</option>
-                    <option value="Japanese" style={{ background: '#2d3748' }}>日语</option>
-                    <option value="Korean" style={{ background: '#2d3748' }}>韩语</option>
-                    <option value="German" style={{ background: '#2d3748' }}>德语</option>
-                    <option value="French" style={{ background: '#2d3748' }}>法语</option>
-                    <option value="Spanish" style={{ background: '#2d3748' }}>西班牙语</option>
-                    <option value="Russian" style={{ background: '#2d3748' }}>俄语</option>
-                  </select>
-                )}
               </div>
 
               <div style={{ width: '1px', height: '14px', background: 'rgba(255,255,255,0.1)' }} />
@@ -1099,7 +1071,11 @@ function App() {
 
           {currentView === 'asr' && (
             <div style={{ flex: 1, margin: '10px', overflow: 'auto' }}>
-              <ASRHub asrService={asrService} onServiceChange={handleAsrServiceChange} themeMode={'dark'} />
+              <ASRHub
+                asrService={asrService}
+                onServiceChange={handleAsrServiceChange}
+                themeMode={'dark'}
+              />
             </div>
           )}
           {currentView === 'tts' && (

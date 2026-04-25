@@ -20,7 +20,7 @@ interface DesktopApi {
     checkPythonEnv(): Promise<any>;
     checkModelStatus(): Promise<any>;
     downloadModel(payload: { key: string; model: string; localDir: string }): Promise<any>;
-    downloadFile(payload: { key: string; url: string; targetDir: string; name: string }): Promise<any>;
+    downloadFile(payload: { key: string; url: string; targetDir: string; name: string; outputFileName?: string }): Promise<any>;
     cancelDownload(payload: { key: string }): Promise<any>;
     cancelFileDownload(payload: { key: string }): Promise<any>;
     openFileDialog(options: unknown): Promise<any>;

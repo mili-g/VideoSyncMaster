@@ -56,3 +56,4 @@ sox
 triton
 
 nagisa
+soynlp==0.0.493

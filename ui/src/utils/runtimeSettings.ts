@@ -19,6 +19,8 @@ export interface QwenTtsSettings {
     refText: string;
 }
 
+export type TtsVoiceMode = 'clone' | 'narration';
+
 export function getStoredTranslationApiSettings(): TranslationApiSettings {
     return {
         apiKey: localStorage.getItem('trans_api_key') || '',
@@ -56,4 +58,9 @@ export function getStoredQwenTtsSettings(): QwenTtsSettings {
         refAudio: localStorage.getItem('qwen_ref_audio_path') || '',
         refText: localStorage.getItem('qwen_ref_text') || ''
     };
+}
+
+export function getStoredTtsVoiceMode(): TtsVoiceMode {
+    const stored = localStorage.getItem('tts_voice_mode');
+    return stored === 'narration' ? 'narration' : 'clone';
 }

@@ -61,7 +61,6 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
         asrService,
         setAsrService,
         asrOriLang,
-        setAsrOriLang,
         ttsService,
         setTtsService,
         batchSize,
@@ -200,7 +199,7 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
                 '--action', 'test_asr',
                 '--input', originalVideoPath,
                 '--asr', asrService,
-                '--ori_lang', asrOriLang === 'None' ? '' : asrOriLang,
+                '--ori_lang', (asrOriLang === 'None' || asrOriLang === 'Auto') ? '' : asrOriLang,
                 '--output_dir', projectPaths.sessionTempDir,
                 '--vad_onset', vad.onset,
                 '--vad_offset', vad.offset
@@ -210,6 +209,21 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
 
             if (!Array.isArray(result)) {
                 setStatus('识别失败：输出格式无效');
+                setFeedback({
+                    title: '识别失败',
+                    message: '识别结果格式无效，请检查所选 ASR 引擎或后端日志。',
+                    type: 'error'
+                });
+                return null;
+            }
+
+            if (result.length === 0) {
+                setStatus('识别失败：未检测到有效字幕片段');
+                setFeedback({
+                    title: '未生成字幕',
+                    message: '当前视频未识别到可用字幕片段。请优先将源语言设为 Auto 或与视频语种一致后重试；若仍为空，请检查模型与后端日志。',
+                    type: 'error'
+                });
                 return null;
             }
 
@@ -331,7 +345,7 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
         isIndeterminate, setIsIndeterminate,
         targetLang, setTargetLang,
         asrService, handleAsrServiceChange,
-        asrOriLang, setAsrOriLang,
+        asrOriLang,
         ttsService, handleTtsServiceChange,
         batchSize, setBatchSize,
         cloneBatchSize, setCloneBatchSize,

@@ -16,10 +16,7 @@ interface PersistentSettingsOptions {
 export function usePersistentSettings({ setFeedback }: PersistentSettingsOptions) {
     const [targetLang, setTargetLang] = useState(() => localStorage.getItem('targetLang') || 'English');
     const [asrService, setAsrService] = useState(() => localStorage.getItem('asrService') || 'whisperx');
-    const [asrOriLang, setAsrOriLang] = useState(() => {
-        const saved = localStorage.getItem('asrOriLang');
-        return (saved && saved !== 'None') ? saved : 'Chinese';
-    });
+    const [asrOriLang, setAsrOriLang] = useState('Auto');
     const [ttsService, setTtsService] = useState<'indextts' | 'qwen'>(() => {
         const saved = localStorage.getItem('ttsService');
         return saved === 'qwen' ? 'qwen' : 'indextts';
@@ -74,7 +71,13 @@ export function usePersistentSettings({ setFeedback }: PersistentSettingsOptions
 
     useEffect(() => { localStorage.setItem('targetLang', targetLang); }, [targetLang]);
     useEffect(() => { localStorage.setItem('asrService', asrService); }, [asrService]);
-    useEffect(() => { localStorage.setItem('asrOriLang', asrOriLang); }, [asrOriLang]);
+    useEffect(() => {
+        if (asrOriLang !== 'Auto') {
+            setAsrOriLang('Auto');
+            return;
+        }
+        localStorage.setItem('asrOriLang', 'Auto');
+    }, [asrOriLang]);
     useEffect(() => { localStorage.setItem('ttsService', ttsService); }, [ttsService]);
     useEffect(() => { localStorage.setItem('batchSize', batchSize.toString()); }, [batchSize]);
     useEffect(() => { localStorage.setItem('cloneBatchSize', cloneBatchSize.toString()); }, [cloneBatchSize]);

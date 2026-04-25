@@ -13,6 +13,8 @@ os.environ['HF_HUB_OFFLINE'] = '1'
 os.environ['TRANSFORMERS_OFFLINE'] = '1'
 os.environ["PYTHONUTF8"] = "1"
 os.environ["PYTHONIOENCODING"] = "utf-8"
+os.environ["NUMBA_DISABLE_INTEL_SVML"] = "1"
+os.environ["NUMBA_CPU_NAME"] = "generic"
 
 # Force UTF-8 for stdout/stderr
 sys.stdout.reconfigure(encoding='utf-8')
@@ -52,10 +54,25 @@ IS_PROD = os.path.exists(os.path.join(APP_ROOT, "resources", "app.asar")) or get
 # Logging to "logs" folder in App Root (or Project Root)
 log_dir = os.path.join(APP_ROOT, "logs")
 log_file = os.path.join(log_dir, "backend_debug.log")
+MAX_LOG_FILE_BYTES = 2 * 1024 * 1024
+LOG_TAIL_BYTES = 256 * 1024
+ENABLE_STREAM_TEE = os.environ.get("VSM_BACKEND_TEE_LOG", "0") == "1"
 
 try:
     if not os.path.exists(log_dir):
         os.makedirs(log_dir, exist_ok=True)
+
+    if os.path.exists(log_file):
+        try:
+            current_size = os.path.getsize(log_file)
+            if current_size > MAX_LOG_FILE_BYTES:
+                with open(log_file, "rb") as src:
+                    src.seek(max(0, current_size - LOG_TAIL_BYTES))
+                    tail = src.read()
+                with open(log_file, "wb") as dst:
+                    dst.write(tail)
+        except Exception:
+            pass
         
     def debug_log(msg):
         try:
@@ -136,7 +153,7 @@ class DualWriter:
         except:
             pass
 
-if log_file:
+if log_file and ENABLE_STREAM_TEE:
     sys.stdout = DualWriter(log_file, sys.stdout)
     sys.stderr = DualWriter(log_file, sys.stderr)
 
@@ -270,7 +287,10 @@ def setup_gpu_paths():
         print(f"[WARNING] Failed to patch DLL paths: {e}")
 
 
-# 238: 
+# Apply DLL path patching before importing any ASR/TTS modules that may load torch/cuDNN.
+setup_gpu_paths()
+
+# 238:
 # Lazy Imports moved to functions or after dependency checks
 from asr import run_asr
 from alignment import align_audio, get_audio_duration, merge_audios_to_video

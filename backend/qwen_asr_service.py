@@ -20,8 +20,9 @@ if os.path.exists(os.path.join(ffmpeg_bin, "ffmpeg.exe")):
 
 # Ensure environment requirements
 try:
-    from dependency_manager import ensure_transformers_version
+    from dependency_manager import ensure_package_installed, ensure_transformers_version
     ensure_transformers_version("4.57.3")
+    ensure_package_installed("soynlp", "soynlp==0.0.493")
 except ImportError:
     print("[QwenASR] Dependency manager not found, skipping version check.")
 
@@ -220,6 +221,14 @@ def run_qwen_asr_inference(audio_path, model_name="Qwen3-ASR-1.7B", language=Non
     if not Qwen3ASRModel:
         raise ImportError("Qwen3ASRModel not available. Please ensure Qwen3-ASR submodule is present.")
 
+    try:
+        import soynlp  # noqa: F401
+    except ImportError as error:
+        raise RuntimeError(
+            "[QwenASR] Missing dependency 'soynlp'. "
+            "Please install soynlp==0.0.493 for Korean/multilingual forced alignment."
+        ) from error
+
     # Resolve Model Path
     # Check local models/ folder
     models_dir = os.path.join(project_root, "models")
@@ -369,7 +378,7 @@ def run_qwen_asr_inference(audio_path, model_name="Qwen3-ASR-1.7B", language=Non
     except Exception as e:
         print(f"[QwenASR] Inference failed: {e}")
         traceback.print_exc()
-        return []
+        raise RuntimeError(f"Qwen ASR inference failed: {e}") from e
 
 if __name__ == "__main__":
     # Test

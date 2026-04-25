@@ -4,9 +4,164 @@ import torch
 import soundfile as sf
 import traceback
 import json
+import shutil
+import types
 from audio_validation import validate_generated_audio
 from event_protocol import emit_issue, emit_partial_result, emit_progress, emit_stage
 from gpu_runtime import choose_adaptive_batch_size, format_gpu_snapshot
+
+
+def _setup_portable_audio_tools():
+    backend_dir = os.path.dirname(os.path.abspath(__file__))
+    candidate_bins = [
+        os.path.join(backend_dir, "ffmpeg", "bin"),
+        os.path.join(backend_dir, "sox"),
+        os.path.join(backend_dir, "sox", "bin"),
+    ]
+
+    current_path = os.environ.get("PATH", "")
+    for candidate in candidate_bins:
+        if os.path.isdir(candidate) and candidate not in current_path:
+            os.environ["PATH"] = candidate + os.pathsep + os.environ.get("PATH", "")
+
+
+def _patch_transformers_auto_docstring():
+    try:
+        import transformers.utils as transformers_utils
+    except Exception as error:
+        print(f"[QwenTTS] Warning: Failed to import transformers.utils for docstring patch: {error}")
+        return
+
+    original = getattr(transformers_utils, "auto_docstring", None)
+    if original is None or getattr(original, "_videosync_noop_patch", False):
+        return
+
+    def _noop_auto_docstring(obj=None, **_kwargs):
+        if obj is None:
+            def _decorator(inner_obj):
+                return inner_obj
+            return _decorator
+        return obj
+
+    _noop_auto_docstring._videosync_noop_patch = True  # type: ignore[attr-defined]
+    transformers_utils.auto_docstring = _noop_auto_docstring
+    print("[QwenTTS] Patched transformers.utils.auto_docstring for qwen_tts compatibility.")
+
+
+def _install_sox_stub():
+    if "sox" in sys.modules:
+        return
+
+    try:
+        import numpy as _np
+    except Exception as error:
+        print(f"[QwenTTS] Warning: Failed to prepare SoX stub: {error}")
+        return
+
+    sox_module = types.ModuleType("sox")
+
+    class _Transformer:
+        def __init__(self):
+            self._target_db = -6.0
+
+        def norm(self, db_level=-6):
+            self._target_db = float(db_level)
+            return self
+
+        def build_array(self, input_array, sample_rate_in=16000):
+            wav = _np.asarray(input_array, dtype=_np.float32).copy()
+            peak = float(_np.max(_np.abs(wav))) if wav.size > 0 else 0.0
+            if peak <= 1e-8:
+                return wav
+            target_peak = float(10 ** (self._target_db / 20.0))
+            gain = target_peak / peak
+            wav *= gain
+            return _np.clip(wav, -1.0, 1.0)
+
+    sox_module.Transformer = _Transformer
+    sox_module.NO_SOX = False
+    sox_module.__dict__["__version__"] = "videosync-stub"
+    sys.modules["sox"] = sox_module
+    print("[QwenTTS] Installed in-process SoX stub for qwen_tts compatibility.")
+
+
+def _patch_qwen_tts_sox_dependency():
+    try:
+        from qwen_tts.core.tokenizer_25hz.vq.speech_vq import (
+            MelSpectrogramFeatures,
+            XVectorExtractor,
+        )
+        import onnxruntime
+        import torch.nn.functional as F
+        import torchaudio.compliance.kaldi as kaldi
+        import copy as _copy
+        import numpy as _np
+        import torch as _torch
+    except Exception as error:
+        print(f"[QwenTTS] Warning: Failed to patch qwen_tts SoX dependency: {error}")
+        return
+
+    if getattr(XVectorExtractor, "_videosync_sox_patch", False):
+        return
+
+    def _patched_init(self, audio_codec_with_xvector):
+        option = onnxruntime.SessionOptions()
+        option.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
+        option.intra_op_num_threads = 1
+        providers = ["CPUExecutionProvider"]
+        self.ort_session = onnxruntime.InferenceSession(
+            audio_codec_with_xvector,
+            sess_options=option,
+            providers=providers
+        )
+        self.mel_ext = MelSpectrogramFeatures(
+            filter_length=1024,
+            hop_length=160,
+            win_length=640,
+            n_mel_channels=80,
+            mel_fmin=0,
+            mel_fmax=8000,
+            sampling_rate=16000
+        )
+
+    def _patched_sox_norm(self, audio):
+        wav = _np.asarray(audio, dtype=_np.float32).copy()
+        peak = float(_np.max(_np.abs(wav))) if wav.size > 0 else 0.0
+        if peak <= 1e-8:
+            return wav
+        target_peak = float(10 ** (-6.0 / 20.0))
+        gain = target_peak / peak
+        wav *= gain
+        wav = _np.clip(wav, -1.0, 1.0)
+        return wav
+
+    def _patched_extract_code(self, audio):
+        with _torch.no_grad():
+            norm_audio = self.sox_norm(audio)
+            norm_audio = _torch.from_numpy(_copy.deepcopy(norm_audio)).unsqueeze(0)
+            feat = kaldi.fbank(
+                norm_audio,
+                num_mel_bins=80,
+                dither=0,
+                sample_frequency=16000
+            )
+            feat = feat - feat.mean(dim=0, keepdim=True)
+            norm_embedding = self.ort_session.run(
+                None,
+                {self.ort_session.get_inputs()[0].name: feat.unsqueeze(dim=0).cpu().numpy()}
+            )[0].flatten()
+            norm_embedding = F.normalize(_torch.from_numpy(norm_embedding), dim=0)
+            ref_mel = self.mel_ext.extract(audio=norm_audio)
+        return norm_embedding.numpy(), ref_mel.permute(0, 2, 1).squeeze(0).numpy()
+
+    XVectorExtractor.__init__ = _patched_init
+    XVectorExtractor.sox_norm = _patched_sox_norm
+    XVectorExtractor.extract_code = _patched_extract_code
+    XVectorExtractor._videosync_sox_patch = True
+    print("[QwenTTS] Patched qwen_tts XVectorExtractor to avoid external SoX dependency.")
+
+
+_setup_portable_audio_tools()
 
 # Ensure environment requirements
 try:
@@ -15,9 +170,13 @@ try:
 except ImportError:
     print("[QwenTTS] Dependency manager not found, skipping version check.")
 
+_patch_transformers_auto_docstring()
+_install_sox_stub()
+
 # Ensure qwen-tts can be imported
 try:
     from qwen_tts import Qwen3TTSModel
+    _patch_qwen_tts_sox_dependency()
 except ImportError:
     Qwen3TTSModel = None
     print("[QwenTTS] Error: qwen-tts package not installed.")
@@ -124,7 +283,7 @@ def get_model(model_type, model_size="1.7B", device="cuda"):
     
     if Qwen3TTSModel is None:
         raise ImportError("qwen-tts package not found")
-    
+
     # Cache key needs to include size
     cache_key = f"{model_type}_{model_size}"
     if cache_key in _loaded_models:

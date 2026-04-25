@@ -20,7 +20,7 @@ const audioMixOptions: Array<OptionCard & { value: AudioMixMode }> = [
     {
         value: 'preserve_background',
         label: '保留背景音',
-        description: '尽量保留原视频中的背景音乐、环境声和氛围音，同时压低原旁白后再叠加新配音。',
+        description: '先将原视频音轨分离为人声和背景，再丢弃原旁白，只保留背景音轨并叠加新配音。',
         badge: '默认'
     },
     {

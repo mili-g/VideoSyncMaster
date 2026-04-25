@@ -28,6 +28,20 @@ PATH_PROD_2 = os.path.join(BACKEND_DIR, "..", "..", "models", "faster-whisper-la
 
 DEFAULT_MODEL_ID = "large-v3-turbo" 
 
+_WHISPER_LANGUAGE_MAP = {
+    "": None,
+    "none": None,
+    "auto": None,
+    "chinese": "zh",
+    "zh": "zh",
+    "english": "en",
+    "en": "en",
+    "japanese": "ja",
+    "ja": "ja",
+    "korean": "ko",
+    "ko": "ko",
+}
+
 _COMMON_ABBREVIATIONS = {
     "mr.", "mrs.", "ms.", "dr.", "prof.", "sr.", "jr.", "vs.", "etc.",
     "e.g.", "i.e.", "u.s.", "u.k.", "p.s."
@@ -285,6 +299,26 @@ def split_into_subtitles(segments, max_chars=35, max_gap=0.5):
     return new_segments
 
 
+def _normalize_whisper_language(language):
+    if language is None:
+        return None
+    normalized = str(language).strip().lower()
+    return _WHISPER_LANGUAGE_MAP.get(normalized, normalized or None)
+
+
+def _build_whisper_asr_options(language_code):
+    asr_options = {}
+    if language_code == "zh":
+        asr_options["initial_prompt"] = "这是一段包含标点符号的中文对话，请使用逗号和句号。"
+    return asr_options
+
+
+def _get_whisper_language_candidates(language_code):
+    if language_code:
+        return [language_code]
+    return [None]
+
+
 
 
 def run_asr(audio_path, model_path=None, service="whisperx", output_dir=None, vad_onset=0.700, vad_offset=0.700, language=None):
@@ -374,10 +408,10 @@ def run_asr(audio_path, model_path=None, service="whisperx", output_dir=None, va
             return segments
         except ImportError as e:
             print(f"Failed to import Qwen ASR service: {e}")
-            return []
+            raise RuntimeError(f"Failed to import Qwen ASR service: {e}") from e
         except Exception as e:
             print(f"Qwen ASR execution failed: {e}")
-            return []
+            raise RuntimeError(f"Qwen ASR execution failed: {e}") from e
     
     # Default: WhisperX
     
@@ -409,7 +443,7 @@ def run_asr(audio_path, model_path=None, service="whisperx", output_dir=None, va
         
     except ImportError as e:
         print(f"Failed to import WhisperX dependencies: {e}")
-        return []
+        raise RuntimeError(f"Failed to import WhisperX dependencies: {e}") from e
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     compute_type = "float16" if device == "cuda" else "int8"
@@ -487,10 +521,7 @@ def run_asr(audio_path, model_path=None, service="whisperx", output_dir=None, va
             if not os.path.exists(os.path.join(BACKEND_DIR, "..", "..")): # If not in prod structure
                  download_root = os.path.join(BACKEND_DIR, "..", "models", "whisperx") 
         
-        asr_options = {
-            "initial_prompt": "这是一段包含标点符号的中文对话，请使用逗号和句号。",
-        }
-        
+        whisper_language = _normalize_whisper_language(language)
         # VAD Options: Tuned for Aggressive Silence Detection (Strict Thresholds)
         # Note: 'min_silence_duration_ms' is not supported by whisperx.load_model via kwargs
         # We tune thresholds instead.
@@ -498,16 +529,7 @@ def run_asr(audio_path, model_path=None, service="whisperx", output_dir=None, va
             "vad_onset": vad_onset,  
             "vad_offset": vad_offset
         }
-        
-        model = whisperx.load_model(
-            target_model, 
-            device, 
-            compute_type=compute_type,
-            download_root=download_root,
-            asr_options=asr_options,
-            vad_options=vad_options 
-        )
-        
+
         print(f"Loading audio: {audio_path}")
         print(f"Loading audio: {audio_path}")
         # Use librosa for robust Unicode handling on Windows
@@ -515,79 +537,112 @@ def run_asr(audio_path, model_path=None, service="whisperx", output_dir=None, va
         audio, _ = librosa.load(audio_path, sr=16000, mono=True)
         audio = audio.astype("float32") # WhisperX expects float32
         print(f"Audio loaded via librosa. Shape: {audio.shape}")
-        
-        print("Transcribing with VAD filtering...")
+        last_error = None
 
-        result = model.transcribe(
-            audio, 
-            batch_size=batch_size, 
-            language="zh", 
-            task="transcribe"
-        )
-        
-        print(f"Transcription complete. Found {len(result['segments'])} segments.")
-        if not result["segments"]:
-             print("[WARNING] Whisper returned 0 segments. This typically means VAD thresholds are too strict or audio is silent.")
-        
-        print(f"Transcription complete. Detected language: {result['language']}")
-        
-        # 2. Align (Visual Timestamp Correction)
-        print("Loading Alignment Model...")
-        
-        # Define local alignment model path
-        # Model ID: jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn
-        local_align_dir = os.path.join(BACKEND_DIR, "..", "models", "alignment") # Dev
-        prod_align_dir = os.path.join(BACKEND_DIR, "..", "..", "models", "alignment") # Prod
-        
-        if os.path.exists(prod_align_dir):
-            local_align_dir = prod_align_dir
-        align_model_name = None # Let WhisperX pick default if not found
-        
-        if os.path.exists(local_align_dir):
-            has_config = os.path.exists(os.path.join(local_align_dir, "config.json"))
-            has_weights = os.path.exists(os.path.join(local_align_dir, "pytorch_model.bin")) or \
-                          os.path.exists(os.path.join(local_align_dir, "model.safetensors"))
-            
-            if has_config and has_weights:
-                 align_model_name = local_align_dir
-                 print(f"Found local alignment model at: {local_align_dir}")
-            else:
-                 # Check for subfolder if user dragged the folder in
-                 subdirs = [d for d in os.listdir(local_align_dir) if os.path.isdir(os.path.join(local_align_dir, d))]
-                 if subdirs:
-                    possible_path = os.path.join(local_align_dir, subdirs[0])
-                    if os.path.exists(os.path.join(possible_path, "config.json")) and \
-                       (os.path.exists(os.path.join(possible_path, "pytorch_model.bin")) or \
-                        os.path.exists(os.path.join(possible_path, "model.safetensors"))):
-                        align_model_name = possible_path
-                        print(f"Found local alignment model at: {possible_path}")
-        
-        # If we didn't find a valid local model (with weights), warn the user.
-        if not align_model_name:
-             print(f"Local alignment model not found (or missing weights).")
-             # Strict Offline Mode: Fail with instruction
-             if os.environ.get("HF_HUB_OFFLINE") == "1":
-                 error_msg = (
-                     f"CRITICAL ERROR: Alignment model weights missing in {local_align_dir}\n"
-                     "Please manually download 'pytorch_model.bin' or 'model.safetensors' and place it in that folder.\n"
-                     "Auto-download is disabled by policy.\n"
-                     "Proceeding with unaligned results (timestamps may be less accurate)."
-                 )
-                 print(error_msg)
-                 # Return unaligned segments to prevent crash
-                 return split_into_subtitles(result["segments"], max_chars=30)
-                
-        if not align_model_name:
-             print(f"Local alignment model not found (checked {local_align_dir} and subdirs). Downloading from HF Hub...")
-        
-        load_args = {"language_code": result["language"], "device": device}
-        if align_model_name and result["language"] == "zh":
-             load_args["model_name"] = align_model_name
+        for candidate_language in _get_whisper_language_candidates(whisper_language):
+            asr_options = _build_whisper_asr_options(candidate_language)
+            attempt_label = candidate_language or "auto"
+            model = None
+            model_a = None
+            try:
+                print(f"Loading WhisperX pipeline for language={attempt_label}...")
+                model = whisperx.load_model(
+                    target_model,
+                    device,
+                    compute_type=compute_type,
+                    download_root=download_root,
+                    asr_options=asr_options,
+                    vad_options=vad_options
+                )
 
-        model_a, metadata = whisperx.load_align_model(**load_args)
-        
-        print("Aligning segments...")
-        aligned_result = whisperx.align(result["segments"], model_a, metadata, audio, device, return_char_alignments=True)
+                print(f"Transcribing with VAD filtering (language={attempt_label})...")
+                transcribe_kwargs = {
+                    "batch_size": batch_size,
+                    "task": "transcribe"
+                }
+                if candidate_language:
+                    transcribe_kwargs["language"] = candidate_language
+
+                result = model.transcribe(audio, **transcribe_kwargs)
+                segment_count = len(result["segments"])
+                print(f"Transcription complete. Found {segment_count} segments.")
+                print(f"Transcription complete. Detected language: {result.get('language')}")
+
+                if not result["segments"]:
+                    warning = "[WARNING] Whisper returned 0 segments. This typically means VAD thresholds are too strict or audio is silent."
+                    print(warning)
+                    last_error = RuntimeError(warning)
+                    raise last_error
+
+                print("Loading Alignment Model...")
+
+                # Define local alignment model path
+                # Model ID: jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn
+                local_align_dir = os.path.join(BACKEND_DIR, "..", "models", "alignment") # Dev
+                prod_align_dir = os.path.join(BACKEND_DIR, "..", "..", "models", "alignment") # Prod
+
+                if os.path.exists(prod_align_dir):
+                    local_align_dir = prod_align_dir
+                align_model_name = None # Let WhisperX pick default if not found
+
+                if os.path.exists(local_align_dir):
+                    has_config = os.path.exists(os.path.join(local_align_dir, "config.json"))
+                    has_weights = os.path.exists(os.path.join(local_align_dir, "pytorch_model.bin")) or \
+                                  os.path.exists(os.path.join(local_align_dir, "model.safetensors"))
+
+                    if has_config and has_weights:
+                         align_model_name = local_align_dir
+                         print(f"Found local alignment model at: {local_align_dir}")
+                    else:
+                         # Check for subfolder if user dragged the folder in
+                         subdirs = [d for d in os.listdir(local_align_dir) if os.path.isdir(os.path.join(local_align_dir, d))]
+                         if subdirs:
+                            possible_path = os.path.join(local_align_dir, subdirs[0])
+                            if os.path.exists(os.path.join(possible_path, "config.json")) and \
+                               (os.path.exists(os.path.join(possible_path, "pytorch_model.bin")) or \
+                                os.path.exists(os.path.join(possible_path, "model.safetensors"))):
+                                align_model_name = possible_path
+                                print(f"Found local alignment model at: {possible_path}")
+
+                # If we didn't find a valid local model (with weights), warn the user.
+                if not align_model_name:
+                     print(f"Local alignment model not found (or missing weights).")
+                     # Strict Offline Mode: Fail with instruction
+                     if os.environ.get("HF_HUB_OFFLINE") == "1":
+                         error_msg = (
+                             f"CRITICAL ERROR: Alignment model weights missing in {local_align_dir}\n"
+                             "Please manually download 'pytorch_model.bin' or 'model.safetensors' and place it in that folder.\n"
+                             "Auto-download is disabled by policy.\n"
+                             "Proceeding with unaligned results (timestamps may be less accurate)."
+                         )
+                         print(error_msg)
+                         return split_into_subtitles(result["segments"], max_chars=30)
+
+                if not align_model_name:
+                     print(f"Local alignment model not found (checked {local_align_dir} and subdirs). Downloading from HF Hub...")
+
+                load_args = {"language_code": result["language"], "device": device}
+                if align_model_name and result["language"] == "zh":
+                     load_args["model_name"] = align_model_name
+
+                model_a, metadata = whisperx.load_align_model(**load_args)
+
+                print("Aligning segments...")
+                aligned_result = whisperx.align(result["segments"], model_a, metadata, audio, device, return_char_alignments=True)
+                break
+            except Exception as attempt_error:
+                last_error = attempt_error
+                raise
+            finally:
+                if model_a is not None:
+                    del model_a
+                if model is not None:
+                    del model
+                gc.collect()
+                if device == "cuda":
+                    torch.cuda.empty_cache()
+        else:
+            raise RuntimeError(f"WhisperX ASR failed after fallback attempts: {last_error}")
         
         # --- DEBUG: Save Raw Output (User Request) ---
         try:
@@ -626,16 +681,6 @@ def run_asr(audio_path, model_path=None, service="whisperx", output_dir=None, va
             print(f"Warning: Failed to save debug files: {e}")
         # ---------------------------------------------
         
-        # Cleanup
-        del model_a
-        
-        # Cleanup Whisper Model
-        del model
-        
-        gc.collect()
-        if device == "cuda":
-            torch.cuda.empty_cache()
-
         print("Splitting long segments into subtitles...")
         # Use existing logic helper
         final_segments = split_into_subtitles(aligned_result["segments"], max_chars=30)
@@ -667,4 +712,4 @@ def run_asr(audio_path, model_path=None, service="whisperx", output_dir=None, va
     except Exception as e:
         print(f"Error during WhisperX ASR: {e}")
         traceback.print_exc()
-        return []
+        raise RuntimeError(f"Error during WhisperX ASR: {e}") from e

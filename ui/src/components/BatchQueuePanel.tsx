@@ -397,7 +397,20 @@ export default function BatchQueuePanel({
                             <div style={{ color: 'rgba(255,255,255,0.72)', fontSize: '0.9em' }}>
                                 <div>{item.stage}</div>
                                 {item.outputPath && <div style={{ marginTop: '6px', color: '#93c5fd' }}>输出已生成</div>}
-                                {item.error && <div style={{ marginTop: '6px', color: '#fca5a5' }}>{item.error}</div>}
+                                {item.error && (
+                                    <div
+                                        title={item.error}
+                                        style={{
+                                            marginTop: '6px',
+                                            color: '#fca5a5',
+                                            overflow: 'hidden',
+                                            textOverflow: 'ellipsis',
+                                            whiteSpace: 'nowrap'
+                                        }}
+                                    >
+                                        {summarizeBatchError(item.error)}
+                                    </div>
+                                )}
                             </div>
                             <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                                 {item.outputPath && (
@@ -419,6 +432,31 @@ export default function BatchQueuePanel({
             </div>
         </div>
     );
+}
+
+function summarizeBatchError(error?: string) {
+    if (!error) return '';
+
+    const normalized = error
+        .replace(/\r\n/g, '\n')
+        .replace(/\r/g, '\n')
+        .trim();
+
+    if (!normalized) return '';
+
+    const lines = normalized
+        .split('\n')
+        .map(line => line.trim())
+        .filter(Boolean);
+
+    const preferredLine =
+        lines.find(line => /error invoking remote method|process failed|python worker exited|cuda|cudnn|llvm error|fatal|failed|exception|traceback/i.test(line))
+        || lines.find(line => !/^\[\d+,\d+,\d+/.test(line))
+        || lines[lines.length - 1]
+        || normalized;
+
+    const compact = preferredLine.replace(/\s+/g, ' ').trim();
+    return compact.length <= 120 ? compact : `${compact.slice(0, 117)}...`;
 }
 
 function SummaryCard({ label, value, color }: { label: string; value: number | string; color: string }) {

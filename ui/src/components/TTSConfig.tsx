@@ -2,6 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import QwenTTSConfig from './QwenTTSConfig';
 import ConfirmDialog from './ConfirmDialog';
+import type { TtsVoiceMode } from '../utils/runtimeSettings';
 
 interface TTSConfigProps {
     themeMode?: 'light' | 'dark' | 'gradient';
@@ -40,6 +41,10 @@ const TTSConfig: React.FC<TTSConfigProps> = ({ themeMode, activeService, onServi
     // Dialog State
     const [isResetDialogOpen, setIsResetDialogOpen] = useState(false);
     const [feedback, setFeedback] = useState<{ title: string; message: string; type: 'success' | 'error' } | null>(null);
+    const [voiceMode, setVoiceMode] = useState<TtsVoiceMode>(() => {
+        const stored = localStorage.getItem('tts_voice_mode');
+        return stored === 'narration' ? 'narration' : 'clone';
+    });
 
     // View State (Separate from Active Service)
     const [viewMode, setViewMode] = useState<'indextts' | 'qwen'>(() => {
@@ -77,6 +82,10 @@ const TTSConfig: React.FC<TTSConfigProps> = ({ themeMode, activeService, onServi
     useEffect(() => {
         localStorage.setItem('last_tts_view', viewMode);
     }, [viewMode]);
+
+    useEffect(() => {
+        localStorage.setItem('tts_voice_mode', voiceMode);
+    }, [voiceMode]);
 
     const handleSaveIndex = () => {
         localStorage.setItem('tts_ref_audio_path', refAudioPath);
@@ -131,6 +140,12 @@ const TTSConfig: React.FC<TTSConfigProps> = ({ themeMode, activeService, onServi
         setSwitchStatus('正在配置环境...');
 
         try {
+            // Restart the persistent backend worker before switching runtime profiles.
+            // The Python process keeps imported modules and model state in memory,
+            // so a clean worker is the most reliable way to apply dependency swaps.
+            await window.api.killBackend();
+            setSwitchStatus('正在重启运行环境...');
+
             await window.api.runBackend([
                 '--action', 'generate_single_tts',
                 '--tts_service', target,
@@ -242,10 +257,49 @@ const TTSConfig: React.FC<TTSConfigProps> = ({ themeMode, activeService, onServi
             )}
 
             <div className="glass-panel" style={{ padding: '20px', marginBottom: '20px', background: isLightMode ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.05)' }}>
+                <div style={{ marginBottom: '20px' }}>
+                    <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>声音模式</label>
+                    <div style={{ background: isLightMode ? '#ddd' : '#444', borderRadius: '10px', padding: '3px', display: 'inline-flex' }}>
+                        <button
+                            onClick={() => setVoiceMode('clone')}
+                            style={{
+                                background: voiceMode === 'clone' ? '#6366f1' : 'transparent',
+                                color: voiceMode === 'clone' ? '#fff' : (isLightMode ? '#333' : '#aaa'),
+                                border: 'none',
+                                borderRadius: '8px',
+                                padding: '6px 14px',
+                                cursor: 'pointer',
+                                fontWeight: 'bold'
+                            }}
+                        >
+                            克隆模式
+                        </button>
+                        <button
+                            onClick={() => setVoiceMode('narration')}
+                            style={{
+                                background: voiceMode === 'narration' ? '#6366f1' : 'transparent',
+                                color: voiceMode === 'narration' ? '#fff' : (isLightMode ? '#333' : '#aaa'),
+                                border: 'none',
+                                borderRadius: '8px',
+                                padding: '6px 14px',
+                                cursor: 'pointer',
+                                fontWeight: 'bold'
+                            }}
+                        >
+                            朗读模式
+                        </button>
+                    </div>
+                    <p style={{ fontSize: '0.85em', color: isLightMode ? '#666' : '#aaa', marginTop: '8px' }}>
+                        {voiceMode === 'clone'
+                            ? '逐句参考源视频或指定参考音频，尽量贴近原说话人的音色与节奏。'
+                            : '全程使用同一个固定声音，不再逐句取源视频参考，速度更快且音色更统一。'}
+                    </p>
+                </div>
 
                 {viewMode === 'qwen' ? (
                     <QwenTTSConfig
                         themeMode={themeMode}
+                        voiceMode={voiceMode}
                         isActive={activeService === 'qwen'}
                         onActivate={() => handleSwitchService('qwen')}
                         onModeChange={onQwenModeChange}
@@ -263,7 +317,9 @@ const TTSConfig: React.FC<TTSConfigProps> = ({ themeMode, activeService, onServi
                         <div style={{ marginBottom: '20px' }}>
                             <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>参考音频 (Reference Audio)</label>
                             <p style={{ fontSize: '0.9em', color: isLightMode ? '#666' : '#aaa', marginBottom: '10px' }}>
-                                用于由 AI 克隆音色的目标声音文件 (3-10秒 wav/mp3)。如果不指定，将使用默认音色。
+                                {voiceMode === 'clone'
+                                    ? '用于由 AI 克隆音色的目标声音文件 (3-10秒 wav/mp3)。不指定时，将逐句使用原视频对应片段做参考。'
+                                    : '用于固定整部视频的朗读音色 (3-10秒 wav/mp3)。不指定时，将自动从原视频中选取一段全局参考音频并全程复用。'}
                             </p>
                             <div style={{ display: 'flex', gap: '10px' }}>
                                 <div style={{ flex: 1, position: 'relative' }}>
@@ -271,7 +327,7 @@ const TTSConfig: React.FC<TTSConfigProps> = ({ themeMode, activeService, onServi
                                         type="text"
                                         value={refAudioPath}
                                         readOnly
-                                        placeholder="未选择 (自动使用当前片段原音)"
+                                        placeholder={voiceMode === 'clone' ? '未选择 (自动使用当前片段原音)' : '未选择 (自动提取一个全局固定参考音)'}
                                         style={{
                                             width: '100%',
                                             padding: '8px',
@@ -323,7 +379,11 @@ const TTSConfig: React.FC<TTSConfigProps> = ({ themeMode, activeService, onServi
                                 </button>
                             </div>
                             <p style={{ fontSize: '0.8em', color: '#10b981', marginTop: '5px' }}>
-                                {refAudioPath ? '⚠️ 已设置全局参考音频 (所有片段将克隆此声音)' : '✅ 当前为自动模式: 每个片段将使用自身对应的原视频语音作为参考 (如果不想要原音色，请上传指定文件)。'}
+                                {refAudioPath
+                                    ? '⚠️ 已设置固定参考音频。'
+                                    : voiceMode === 'clone'
+                                        ? '✅ 克隆模式: 每个片段将使用自身对应的原视频语音作为参考。'
+                                        : '✅ 朗读模式: 系统将自动选取一个全局参考音频并在所有片段中复用。'}
                             </p>
                         </div>
 

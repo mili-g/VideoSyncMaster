@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import ConfirmDialog from './ConfirmDialog';
 import { preparePreviewCacheFile } from '../utils/projectPaths';
+import type { TtsVoiceMode } from '../utils/runtimeSettings';
 
 interface QwenTTSConfigProps {
     themeMode?: 'light' | 'dark' | 'gradient';
+    voiceMode: TtsVoiceMode;
     isActive?: boolean;
     onActivate?: () => void;
     onModeChange?: (mode: 'clone' | 'design' | 'preset') => void;
@@ -15,8 +17,9 @@ interface QwenTTSConfigProps {
     setMaxNewTokens: (token: number) => void;
 }
 
-const QwenTTSConfig: React.FC<QwenTTSConfigProps> = ({ themeMode, isActive, onActivate, onModeChange, batchSize, setBatchSize, cloneBatchSize, setCloneBatchSize, maxNewTokens, setMaxNewTokens }) => {
+const QwenTTSConfig: React.FC<QwenTTSConfigProps> = ({ themeMode, voiceMode, isActive, onActivate, onModeChange, batchSize, setBatchSize, cloneBatchSize, setCloneBatchSize, maxNewTokens, setMaxNewTokens }) => {
     const isLightMode = themeMode === 'gradient' || themeMode === 'light';
+    const isNarrationMode = voiceMode === 'narration';
 
     // Modes: 'clone' (Default) | 'design' (Prompt based) | 'preset' (Built-in speakers)
     const [mode, setMode] = useState<'clone' | 'design' | 'preset'>('clone');
@@ -49,6 +52,18 @@ const QwenTTSConfig: React.FC<QwenTTSConfigProps> = ({ themeMode, isActive, onAc
     const [audioObj, setAudioObj] = useState<HTMLAudioElement | null>(null);
 
     const [hasDesignRef, setHasDesignRef] = useState<boolean>(false);
+    const currentCloneBatchSize = isNarrationMode ? batchSize : cloneBatchSize;
+    const setCurrentCloneBatchSize = isNarrationMode ? setBatchSize : setCloneBatchSize;
+    const modeSummary = isNarrationMode
+        ? '当前为朗读模式：全程使用固定声音来源，不跟随原片逐句情绪。'
+        : '当前为克隆模式：优先保留原片逐句参考，适合贴近原说话人的表达。';
+    const modeCombinationHint = mode === 'clone'
+        ? (isNarrationMode
+            ? '声音克隆会固定复用同一个参考音色；未上传参考音时，批量任务会自动从原片提取一段全局声音并复用。'
+            : '声音克隆会优先逐句参考原片；上传参考音后，更偏向“指定音色 + 原片上下文约束”的效果。')
+        : (isNarrationMode
+            ? '当前子模式会提供固定声音来源，适合整片统一旁白。'
+            : '当前子模式仍会输出稳定音色，但不会像“声音克隆”那样逐句贴近原片情绪。');
 
     // Load config
     useEffect(() => {
@@ -115,7 +130,13 @@ const QwenTTSConfig: React.FC<QwenTTSConfigProps> = ({ themeMode, isActive, onAc
         if (!currentText) return;
 
         if (mode === 'clone' && !refAudioPath) {
-            setFeedback({ title: '缺少参考音频', message: '请先选择参考音频！(Reference Audio is required for Clone mode)', type: 'error' });
+            setFeedback({
+                title: '缺少参考音频',
+                message: isNarrationMode
+                    ? '当前是朗读模式的试听。预览不会自动截取原片默认参考音，请先上传一段固定参考音频。'
+                    : '当前是克隆模式的试听。预览不会直接读取原视频片段，请先上传一段参考音频后再试听。',
+                type: 'error'
+            });
             return;
         }
 
@@ -289,6 +310,22 @@ const QwenTTSConfig: React.FC<QwenTTSConfigProps> = ({ themeMode, isActive, onAc
                 </div>
             </div>
 
+            <div style={{
+                marginBottom: '20px',
+                padding: '12px 14px',
+                borderRadius: '8px',
+                background: isLightMode ? 'rgba(99, 102, 241, 0.08)' : 'rgba(99, 102, 241, 0.16)',
+                border: `1px solid ${isLightMode ? '#c7d2fe' : '#4f46e5'}`
+            }}>
+                <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>
+                    {isNarrationMode ? '朗读模式' : '克隆模式'} + {mode === 'clone' ? '声音克隆' : mode === 'design' ? '声音设计' : '预置音色'}
+                </div>
+                <div style={{ fontSize: '0.9em', color: isLightMode ? '#4b5563' : '#d1d5db', lineHeight: 1.5 }}>
+                    <div>{modeSummary}</div>
+                    <div>{modeCombinationHint}</div>
+                </div>
+            </div>
+
             <div style={{ marginBottom: '20px' }}>
                 <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>基础参数 (Basic Parameters)</label>
                 <div style={{ padding: '15px', background: isLightMode ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.05)', borderRadius: '8px', border: '1px solid ' + (isLightMode ? '#ddd' : '#444') }}>
@@ -324,7 +361,7 @@ const QwenTTSConfig: React.FC<QwenTTSConfigProps> = ({ themeMode, isActive, onAc
                     <div style={{ marginBottom: '20px' }}>
                         <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>选择预置角色 (Preset Voice)</label>
                         <p style={{ fontSize: '0.9em', color: isLightMode ? '#666' : '#aaa', marginBottom: '5px' }}>
-                            建议使用角色母语以获得最佳效果。
+                            使用模型内置固定音色。更适合统一旁白；若需要贴近原片逐句语气，请切回“声音克隆”。
                         </p>
                         <select
                             value={presetVoice}
@@ -372,9 +409,15 @@ const QwenTTSConfig: React.FC<QwenTTSConfigProps> = ({ themeMode, isActive, onAc
                                 }}
                             />
                         </div>
+                        <p style={{ fontSize: '0.8em', color: isLightMode ? '#666' : '#aaa', marginTop: '5px' }}>
+                            预置音色使用固定声音来源，适合直接走统一并发。
+                        </p>
                     </div>
                     <div style={{ marginBottom: '20px' }}>
                         <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>预览测试 (Preview)</label>
+                        <p style={{ fontSize: '0.9em', color: isLightMode ? '#666' : '#aaa', marginBottom: '5px' }}>
+                            试听固定预置音色的朗读效果。
+                        </p>
                         <div style={{ display: 'flex', gap: '10px' }}>
                             <textarea
                                 value={previewTexts.preset}
@@ -430,7 +473,9 @@ const QwenTTSConfig: React.FC<QwenTTSConfigProps> = ({ themeMode, isActive, onAc
                     <div style={{ marginBottom: '20px' }}>
                         <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>参考音频</label>
                         <p style={{ fontSize: '0.9em', color: isLightMode ? '#666' : '#aaa', marginBottom: '5px' }}>
-                            如果不选，将自动从视频原片中截取（推荐）。仅当您想全片使用同一个固定声音时才上传。
+                            {isNarrationMode
+                                ? '朗读模式下，这里用于指定整片统一参考音。留空时，批量任务会自动从原片挑选一段默认声音并全程复用。'
+                                : '克隆模式下，留空时会在正式生成时逐句参考原片；只有想固定使用某个指定音色时才上传。'}
                         </p>
                         <div style={{ display: 'flex', gap: '10px' }}>
                             <input
@@ -450,19 +495,23 @@ const QwenTTSConfig: React.FC<QwenTTSConfigProps> = ({ themeMode, isActive, onAc
                             </button>
                         </div>
                         <p style={{ fontSize: '0.8em', color: isLightMode ? '#666' : '#aaa', marginTop: '5px' }}>
-                            {refAudioPath ? '✅ 已选择自定义音频' : 'ℹ️ 将自动截取原视频片段声音'}
+                            {refAudioPath
+                                ? '✅ 已选择固定参考音频'
+                                : isNarrationMode
+                                    ? 'ℹ️ 正式生成时将自动提取一个全局参考音并在全片复用'
+                                    : 'ℹ️ 正式生成时将按片段逐句参考原视频声音'}
                         </p>
                     </div>
 
                     <div style={{ marginBottom: '20px' }}>
                         <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>参考音频文本 (Reference Text)</label>
                         <p style={{ fontSize: '0.9em', color: isLightMode ? '#666' : '#aaa', marginBottom: '5px' }}>
-                            (强烈推荐) 输入音频内容的字幕以获得最佳相似度。<b>留空将使用 X-Vector 模式 (仅参考音色，相似度较低)。</b>
+                            填写所上传参考音频对应的原文可提升音色一致性。留空时仅做音色参考，相似度通常会下降。
                         </p>
                         <textarea
                             value={refText}
                             onChange={(e) => setRefText(e.target.value)}
-                            placeholder="请输入参考音频中的逐字内容..."
+                            placeholder={isNarrationMode ? '请输入固定参考音频中的原文...' : '请输入指定参考音频中的原文...'}
                             className="input-field"
                             style={{
                                 width: '100%',
@@ -483,8 +532,8 @@ const QwenTTSConfig: React.FC<QwenTTSConfigProps> = ({ themeMode, isActive, onAc
                                 type="number"
                                 min="1"
                                 max="50"
-                                value={cloneBatchSize}
-                                onChange={(e) => setCloneBatchSize(Math.max(1, parseInt(e.target.value) || 1))}
+                                value={currentCloneBatchSize}
+                                onChange={(e) => setCurrentCloneBatchSize(Math.max(1, parseInt(e.target.value) || 1))}
                                 className="input-field"
                                 style={{
                                     width: '60px',
@@ -497,12 +546,19 @@ const QwenTTSConfig: React.FC<QwenTTSConfigProps> = ({ themeMode, isActive, onAc
                                 }}
                             />
                         </div>
+                        <p style={{ fontSize: '0.8em', color: isLightMode ? '#666' : '#aaa', marginTop: '5px' }}>
+                            {isNarrationMode
+                                ? '朗读模式下会按固定声音来源处理，因此这里使用常规并发。'
+                                : '克隆模式下逐句参考原片成本更高，建议保守设置并发。'}
+                        </p>
                     </div>
 
                     <div style={{ marginBottom: '20px' }}>
                         <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>预览测试 (Preview)</label>
                         <p style={{ fontSize: '0.9em', color: isLightMode ? '#666' : '#aaa', marginBottom: '5px' }}>
-                            输入一段文字，点击试听以验证当前参考音频的效果。
+                            {isNarrationMode
+                                ? '预览阶段无法自动截取原片默认参考音；如需试听固定声音，请先上传一段参考音频。'
+                                : '预览阶段不读取原视频片段；如需试听克隆效果，请先上传一段参考音频。'}
                         </p>
                         <div style={{ display: 'flex', gap: '10px' }}>
                             <textarea
@@ -589,12 +645,14 @@ const QwenTTSConfig: React.FC<QwenTTSConfigProps> = ({ themeMode, isActive, onAc
                             </div>
                         )}
                         <p style={{ fontSize: '0.9em', color: isLightMode ? '#666' : '#aaa', marginBottom: '5px' }}>
-                            描述您想要的音色，例如：“甜美可爱的女声”、“沉稳的男新闻播音员”。
+                            {isNarrationMode
+                                ? '用文字设计一个固定朗读音色，例如“温和的纪录片女声”或“沉稳的新闻男声”。'
+                                : '用文字设计一个稳定音色来源。它更适合统一旁白，不会像“声音克隆”那样逐句贴近原片语气。'}
                         </p>
                         <textarea
                             value={voiceInstruction}
                             onChange={(e) => setVoiceInstruction(e.target.value)}
-                            placeholder="例如：一个温柔、治愈的年轻女性声音，语气轻松愉快..."
+                            placeholder={isNarrationMode ? '例如：一个清晰自然的纪录片旁白女声，语速平稳...' : '例如：一个沉稳克制的男中音，适合统一解说...'}
                             className="input-field"
                             style={{
                                 width: '100%',
@@ -609,6 +667,9 @@ const QwenTTSConfig: React.FC<QwenTTSConfigProps> = ({ themeMode, isActive, onAc
 
                     <div style={{ marginBottom: '20px' }}>
                         <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>预览测试 (Preview)</label>
+                        <p style={{ fontSize: '0.9em', color: isLightMode ? '#666' : '#aaa', marginBottom: '5px' }}>
+                            先试听并锁定设计音色，批量配音时会复用这个固定声音。
+                        </p>
                         <div style={{ display: 'flex', gap: '10px' }}>
                             <textarea
                                 value={previewTexts.design}
@@ -681,8 +742,11 @@ const QwenTTSConfig: React.FC<QwenTTSConfigProps> = ({ themeMode, isActive, onAc
                                 textAlign: 'center',
                                 fontWeight: 'bold'
                             }}
-                        />
-                    </div>
+                            />
+                        </div>
+                        <p style={{ fontSize: '0.8em', color: isLightMode ? '#666' : '#aaa', marginTop: '5px' }}>
+                            声音设计会锁定为统一音色，批量任务使用常规并发即可。
+                        </p>
                 </div>
             )}
 

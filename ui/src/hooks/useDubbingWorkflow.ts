@@ -3,7 +3,7 @@ import type { AudioMixMode, Segment } from './useVideoProject';
 import { cleanupOutputArtifacts, saveSubtitleArtifacts } from '../utils/outputArtifacts';
 import { prepareSingleProjectPaths } from '../utils/projectPaths';
 import { isBackendCanceledError } from '../utils/backendCancellation';
-import { getStoredQwenTtsSettings } from '../utils/runtimeSettings';
+import { getStoredQwenTtsSettings, getStoredTtsVoiceMode } from '../utils/runtimeSettings';
 
 type FeedbackType = 'success' | 'error';
 
@@ -61,6 +61,8 @@ export function useDubbingWorkflow({
     setMergedVideoPath
 }: DubbingWorkflowOptions) {
     const hasErrors = translatedSegments.some(segment => segment.audioStatus === 'error');
+    const voiceMode = getStoredTtsVoiceMode();
+    const useNarrationMode = voiceMode === 'narration';
 
     const handleGenerateSingleDubbing = async (index: number) => {
         if (!originalVideoPath) return;
@@ -95,8 +97,8 @@ export function useDubbingWorkflow({
                     videoStrategy,
                     fallbackRefAudio: fallbackRefAudio?.audioPath,
                     fallbackRefText: fallbackRefAudio?.refText,
-                    nearbyRefAudios: collectNearbySuccessfulAudioPaths(translatedSegments, index),
-                    qwenRefText: sourceSegments[index]?.text || ''
+                    nearbyRefAudios: useNarrationMode ? [] : collectNearbySuccessfulAudioPaths(translatedSegments, index),
+                    qwenRefText: useNarrationMode ? '' : (sourceSegments[index]?.text || '')
                 })
             );
 
@@ -296,8 +298,8 @@ export function useDubbingWorkflow({
                         videoStrategy,
                         fallbackRefAudio: fallbackRefAudio?.audioPath,
                         fallbackRefText: fallbackRefAudio?.refText,
-                        nearbyRefAudios: collectNearbySuccessfulAudioPaths(translatedSegments, index),
-                        qwenRefText: sourceSegments[index]?.text || ''
+                        nearbyRefAudios: useNarrationMode ? [] : collectNearbySuccessfulAudioPaths(translatedSegments, index),
+                        qwenRefText: useNarrationMode ? '' : (sourceSegments[index]?.text || '')
                     })
                 );
 
@@ -556,13 +558,17 @@ function buildTtsExtraArgs(
     cloneBatchSize: number
 ) {
     const args: string[] = [];
+    const voiceMode = getStoredTtsVoiceMode();
     let effectiveBatchSize = batchSize;
     let blocked: FeedbackPayload | null = null;
 
+    args.push('--voice_mode', voiceMode);
+
     if (ttsService === 'qwen') {
         const qwenSettings = getStoredQwenTtsSettings();
+        const selectedQwenMode = qwenSettings.mode;
 
-        if (qwenSettings.mode === 'design') {
+        if (selectedQwenMode === 'design') {
             if (!qwenSettings.designRefAudio) {
                 blocked = {
                     title: '需要预览',
@@ -573,16 +579,16 @@ function buildTtsExtraArgs(
             }
         }
 
-        args.push('--qwen_mode', qwenSettings.mode);
+        args.push('--qwen_mode', selectedQwenMode);
         args.push('--qwen_model_size', qwenSettings.modelSize);
 
-        if (qwenSettings.mode === 'preset') {
+        if (selectedQwenMode === 'preset') {
             args.push('--preset_voice', qwenSettings.presetVoice);
-        } else if (qwenSettings.mode === 'design') {
+        } else if (selectedQwenMode === 'design') {
             args.push('--voice_instruct', qwenSettings.voiceInstruction);
             if (qwenSettings.designRefAudio) args.push('--ref_audio', qwenSettings.designRefAudio);
         } else {
-            effectiveBatchSize = cloneBatchSize;
+            effectiveBatchSize = voiceMode === 'clone' ? cloneBatchSize : batchSize;
             if (qwenSettings.refAudio) args.push('--ref_audio', qwenSettings.refAudio);
             if (qwenSettings.refText) args.push('--qwen_ref_text', qwenSettings.refText);
         }

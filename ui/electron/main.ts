@@ -145,6 +145,47 @@ interface BackendStructuredEvent {
 
 const BACKEND_EVENT_PREFIX = '__EVENT__'
 const BACKEND_WORKER_RESULT_PREFIX = '__WORKER_RESULT__'
+const MAX_BACKEND_CAPTURE_CHARS = 16_000
+const BACKEND_VERBOSE_STREAMS = process.env.VSM_VERBOSE_BACKEND === '1'
+
+function appendCappedText(existing: string, nextLine: string) {
+  const appended = `${existing}${nextLine}\n`
+  if (appended.length <= MAX_BACKEND_CAPTURE_CHARS) {
+    return appended
+  }
+  return appended.slice(appended.length - MAX_BACKEND_CAPTURE_CHARS)
+}
+
+function summarizeBackendError(errorText: string) {
+  const normalized = String(errorText || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+
+  if (normalized.length === 0) {
+    return 'No backend error details captured.'
+  }
+
+  const tail = normalized.slice(-8)
+  return tail.join(' | ')
+}
+
+function shouldMirrorBackendLine(source: 'stdout' | 'stderr', line: string) {
+  if (BACKEND_VERBOSE_STREAMS) {
+    return true
+  }
+
+  if (source === 'stdout') {
+    return false
+  }
+
+  const normalized = line.toLowerCase()
+  return normalized.includes('traceback')
+    || normalized.includes('error')
+    || normalized.includes('exception')
+    || normalized.includes('fatal')
+    || normalized.includes('cuda')
+}
 
 function parseBackendStructuredEvent(line: string): BackendStructuredEvent | null {
   const trimmed = line.trim()
@@ -227,7 +268,34 @@ function restartBackendWorkerAfterFatalCuda(lane: BackendLane, message: string) 
 }
 
 function getPythonProcessEnv() {
-  return { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' }
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    PYTHONUTF8: '1',
+    PYTHONIOENCODING: 'utf-8',
+    NUMBA_DISABLE_INTEL_SVML: '1',
+    NUMBA_CPU_NAME: 'generic'
+  }
+
+  try {
+    const projectRoot = getProjectRoot()
+    const sitePackages = path.join(projectRoot, 'python', 'Lib', 'site-packages')
+    const torchLib = path.join(sitePackages, 'torch', 'lib')
+    const cudaPaths = [
+      path.join(sitePackages, 'nvidia', 'cudnn', 'bin'),
+      path.join(sitePackages, 'nvidia', 'cublas', 'bin'),
+      path.join(sitePackages, 'nvidia', 'cuda_runtime', 'bin'),
+      path.join(sitePackages, 'nvidia', 'cuda_nvrtc', 'bin'),
+      torchLib
+    ].filter((candidate) => fs.existsSync(candidate))
+
+    if (cudaPaths.length > 0) {
+      env.PATH = `${cudaPaths.join(path.delimiter)}${path.delimiter}${env.PATH || ''}`
+    }
+  } catch (error) {
+    console.error('[PythonEnv] Failed to extend PATH for CUDA DLLs:', error)
+  }
+
+  return env
 }
 
 function getProjectRoot() {
@@ -310,9 +378,9 @@ function createBackendProcessLineHandler(lane: BackendLane, source: 'stdout' | '
 
     if (workerState.activeRequest) {
       if (source === 'stdout') {
-        workerState.activeRequest.outputData += `${normalizedLine}\n`
+        workerState.activeRequest.outputData = appendCappedText(workerState.activeRequest.outputData, normalizedLine)
       } else {
-        workerState.activeRequest.errorData += `${normalizedLine}\n`
+        workerState.activeRequest.errorData = appendCappedText(workerState.activeRequest.errorData, normalizedLine)
       }
     }
 
@@ -346,11 +414,15 @@ function createBackendProcessLineHandler(lane: BackendLane, source: 'stdout' | '
         }
       }
 
-      console.log(`[Py Stdout:${lane}]`, normalizedLine)
+      if (shouldMirrorBackendLine('stdout', normalizedLine)) {
+        console.log(`[Py Stdout:${lane}]`, normalizedLine)
+      }
       return
     }
 
-    console.error(`[Py Stderr:${lane}]:`, normalizedLine)
+    if (shouldMirrorBackendLine('stderr', normalizedLine)) {
+      console.error(`[Py Stderr:${lane}]:`, normalizedLine)
+    }
   }
 }
 
@@ -436,15 +508,16 @@ async function ensureBackendWorker(lane: BackendLane) {
   })
 
   backendProcess.on('close', (code: number) => {
+    const isCurrentWorker = workerState.process === backendProcess
     if (workerState.stdoutBuffer.trim()) processBackendStdoutLine[lane](workerState.stdoutBuffer)
     if (workerState.stderrBuffer.trim()) processBackendStderrLine[lane](workerState.stderrBuffer)
     workerState.stdoutBuffer = ''
     workerState.stderrBuffer = ''
-    if (workerState.process === backendProcess) {
+    if (isCurrentWorker) {
       workerState.process = null
     }
 
-    if (workerState.activeRequest) {
+    if (isCurrentWorker && workerState.activeRequest) {
       const currentRequest = workerState.activeRequest
       workerState.activeRequest = null
       workerState.activeCancellation = null
@@ -452,17 +525,18 @@ async function ensureBackendWorker(lane: BackendLane) {
       if (currentRequest.cancellationState.requested) {
         currentRequest.resolve({ success: false, canceled: true, error: 'Task canceled by user' })
       } else {
-        currentRequest.reject(new Error(`Python worker exited with code ${code}. Error: ${currentRequest.errorData}`))
+        currentRequest.reject(new Error(`Python worker exited with code ${code}. Error: ${summarizeBackendError(currentRequest.errorData)}`))
       }
     }
   })
 
   backendProcess.on('error', (error: Error) => {
-    if (workerState.process === backendProcess) {
+    const isCurrentWorker = workerState.process === backendProcess
+    if (isCurrentWorker) {
       workerState.process = null
     }
 
-    if (workerState.activeRequest) {
+    if (isCurrentWorker && workerState.activeRequest) {
       const currentRequest = workerState.activeRequest
       workerState.activeRequest = null
       workerState.activeCancellation = null
@@ -1153,6 +1227,7 @@ app.whenReady().then(async () => {
           whisperx: checkDir(['faster-whisper-large-v3-turbo-ct2', 'whisperx/faster-whisper-large-v3-turbo-ct2']),
           alignment: checkDir(['alignment']),
           index_tts: checkDir(['index-tts', 'index-tts/hub']),
+          source_separation: checkDir(['source_separation/hdemucs_high_musdb_plus.pt']),
           qwen: checkDir(['Qwen2.5-7B-Instruct', 'qwen/Qwen2.5-7B-Instruct']),
           qwen_tokenizer: checkDir(['Qwen3-TTS-Tokenizer-12Hz', 'Qwen/Qwen3-TTS-Tokenizer-12Hz']),
           qwen_17b_base: checkDir(['Qwen3-TTS-12Hz-1.7B-Base', 'Qwen/Qwen3-TTS-12Hz-1.7B-Base']),
@@ -1231,7 +1306,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('download-file', async (_event, args) => {
     return new Promise((resolve) => {
       try {
-        const { url, targetDir, key, name } = args;
+        const { url, targetDir, key, name, outputFileName } = args;
         const { modelsRoot, projectRoot } = resolveModelsRoot();
 
         const finalDir = path.join(modelsRoot, targetDir);
@@ -1255,23 +1330,30 @@ import shutil
 url = "${url}"
 out_dir = r"${finalDir.replace(/\\/g, '\\\\')}"
 zip_path = os.path.join(out_dir, "temp_download.zip")
+single_file_name = ${JSON.stringify(outputFileName || '')}
+single_file_path = os.path.join(out_dir, single_file_name) if single_file_name else ""
 
 def progress(count, block_size, total_size):
-    percent = int(count * block_size * 100 / total_size)
+    if total_size <= 0:
+        percent = 0
+    else:
+        percent = int(count * block_size * 100 / total_size)
     # limit output freq
     if count % 100 == 0:
         print(f"PROGRESS:{percent}", flush=True)
 
 try:
     print(f"Downloading {url}...")
-    urllib.request.urlretrieve(url, zip_path, reporthook=progress)
-    print("Download complete. Extracting...")
-    
-    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-        zip_ref.extractall(out_dir)
-        
-    print("Extraction complete.")
-    os.remove(zip_path)
+    if single_file_name:
+        urllib.request.urlretrieve(url, single_file_path, reporthook=progress)
+        print(f"Saved file to {single_file_path}")
+    else:
+        urllib.request.urlretrieve(url, zip_path, reporthook=progress)
+        print("Download complete. Extracting...")
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(out_dir)
+        print("Extraction complete.")
+        os.remove(zip_path)
     print("SUCCESS")
 except Exception as e:
     print(f"ERROR: {e}")

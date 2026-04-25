@@ -226,6 +226,7 @@ def _build_batch_tts_tasks(
     segments,
     work_dir,
     args_ref_audio,
+    voice_mode,
     explicit_qwen_ref_text,
     shared_ref_path,
     shared_ref_meta,
@@ -236,6 +237,7 @@ def _build_batch_tts_tasks(
     log_prefix
 ):
     tasks = []
+    normalized_voice_mode = str(voice_mode or "clone").strip().lower()
     total_extract_ms = 0.0
     total_trim_ms = 0.0
     total_ref_ms = 0.0
@@ -263,7 +265,13 @@ def _build_batch_tts_tasks(
             or os.path.join(work_dir, f"segment_{i}.wav")
         )
 
-        if args_ref_audio and os.path.exists(args_ref_audio):
+        if normalized_voice_mode == "narration" and shared_ref_path and os.path.exists(shared_ref_path):
+            ref_path = shared_ref_path
+            print(
+                f"[RefTiming] segment={i} mode=shared_reuse extract=0ms trim=0ms total=0ms "
+                f"range={extract_start:.2f}-{extract_start + extract_duration:.2f}s path={ref_path}"
+            )
+        elif args_ref_audio and os.path.exists(args_ref_audio):
             ref_path = args_ref_audio
             print(
                 f"[RefTiming] segment={i} mode=explicit_reuse extract=0ms trim=0ms total=0ms "
@@ -333,7 +341,7 @@ def _build_batch_tts_tasks(
             "ref_text": (
                 str(explicit_qwen_ref_text or "")
                 if (args_ref_audio and os.path.exists(args_ref_audio))
-                else str(seg.get("source_text") or seg.get("original_text") or "")
+                else str((shared_ref_meta or {}).get("text") or seg.get("source_text") or seg.get("original_text") or "")
             ),
             "duration": max(duration, 0.1),
             "skip_segment_retry": bool(segment_trim_dur is not None and segment_trim_dur < 0.5),
@@ -831,6 +839,7 @@ def generate_batch_tts_results(
     shared_ref_path = None
     shared_ref_should_clean = False
     shared_ref_meta = None
+    voice_mode = str(tts_kwargs.get("voice_mode") or "clone").strip().lower()
 
     try:
         if not (args_ref_audio and os.path.exists(args_ref_audio)):
@@ -863,6 +872,7 @@ def generate_batch_tts_results(
             segments=segments,
             work_dir=work_dir,
             args_ref_audio=args_ref_audio,
+            voice_mode=voice_mode,
             explicit_qwen_ref_text=explicit_qwen_ref_text,
             shared_ref_path=shared_ref_path,
             shared_ref_meta=shared_ref_meta,
@@ -1070,21 +1080,29 @@ def handle_generate_single_tts(
         start_time = getattr(args, "start", 0.0)
         duration = args.duration if args.duration else 3.0
         target_lang = args.lang if args.lang else "English"
+        voice_mode = str(tts_kwargs.get("voice_mode") or "clone").strip().lower()
+        is_narration_mode = voice_mode == "narration"
 
         if not text:
             return {"success": False, "error": "Missing --text argument"}, False
 
         try:
-            ref_clip_path, should_delete_ref, ref_meta = _extract_reference_audio(
-                video_path=video_path,
-                ref_audio_override=args.ref_audio,
-                output_audio=output_audio,
-                start_time=start_time,
-                duration=duration,
-                ffmpeg=ffmpeg,
-                librosa=librosa,
-                sf=sf
-            )
+            if voice_mode == "narration" and getattr(args, "fallback_ref_audio", None) and os.path.exists(args.fallback_ref_audio):
+                ref_clip_path = args.fallback_ref_audio
+                should_delete_ref = False
+                ref_meta = {"mode": "shared_fallback", "too_short": False}
+                print("[SingleTTS] Narration mode: using shared fallback reference audio.")
+            else:
+                ref_clip_path, should_delete_ref, ref_meta = _extract_reference_audio(
+                    video_path=video_path,
+                    ref_audio_override=args.ref_audio,
+                    output_audio=output_audio,
+                    start_time=start_time,
+                    duration=duration,
+                    ffmpeg=ffmpeg,
+                    librosa=librosa,
+                    sf=sf
+                )
         except Exception as e:
             result_data = {"success": False, "error": f"Failed to extract ref audio: {str(e)}"}
             if args.json:
@@ -1102,10 +1120,21 @@ def handle_generate_single_tts(
         fallback_ref_audio = getattr(args, "fallback_ref_audio", None)
         fallback_ref_text = getattr(args, "fallback_ref_text", "") or ""
         nearby_ref_audios = _parse_nearby_ref_audios(getattr(args, "nearby_ref_audios", None))
+        if is_narration_mode:
+            nearby_ref_audios = []
         max_retry_attempts = int(getattr(args, "dub_retry_attempts", 3) or 3)
         success = False
         last_error = None
         use_segment_reference = not bool(ref_meta and ref_meta.get("too_short"))
+        effective_segment_ref_text = getattr(args, "qwen_ref_text", "") or ""
+
+        if tts_service_name == "qwen" and is_narration_mode:
+            if getattr(args, "ref_audio", None) and os.path.exists(getattr(args, "ref_audio", None) or ""):
+                effective_segment_ref_text = str(tts_kwargs.get("qwen_ref_text") or "")
+            elif fallback_ref_audio and os.path.exists(fallback_ref_audio):
+                effective_segment_ref_text = str(fallback_ref_text or "")
+            else:
+                effective_segment_ref_text = ""
 
         if not use_segment_reference:
             print("[SingleTTS] Segment reference too short after trim, skipping direct clone reference.")
@@ -1123,7 +1152,7 @@ def handle_generate_single_tts(
                     attempt_kwargs = _with_qwen_reference_text(
                         attempt_kwargs,
                         tts_service_name,
-                        getattr(args, "qwen_ref_text", "") or ""
+                        effective_segment_ref_text
                     )
                     success = run_tts_func(translated_text, ref_clip_path, output_audio, language=target_lang, **attempt_kwargs)
                     if success:

@@ -4,7 +4,7 @@ import { parseSRTContent, segmentsToSRT, type SrtSegment } from '../utils/srt';
 import { cleanupOutputArtifacts, saveSubtitleArtifacts } from '../utils/outputArtifacts';
 import { prepareBatchProjectPaths } from '../utils/projectPaths';
 import { isBackendCanceledError } from '../utils/backendCancellation';
-import { appendStoredTranslationArgs, getStoredQwenTtsSettings, getStoredWhisperVadSettings } from '../utils/runtimeSettings';
+import { appendStoredTranslationArgs, getStoredQwenTtsSettings, getStoredTtsVoiceMode, getStoredWhisperVadSettings } from '../utils/runtimeSettings';
 
 const BATCH_QUEUE_ITEMS_STORAGE_KEY = 'batchQueue.items.v1';
 const BATCH_QUEUE_META_STORAGE_KEY = 'batchQueue.meta.v1';
@@ -1022,7 +1022,7 @@ async function generateSubtitleForItem(
         '--json'
     ];
 
-    if (options.asrOriLang) {
+    if (options.asrOriLang && options.asrOriLang !== 'Auto' && options.asrOriLang !== 'None') {
         args.push('--ori_lang', options.asrOriLang);
     }
 
@@ -1318,6 +1318,8 @@ async function retryFailedBatchSegments({
         refText: string;
     };
 }) {
+    const voiceMode = getStoredTtsVoiceMode();
+    const useNarrationMode = voiceMode === 'narration';
     const fallbackRefAudio = fallbackReferenceAudio || await prepareFallbackReferenceAudio(sourcePath, sessionDir, translatedSegments);
 
     for (const index of failedIndexes) {
@@ -1332,8 +1334,8 @@ async function retryFailedBatchSegments({
                 segment,
                 options,
                 fallbackRefAudio?.audioPath,
-                collectNearbySuccessfulAudioPaths(translatedSegments, index),
-                sourceSegments[index]?.text || '',
+                useNarrationMode ? [] : collectNearbySuccessfulAudioPaths(translatedSegments, index),
+                useNarrationMode ? '' : (sourceSegments[index]?.text || ''),
                 fallbackRefAudio?.refText
             )
         );
@@ -1381,6 +1383,7 @@ function buildBatchTtsArgs(
     resumeCompleted = 0,
     resumeTotal = 0
 ) {
+    const voiceMode = getStoredTtsVoiceMode();
     const args = [
         '--action', 'generate_batch_tts',
         '--input', sourcePath,
@@ -1389,7 +1392,7 @@ function buildBatchTtsArgs(
         '--tts_service', options.ttsService,
         '--strategy', options.videoStrategy,
         '--audio_mix_mode', options.audioMixMode,
-        '--batch_size', String(options.ttsService === 'qwen' ? options.cloneBatchSize : options.batchSize),
+        '--batch_size', String(options.ttsService === 'qwen' && voiceMode === 'clone' ? options.cloneBatchSize : options.batchSize),
         '--max_new_tokens', String(options.maxNewTokens),
         '--dub_retry_attempts', '3',
         '--resume_completed', String(Math.max(0, resumeCompleted)),
@@ -1479,14 +1482,18 @@ function collectNearbySuccessfulAudioPaths(
 }
 
 function appendTtsArgs(args: string[], options: BatchQueueOptions) {
+    const voiceMode = getStoredTtsVoiceMode();
+    args.push('--voice_mode', voiceMode);
+
     if (options.ttsService === 'qwen') {
         const qwenSettings = getStoredQwenTtsSettings();
-        args.push('--qwen_mode', qwenSettings.mode);
+        const selectedQwenMode = qwenSettings.mode;
+        args.push('--qwen_mode', selectedQwenMode);
         args.push('--qwen_model_size', qwenSettings.modelSize);
 
-        if (qwenSettings.mode === 'preset') {
+        if (selectedQwenMode === 'preset') {
             args.push('--preset_voice', qwenSettings.presetVoice);
-        } else if (qwenSettings.mode === 'design') {
+        } else if (selectedQwenMode === 'design') {
             args.push('--voice_instruct', qwenSettings.voiceInstruction);
             if (qwenSettings.designRefAudio) args.push('--ref_audio', qwenSettings.designRefAudio);
         } else {
