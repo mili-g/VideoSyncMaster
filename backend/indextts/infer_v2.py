@@ -51,6 +51,8 @@ from transformers import SeamlessM4TFeatureExtractor
 import random
 import torch.nn.functional as F
 
+LAST_INDEXTTS_INIT_STAGE = "not_started"
+
 class IndexTTS2:
     def __init__(
             self, cfg_path="checkpoints/config.yaml", model_dir="checkpoints", use_fp16=False, device=None,
@@ -89,23 +91,38 @@ class IndexTTS2:
             self.use_cuda_kernel = False
             print(">> Be patient, it may take a while to run in CPU mode.")
 
+        if os.getenv("INDEXTTS_FORCE_FP32", "").strip() == "1":
+            self.use_fp16 = False
+            print(">> INDEXTTS_FORCE_FP32 enabled. Running IndexTTS in float32 mode.")
+
         self.cfg = OmegaConf.load(cfg_path)
         self.model_dir = model_dir
         self.dtype = torch.float16 if self.use_fp16 else None
         self.stop_mel_token = self.cfg.gpt.stop_mel_token
         self.use_accel = use_accel
         self.use_torch_compile = use_torch_compile
+        self.init_stage = "bootstrap"
+
+        print(
+            f">> IndexTTS init config: device={self.device}, use_fp16={self.use_fp16}, "
+            f"use_cuda_kernel={self.use_cuda_kernel}, use_deepspeed={use_deepspeed}"
+        )
 
         qwen_path = os.path.join(self.model_dir, self.cfg.qwen_emo_path)
         # Fix for transformers identifying path as Repo ID if it has trailing slashes on Windows
         qwen_path = os.path.normpath(qwen_path).rstrip(os.sep)
+        self._set_init_stage("qwen_emo")
         self.qwen_emo = QwenEmotion(qwen_path)
 
+        self._set_init_stage("gpt_build")
         self.gpt = UnifiedVoice(**self.cfg.gpt, use_accel=self.use_accel)
         self.gpt_path = os.path.join(self.model_dir, self.cfg.gpt_checkpoint)
+        self._set_init_stage("gpt_checkpoint")
         load_checkpoint(self.gpt, self.gpt_path)
+        self._set_init_stage("gpt_to_device")
         self.gpt = self.gpt.to(self.device)
         if self.use_fp16:
+            self._set_init_stage("gpt_half")
             self.gpt.eval().half()
         else:
             self.gpt.eval()
@@ -118,6 +135,7 @@ class IndexTTS2:
                 use_deepspeed = False
                 print(f">> Failed to load DeepSpeed. Falling back to normal inference. Error: {e}")
 
+        self._set_init_stage("gpt_post_init")
         self.gpt.post_init_gpt2_config(use_deepspeed=use_deepspeed, kv_cache=True, half=self.use_fp16)
 
         if self.use_cuda_kernel:
@@ -131,23 +149,31 @@ class IndexTTS2:
                 print(f"{e!r}")
                 self.use_cuda_kernel = False
 
+        self._set_init_stage("feature_extractor")
         self.extract_features = SeamlessM4TFeatureExtractor.from_pretrained("facebook/w2v-bert-2.0")
+        self._set_init_stage("semantic_model")
         self.semantic_model, self.semantic_mean, self.semantic_std = build_semantic_model(
             os.path.join(self.model_dir, self.cfg.w2v_stat))
+        self._set_init_stage("semantic_model_to_device")
         self.semantic_model = self.semantic_model.to(self.device)
         self.semantic_model.eval()
         self.semantic_mean = self.semantic_mean.to(self.device)
         self.semantic_std = self.semantic_std.to(self.device)
 
+        self._set_init_stage("semantic_codec_build")
         semantic_codec = build_semantic_codec(self.cfg.semantic_codec)
         semantic_code_ckpt = hf_hub_download("amphion/MaskGCT", filename="semantic_codec/model.safetensors")
+        self._set_init_stage("semantic_codec_checkpoint")
         safetensors.torch.load_model(semantic_codec, semantic_code_ckpt)
+        self._set_init_stage("semantic_codec_to_device")
         self.semantic_codec = semantic_codec.to(self.device)
         self.semantic_codec.eval()
         print('>> semantic_codec weights restored from: {}'.format(semantic_code_ckpt))
 
         s2mel_path = os.path.join(self.model_dir, self.cfg.s2mel_checkpoint)
+        self._set_init_stage("s2mel_build")
         s2mel = MyModel(self.cfg.s2mel, use_gpt_latent=True)
+        self._set_init_stage("s2mel_checkpoint")
         s2mel, _, _, _ = load_checkpoint2(
             s2mel,
             None,
@@ -156,6 +182,7 @@ class IndexTTS2:
             ignore_modules=[],
             is_distributed=False,
         )
+        self._set_init_stage("s2mel_to_device")
         self.s2mel = s2mel.to(self.device)
         self.s2mel.models['cfm'].estimator.setup_caches(max_batch_size=1, max_seq_length=8192)
         
@@ -172,14 +199,19 @@ class IndexTTS2:
         campplus_ckpt_path = hf_hub_download(
             "funasr/campplus", filename="campplus_cn_common.bin"
         )
+        self._set_init_stage("campplus_build")
         campplus_model = CAMPPlus(feat_dim=80, embedding_size=192)
+        self._set_init_stage("campplus_checkpoint")
         campplus_model.load_state_dict(torch.load(campplus_ckpt_path, map_location="cpu"))
+        self._set_init_stage("campplus_to_device")
         self.campplus_model = campplus_model.to(self.device)
         self.campplus_model.eval()
         print(">> campplus_model weights restored from:", campplus_ckpt_path)
 
         bigvgan_name = self.cfg.vocoder.name
+        self._set_init_stage("bigvgan_build")
         self.bigvgan = bigvgan.BigVGAN.from_pretrained(bigvgan_name, use_cuda_kernel=self.use_cuda_kernel)
+        self._set_init_stage("bigvgan_to_device")
         self.bigvgan = self.bigvgan.to(self.device)
         self.bigvgan.remove_weight_norm()
         self.bigvgan.eval()
@@ -198,11 +230,15 @@ class IndexTTS2:
             self.normalizer.load_glossary_from_yaml(self.glossary_path)
             print(">> Glossary loaded from:", self.glossary_path)
 
+        self._set_init_stage("emo_matrix_load")
         emo_matrix = torch.load(os.path.join(self.model_dir, self.cfg.emo_matrix))
+        self._set_init_stage("emo_matrix_to_device")
         self.emo_matrix = emo_matrix.to(self.device)
         self.emo_num = list(self.cfg.emo_num)
 
+        self._set_init_stage("spk_matrix_load")
         spk_matrix = torch.load(os.path.join(self.model_dir, self.cfg.spk_matrix))
+        self._set_init_stage("spk_matrix_to_device")
         self.spk_matrix = spk_matrix.to(self.device)
 
         self.emo_matrix = torch.split(self.emo_matrix, self.emo_num)
@@ -232,6 +268,13 @@ class IndexTTS2:
         # 进度引用显示（可选）
         self.gr_progress = None
         self.model_version = self.cfg.version if hasattr(self.cfg, "version") else None
+        self._set_init_stage("ready")
+
+    def _set_init_stage(self, stage_name):
+        global LAST_INDEXTTS_INIT_STAGE
+        self.init_stage = stage_name
+        LAST_INDEXTTS_INIT_STAGE = stage_name
+        print(f">> IndexTTS init stage: {stage_name}")
 
     @torch.no_grad()
     def get_emb(self, input_features, attention_mask):

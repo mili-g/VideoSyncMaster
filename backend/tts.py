@@ -78,6 +78,10 @@ _INDEXTTS_INSTANCE_KEY = None
 _INDEXTTS_INSTANCE_LOCK = threading.Lock()
 
 
+def _read_indextts_force_fp32_flag():
+    return os.getenv("INDEXTTS_FORCE_FP32", "").strip() == "1"
+
+
 def _is_fatal_cuda_runtime_error(error):
     message = str(error or "").lower()
     return (
@@ -829,7 +833,7 @@ def _build_indextts_instance_key(model_dir, config_path):
     return (
         os.path.abspath(model_dir or DEFAULT_MODEL_DIR),
         os.path.abspath(config_path or DEFAULT_CONFIG_PATH),
-        True,
+        not _read_indextts_force_fp32_flag(),
         False,
         False
     )
@@ -881,24 +885,35 @@ def _get_indextts_instance(model_dir=None, config_path=None):
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-        print(f"Initializing IndexTTS2 from {resolved_model_dir}...")
+        use_fp16 = not _read_indextts_force_fp32_flag()
+        print(
+            f"Initializing IndexTTS2 from {resolved_model_dir}... "
+            f"(use_fp16={use_fp16})"
+        )
+        tts_instance = None
         try:
-            _INDEXTTS_INSTANCE = IndexTTS2(
+            tts_instance = IndexTTS2(
                 cfg_path=resolved_config_path,
                 model_dir=resolved_model_dir,
-                use_fp16=True,
+                use_fp16=use_fp16,
                 use_cuda_kernel=False,
                 use_deepspeed=False
             )
+            _INDEXTTS_INSTANCE = tts_instance
             _INDEXTTS_INSTANCE_KEY = instance_key
             return _INDEXTTS_INSTANCE
         except Exception as init_error:
             _INDEXTTS_INSTANCE = None
             _INDEXTTS_INSTANCE_KEY = None
+            infer_module = sys.modules.get("indextts.infer_v2")
+            init_stage = getattr(tts_instance, "init_stage", None) or getattr(infer_module, "LAST_INDEXTTS_INIT_STAGE", None)
+            if init_stage:
+                print(f"[IndexTTS] Initialization failed at stage: {init_stage}")
             _handle_fatal_indextts_cuda_error(init_error, "model_init")
             if _is_fatal_cuda_runtime_error(init_error):
                 raise RuntimeError(
                     "IndexTTS CUDA context entered a fatal state during model initialization. "
+                    f"stage={init_stage or 'unknown'}. "
                     "The backend worker must be restarted before retrying."
                 ) from init_error
             raise

@@ -45,6 +45,8 @@ interface BackendWorkerState {
   stderrBuffer: string
   requestCounter: number
   activeRequest: ActiveBackendRequest | null
+  launchEnvOverrides: Record<string, string>
+  fatalCudaRestartCount: number
 }
 
 const backendWorkers: Record<BackendLane, BackendWorkerState> = {
@@ -55,7 +57,9 @@ const backendWorkers: Record<BackendLane, BackendWorkerState> = {
     stdoutBuffer: '',
     stderrBuffer: '',
     requestCounter: 0,
-    activeRequest: null
+    activeRequest: null,
+    launchEnvOverrides: {},
+    fatalCudaRestartCount: 0
   },
   prep: {
     process: null,
@@ -64,7 +68,9 @@ const backendWorkers: Record<BackendLane, BackendWorkerState> = {
     stdoutBuffer: '',
     stderrBuffer: '',
     requestCounter: 0,
-    activeRequest: null
+    activeRequest: null,
+    launchEnvOverrides: {},
+    fatalCudaRestartCount: 0
   }
 }
 
@@ -202,7 +208,13 @@ function restartBackendWorkerAfterFatalCuda(lane: BackendLane, message: string) 
     return
   }
 
-  const resetMessage = `[BackendReset] Fatal CUDA worker error detected. Restarting worker. ${message}`
+  workerState.fatalCudaRestartCount += 1
+  workerState.launchEnvOverrides = {
+    ...workerState.launchEnvOverrides,
+    INDEXTTS_FORCE_FP32: '1'
+  }
+
+  const resetMessage = `[BackendReset] Fatal CUDA worker error detected. Restarting worker with safer IndexTTS settings. ${message}`
   if (workerState.activeRequest) {
     workerState.activeRequest.errorData += `${resetMessage}\n`
   }
@@ -391,8 +403,14 @@ async function ensureBackendWorker(lane: BackendLane) {
   workerState.stdoutBuffer = ''
   workerState.stderrBuffer = ''
 
+  const workerEnv = {
+    ...getPythonProcessEnv(),
+    ...workerState.launchEnvOverrides
+  }
+  console.log(`Backend worker env overrides [${lane}]:`, workerState.launchEnvOverrides)
+
   const backendProcess = spawn(finalPythonExe, [scriptPath, '--worker', '--model_dir', modelsDir], {
-    env: getPythonProcessEnv()
+    env: workerEnv
   })
 
   workerState.process = backendProcess
