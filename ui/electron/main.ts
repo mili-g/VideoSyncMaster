@@ -236,11 +236,23 @@ function getProjectRoot() {
     : path.resolve(process.env.APP_ROOT, '..')
 }
 
+function getDefaultOutputDir() {
+  const preferredRoots = [
+    app.getPath('videos'),
+    app.getPath('documents'),
+    app.getPath('downloads'),
+    app.getPath('home')
+  ].filter(Boolean)
+
+  const baseDir = preferredRoots[0] || getProjectRoot()
+  return path.join(baseDir, 'VideoSync')
+}
+
 function getAppPaths() {
   const projectRoot = getProjectRoot()
   return {
     projectRoot,
-    outputDir: path.join(projectRoot, 'output'),
+    outputDir: getDefaultOutputDir(),
     cacheDir: path.join(projectRoot, '.cache')
   }
 }

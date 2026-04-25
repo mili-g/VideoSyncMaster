@@ -21,10 +21,29 @@ import { segmentsToSRT } from './utils/srt';
 
 function App() {
   const [outputDirOverride, setOutputDirOverride] = useState(() => localStorage.getItem('outputDirOverride') || '');
+  const [defaultOutputDir, setDefaultOutputDir] = useState('');
 
   useEffect(() => {
     localStorage.setItem('outputDirOverride', outputDirOverride);
   }, [outputDirOverride]);
+
+  useEffect(() => {
+    let active = true;
+
+    void window.api.getPaths()
+      .then((paths) => {
+        if (active) {
+          setDefaultOutputDir(paths.outputDir || '');
+        }
+      })
+      .catch((error) => {
+        console.error('Failed to load default output dir:', error);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const {
     videoPath, setVideoPath,
@@ -505,7 +524,7 @@ function App() {
 
   const handleResetOutputDir = () => {
     setOutputDirOverride('');
-    setStatus('输出目录已恢复为默认项目 output 文件夹');
+    setStatus(`输出目录已恢复为默认用户目录${defaultOutputDir ? `: ${defaultOutputDir}` : ''}`);
   };
 
   const handleRepairEnv = async () => {
@@ -754,7 +773,7 @@ function App() {
           <div style={{ minWidth: 0 }}>
             <div style={{ color: 'rgba(255,255,255,0.55)', fontSize: '0.78em' }}>当前输出目录</div>
             <div style={{ color: '#fff', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '900px' }}>
-              {outputDirOverride || '默认目录（项目 output 文件夹）'}
+              {outputDirOverride || defaultOutputDir || '默认目录（用户目录）'}
             </div>
           </div>
           <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
