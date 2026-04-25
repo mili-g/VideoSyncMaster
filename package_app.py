@@ -573,12 +573,17 @@ def clean_build_artifacts(root_dir: Path):
 
 def main():
     """主函数"""
-    # 使用当前工作目录而非脚本所在目录，以便从其他位置运行时也能正常工作
-    root_dir = Path(os.getcwd()).resolve()
-    
-    # 验证目录结构
-    if not (root_dir / "ui").exists() or not (root_dir / "backend").exists():
-        print_error(f"当前目录 {root_dir} 不是有效的 VideoSync 项目根目录！")
+    cwd_root = Path(os.getcwd()).resolve()
+    script_root = Path(__file__).resolve().parent
+
+    if (cwd_root / "ui").exists() and (cwd_root / "backend").exists():
+        root_dir = cwd_root
+    elif (script_root / "ui").exists() and (script_root / "backend").exists():
+        root_dir = script_root
+        if cwd_root != script_root:
+            print_info(f"检测到当前工作目录无效，已自动切换到脚本目录: {script_root}")
+    else:
+        print_error(f"当前目录 {cwd_root} 不是有效的 VideoSync 项目根目录！")
         print_info("请在项目根目录下运行此脚本（包含 ui/ 和 backend/ 文件夹的目录）")
         input("\n按回车键退出...")
         return
