@@ -145,7 +145,7 @@ interface BackendStructuredEvent {
 
 const BACKEND_EVENT_PREFIX = '__EVENT__'
 const BACKEND_WORKER_RESULT_PREFIX = '__WORKER_RESULT__'
-const MAX_BACKEND_CAPTURE_CHARS = 16_000
+const MAX_BACKEND_CAPTURE_CHARS = 200_000
 const BACKEND_VERBOSE_STREAMS = process.env.VSM_VERBOSE_BACKEND === '1'
 
 function appendCappedText(existing: string, nextLine: string) {
@@ -175,11 +175,26 @@ function shouldMirrorBackendLine(source: 'stdout' | 'stderr', line: string) {
     return true
   }
 
+  const normalized = line.toLowerCase()
   if (source === 'stdout') {
-    return false
+    return normalized.includes('[progress]')
+      || normalized.includes('[partial]')
+      || normalized.includes('[deps_installing]')
+      || normalized.includes('[deps_done]')
+      || normalized.includes('[stage')
+      || normalized.includes('step ')
+      || normalized.includes('running ')
+      || normalized.includes('synthesizing')
+      || normalized.includes('aligning')
+      || normalized.includes('translating')
+      || normalized.includes('merging')
+      || normalized.includes('reference')
+      || normalized.includes('batch')
+      || normalized.includes('warning')
+      || normalized.includes('failed')
+      || normalized.includes('error')
   }
 
-  const normalized = line.toLowerCase()
   return normalized.includes('traceback')
     || normalized.includes('error')
     || normalized.includes('exception')
@@ -233,6 +248,19 @@ function dispatchBackendStructuredEvent(sender: Electron.WebContents, event: Bac
   }
 
   return false
+}
+
+function dispatchBackendLogLine(
+  sender: Electron.WebContents,
+  payload: {
+    lane: BackendLane
+    source: 'stdout' | 'stderr'
+    level: 'info' | 'warn' | 'error'
+    text: string
+    timestamp: number
+  }
+) {
+  sender.send('backend-log-line', payload)
 }
 
 function isFatalCudaWorkerMessage(message: string) {
@@ -304,6 +332,26 @@ function getProjectRoot() {
     : path.resolve(process.env.APP_ROOT, '..')
 }
 
+function ensureElectronStoragePaths() {
+  const projectRoot = getProjectRoot()
+  const electronDataDir = path.join(projectRoot, '.cache', 'electron')
+  const userDataDir = path.join(electronDataDir, 'user-data')
+  const cacheDir = path.join(electronDataDir, 'cache')
+  const gpuCacheDir = path.join(cacheDir, 'GPUCache')
+
+  for (const dir of [electronDataDir, userDataDir, cacheDir, gpuCacheDir]) {
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true })
+    }
+  }
+
+  app.setPath('userData', userDataDir)
+  app.setPath('sessionData', cacheDir)
+  app.setPath('cache', cacheDir)
+  app.commandLine.appendSwitch('disk-cache-dir', cacheDir)
+  app.commandLine.appendSwitch('user-data-dir', userDataDir)
+}
+
 function getDefaultOutputDir() {
   const preferredRoots = [
     app.getPath('videos'),
@@ -315,6 +363,8 @@ function getDefaultOutputDir() {
   const baseDir = preferredRoots[0] || getProjectRoot()
   return path.join(baseDir, 'VideoSync')
 }
+
+ensureElectronStoragePaths()
 
 function getAppPaths() {
   const projectRoot = getProjectRoot()
@@ -415,12 +465,30 @@ function createBackendProcessLineHandler(lane: BackendLane, source: 'stdout' | '
       }
 
       if (shouldMirrorBackendLine('stdout', normalizedLine)) {
+        if (workerState.activeRequest) {
+          dispatchBackendLogLine(workerState.activeRequest.sender, {
+            lane,
+            source: 'stdout',
+            level: /warning|warn/i.test(normalizedLine) ? 'warn' : /failed|error/i.test(normalizedLine) ? 'error' : 'info',
+            text: normalizedLine,
+            timestamp: Date.now()
+          })
+        }
         console.log(`[Py Stdout:${lane}]`, normalizedLine)
       }
       return
     }
 
     if (shouldMirrorBackendLine('stderr', normalizedLine)) {
+      if (workerState.activeRequest) {
+        dispatchBackendLogLine(workerState.activeRequest.sender, {
+          lane,
+          source: 'stderr',
+          level: /warning|warn/i.test(normalizedLine) ? 'warn' : 'error',
+          text: normalizedLine,
+          timestamp: Date.now()
+        })
+      }
       console.error(`[Py Stderr:${lane}]:`, normalizedLine)
     }
   }

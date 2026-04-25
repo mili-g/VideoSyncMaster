@@ -2,9 +2,12 @@ import ffmpeg
 import os
 import tempfile
 
+from ffmpeg_utils import ensure_portable_ffmpeg_in_path
 from source_separation import prepare_background_stem
 
 TARGET_SAMPLE_RATE = 44100
+
+ensure_portable_ffmpeg_in_path()
 
 def get_audio_duration(file_path):
     try:
@@ -17,6 +20,38 @@ def get_audio_duration(file_path):
     except Exception as e:
         print(f"Error probing audio: {e}")
         return None
+
+
+def _parse_ffmpeg_rate(rate_value):
+    if not rate_value or rate_value in {"0/0", "N/A"}:
+        return None
+    try:
+        if isinstance(rate_value, str) and "/" in rate_value:
+            numerator, denominator = rate_value.split("/", 1)
+            numerator_f = float(numerator)
+            denominator_f = float(denominator)
+            if denominator_f == 0:
+                return None
+            return numerator_f / denominator_f
+        return float(rate_value)
+    except Exception:
+        return None
+
+
+def get_video_frame_rate(video_path):
+    try:
+        probe = ffmpeg.probe(video_path)
+        video_stream = next((stream for stream in probe['streams'] if stream.get('codec_type') == 'video'), None)
+        if not video_stream:
+            return None
+
+        for key in ('avg_frame_rate', 'r_frame_rate'):
+            rate = _parse_ffmpeg_rate(video_stream.get(key))
+            if rate and rate > 0:
+                return rate
+    except Exception as error:
+        print(f"[VideoFPS] Failed to probe source fps: {error}")
+    return None
 
 def align_audio(input_path, output_path, target_duration_sec):
     """
@@ -285,7 +320,7 @@ def _mux_video_with_audio(video_source, audio_source, output_path):
     video_input = ffmpeg.input(video_source)
     audio_input = ffmpeg.input(audio_source)
     stream = ffmpeg.output(video_input["v"], audio_input["a"], output_path, vcodec="copy", acodec="aac", shortest=None)
-    ffmpeg.run(stream, overwrite_output=True, quiet=False)
+    ffmpeg.run(stream, overwrite_output=True, quiet=True)
 
 
 def _build_dubbed_audio_buffer(total_duration, audio_segments, sample_rate):
@@ -744,6 +779,13 @@ def merge_video_advanced(video_path, audio_segments, output_path, strategy, audi
         source_cursor = 0.0
         output_cursor = 0.0
         background_specs = []
+        source_fps = get_video_frame_rate(video_path)
+        chunk_output_args = {'b:v': '4M'}
+        if source_fps and source_fps > 0:
+            chunk_output_args['r'] = round(source_fps, 3)
+            print(f"[AdvancedMerge] Preserving source fps: {chunk_output_args['r']}")
+        else:
+            print("[AdvancedMerge] Source fps unavailable, leaving chunk fps unchanged.")
         
         for i, seg in enumerate(sorted_segments):
             seg_start = float(seg['start'])
@@ -767,7 +809,7 @@ def merge_video_advanced(video_path, audio_segments, output_path, strategy, audi
                         
                         (
                             ffmpeg
-                            .output(input_v, input_a, v_chunk, vcodec='libx264', acodec='aac', ac=2, ar=44100, **{'b:v': '4M', 'r': 30}, preset='fast', shortest=None)
+                            .output(input_v, input_a, v_chunk, vcodec='libx264', acodec='aac', ac=2, ar=44100, **chunk_output_args, preset='fast', shortest=None)
                             .run(overwrite_output=True, quiet=True)
                         )
                         clips_list.append(v_chunk)
@@ -839,10 +881,9 @@ def merge_video_advanced(video_path, audio_segments, output_path, strategy, audi
                 'acodec': 'aac', 
                 'ac': 2,
                 'ar': 44100,
-                'b:v': '4M', 
                 'preset': 'fast',
-                'r': 30, # Enforce 30fps to avoid VFR sync issues in concat
             }
+            output_args.update(chunk_output_args)
             
             target_dur = slot_dur * scale_factor
             if target_dur > 0:
@@ -886,7 +927,7 @@ def merge_video_advanced(video_path, audio_segments, output_path, strategy, audi
                 input_a = ffmpeg.input(f"anullsrc=channel_layout=stereo:sample_rate=44100", f='lavfi', t=tail_dur)
                 (
                     ffmpeg
-                    .output(input_v, input_a, v_chunk, vcodec='libx264', acodec='aac', ac=2, ar=44100, **{'b:v': '4M', 'r': 30}, preset='fast', shortest=None)
+                    .output(input_v, input_a, v_chunk, vcodec='libx264', acodec='aac', ac=2, ar=44100, **chunk_output_args, preset='fast', shortest=None)
                     .run(overwrite_output=True, quiet=True)
                 )
                 clips_list.append(v_chunk)

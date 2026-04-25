@@ -131,6 +131,11 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('backend-deps-done', wrapped)
     return () => ipcRenderer.off('backend-deps-done', wrapped)
   },
+  onBackendLogLine(listener: (line: unknown) => void) {
+    const wrapped = (_event: unknown, line: unknown) => listener(line)
+    ipcRenderer.on('backend-log-line', wrapped)
+    return () => ipcRenderer.off('backend-log-line', wrapped)
+  },
   onMainProcessMessage(listener: (message: string) => void) {
     const wrapped = (_event: unknown, message: string) => listener(message)
     ipcRenderer.on('main-process-message', wrapped)

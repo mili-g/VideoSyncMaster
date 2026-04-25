@@ -31,6 +31,7 @@ interface DesktopApi {
     onBackendPartialResult(listener: (data: unknown) => void): () => void;
     onBackendDepsInstalling(listener: (pkgName: string) => void): () => void;
     onBackendDepsDone(listener: () => void): () => void;
+    onBackendLogLine(listener: (line: import('./types/executionConsole').RawBackendLogLine) => void): () => void;
     onMainProcessMessage(listener: (message: string) => void): () => void;
 }
 

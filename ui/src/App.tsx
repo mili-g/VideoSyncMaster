@@ -14,12 +14,14 @@ import ConfirmDialog from './components/ConfirmDialog';
 import AboutView from './components/AboutView';
 import MergeConfig from './components/MergeConfig';
 import BatchQueuePanel from './components/BatchQueuePanel';
+import ConsoleDrawer from './components/ConsoleDrawer';
 import { useVideoProject } from './hooks/useVideoProject';
 import { useBatchQueue } from './hooks/useBatchQueue';
 import { segmentsToSRT } from './utils/srt';
 
 
 function App() {
+  const [consoleOpen, setConsoleOpen] = useState(false);
   const [outputDirOverride, setOutputDirOverride] = useState(() => localStorage.getItem('outputDirOverride') || '');
   const [defaultOutputDir, setDefaultOutputDir] = useState('');
 
@@ -70,6 +72,9 @@ function App() {
     feedback, setFeedback,
     installingDeps, setInstallingDeps,
     depsPackageName, setDepsPackageName,
+    consoleEntries,
+    rawLogLines,
+    clearExecutionConsole,
     handleASR,
     handleTranslate,
     handleReTranslate,
@@ -129,6 +134,7 @@ function App() {
   const [missingDeps, setMissingDeps] = useState<string[]>([]);
   const [currentView, setCurrentView] = useState<'home' | 'batch' | 'models' | 'asr' | 'tts' | 'translation' | 'merge' | 'about'>(() => (localStorage.getItem('currentView') as any) || 'home');
   const backendBusy = loading || dubbingLoading || generatingSegmentId !== null || isBatchQueueRunning;
+  const consoleAttention = consoleEntries.some(entry => entry.level === 'error' || entry.level === 'warn');
   const batchResumeStartedRef = useRef(false);
   useEffect(() => {
     if (!shouldResumeBatchQueue || backendBusy || batchResumeStartedRef.current) return;
@@ -653,19 +659,19 @@ function App() {
       />
         <div className="content-wrapper" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', padding: '20px', position: 'relative' }}>
         {/* Workflow Step Bar */}
-        <div style={{ marginTop: '0px', marginBottom: '20px', display: 'flex', justifyContent: 'center', position: 'relative' }}>
+        <div className="top-command-bar">
           <div style={{ position: 'absolute', left: 0, top: '50%', transform: 'translateY(-50%)' }}>
             <button
               onClick={handleOneClickRun}
               disabled={backendBusy || !originalVideoPath}
               title={!originalVideoPath ? "请先选择视频" : "自动执行所有步骤"}
               style={{
-                padding: '8px 40px',
-                background: 'rgba(255, 255, 255, 0.1)',
+                padding: '8px 22px',
+                background: 'rgba(255, 255, 255, 0.08)',
                 color: '#fff',
                 border: '1px solid rgba(255, 255, 255, 0.2)',
                 borderRadius: '24px',
-                fontSize: '0.9em',
+                fontSize: '0.84em',
                 fontWeight: 'bold',
                 cursor: (backendBusy || !originalVideoPath) ? 'not-allowed' : 'pointer',
                 opacity: (backendBusy || !originalVideoPath) ? 0.6 : 1,
@@ -681,19 +687,7 @@ function App() {
           <StepBar currentStep={currentStep} themeMode={'dark'} />
 
           <div style={{ position: 'absolute', right: 0, top: '50%', transform: 'translateY(-50%)' }}>
-            {/* Unified Config Card */}
-            <div className="glass-panel" style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '20px',
-              padding: '8px 20px',
-              borderRadius: '20px',
-              fontSize: '0.85em',
-              background: 'rgba(255, 255, 255, 0.03)',
-              border: '1px solid rgba(255, 255, 255, 0.1)',
-              boxShadow: '0 4px 20px rgba(0,0,0,0.2)',
-              whiteSpace: 'nowrap'
-            }}>
+            <div className="top-engine-chip">
               {/* ASR Config */}
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <span title="识别引擎" style={{ opacity: 0.8 }}>🎙️</span>
@@ -732,52 +726,23 @@ function App() {
           </div>
         </div>
 
-        <div style={{
-          marginBottom: '16px',
-          padding: '12px 16px',
-          borderRadius: '14px',
-          background: 'rgba(255,255,255,0.06)',
-          border: '1px solid rgba(255,255,255,0.08)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: '12px',
-          flexWrap: 'wrap'
-        }}>
-          <div style={{ minWidth: 0 }}>
-            <div style={{ color: 'rgba(255,255,255,0.55)', fontSize: '0.78em' }}>当前输出目录</div>
-            <div style={{ color: '#fff', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '900px' }}>
-              {outputDirOverride || defaultOutputDir || '默认目录（用户目录）'}
-            </div>
+        <div className="output-dir-toolbar">
+          <div className="output-dir-toolbar__path" title={outputDirOverride || defaultOutputDir || '默认目录（用户目录）'}>
+            <span className="output-dir-toolbar__label">输出目录</span>
+            <span className="output-dir-toolbar__value">{outputDirOverride || defaultOutputDir || '默认目录（用户目录）'}</span>
           </div>
-          <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+          <div className="output-dir-toolbar__actions">
             <button
               onClick={handleChooseOutputDir}
               disabled={backendBusy}
-              style={{
-                padding: '8px 14px',
-                borderRadius: '10px',
-                border: '1px solid rgba(255,255,255,0.12)',
-                background: 'rgba(59,130,246,0.18)',
-                color: '#fff',
-                cursor: backendBusy ? 'not-allowed' : 'pointer',
-                opacity: backendBusy ? 0.6 : 1
-              }}
+              className="toolbar-button toolbar-button--primary"
             >
               选择目录
             </button>
             <button
               onClick={handleResetOutputDir}
               disabled={backendBusy || !outputDirOverride}
-              style={{
-                padding: '8px 14px',
-                borderRadius: '10px',
-                border: '1px solid rgba(255,255,255,0.12)',
-                background: 'rgba(255,255,255,0.08)',
-                color: '#fff',
-                cursor: (backendBusy || !outputDirOverride) ? 'not-allowed' : 'pointer',
-                opacity: (backendBusy || !outputDirOverride) ? 0.6 : 1
-              }}
+              className="toolbar-button"
             >
               恢复默认
             </button>
@@ -795,69 +760,6 @@ function App() {
             setStatus("播放失败: 无法加载音频文件");
           }}
         />
-
-        {
-          status && (
-            <div style={{ padding: '10px', background: 'rgba(99,102,241,0.2)', borderRadius: '8px', marginBottom: '10px', textAlign: 'center', display: 'flex', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: '15px' }}>
-              <div>{status}</div>
-              {(loading || dubbingLoading || generatingSegmentId !== null) && (
-                <button
-                  onClick={handleStop}
-                  style={{
-                    background: '#ef4444',
-                    color: 'white',
-                    border: 'none',
-                    padding: '4px 12px',
-                    borderRadius: '4px',
-                    cursor: 'pointer',
-                    fontWeight: 'bold',
-                    fontSize: '0.9em'
-                  }}
-                >
-                  ⏹ 停止任务
-                </button>
-              )}
-              {!(loading || dubbingLoading || generatingSegmentId !== null || isBatchQueueRunning) && (
-                <button
-                  onClick={() => setStatus('')}
-                  title="清除消息"
-                  style={{
-                    background: 'transparent',
-                    border: 'none',
-                    color: 'inherit',
-                    opacity: 0.6,
-                    cursor: 'pointer',
-                    padding: '4px',
-                    fontSize: '1.2em',
-                    lineHeight: 1
-                  }}
-                >
-                  ✕
-                </button>
-              )}
-            </div>
-          )
-        }
-
-        {/* Progress Bar */}
-        {
-          (loading || dubbingLoading) && (
-            <div style={{ width: '100%', height: '8px', background: '#374151', borderRadius: '4px', marginBottom: '15px', overflow: 'hidden', position: 'relative' }}>
-              <div
-                className={isIndeterminate ? "progress-bar-indeterminate" : ""}
-                style={{
-                  height: '100%',
-                  background: '#22c55e', // Green
-                  width: isIndeterminate ? '30%' : `${progress}%`,
-                  transition: isIndeterminate ? 'none' : 'width 0.3s ease-out',
-                  position: 'absolute',
-                  left: isIndeterminate ? undefined : 0,
-                  borderRadius: '4px'
-                }}
-              />
-            </div>
-          )
-        }
 
         <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
           {currentView === 'home' && (
@@ -1125,6 +1027,24 @@ function App() {
             </div>
           )}
         </div>
+
+        <ConsoleDrawer
+          open={consoleOpen}
+          hasAttention={consoleAttention}
+          status={status}
+          progress={progress}
+          isIndeterminate={isIndeterminate}
+          isBusy={backendBusy}
+          installingDeps={installingDeps}
+          depsPackageName={depsPackageName}
+          entries={consoleEntries}
+          rawLogLines={rawLogLines}
+          onToggle={() => setConsoleOpen(prev => !prev)}
+          onStop={handleStop}
+          onClearStatus={() => setStatus('')}
+          onClearConsole={clearExecutionConsole}
+          onOpenLog={handleOpenLog}
+        />
       </div>
 
       {

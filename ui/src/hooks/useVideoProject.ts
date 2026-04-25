@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useBackendEvents } from './useBackendEvents';
 import { useDubbingWorkflow } from './useDubbingWorkflow';
 import { usePersistentSettings } from './usePersistentSettings';
@@ -8,6 +8,7 @@ import { saveSubtitleArtifacts } from '../utils/outputArtifacts';
 import { prepareSingleProjectPaths } from '../utils/projectPaths';
 import { isBackendCanceledError } from '../utils/backendCancellation';
 import { getStoredWhisperVadSettings } from '../utils/runtimeSettings';
+import type { ExecutionConsoleEntry, RawBackendLogLine } from '../types/executionConsole';
 
 export interface Segment {
     start: number;
@@ -26,6 +27,8 @@ interface UseVideoProjectOptions {
 }
 
 export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = {}) {
+    const MAX_CONSOLE_ENTRIES = 120;
+    const MAX_RAW_LOG_LINES = 220;
     const [videoPath, setVideoPath] = useState<string>('');
     const [originalVideoPath, setOriginalVideoPath] = useState<string>('');
     const [mergedVideoPath, setMergedVideoPath] = useState<string>('');
@@ -48,8 +51,46 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
     const [feedback, setFeedback] = useState<{ title: string; message: string; type: 'success' | 'error' } | null>(null);
     const [installingDeps, setInstallingDeps] = useState(false);
     const [depsPackageName, setDepsPackageName] = useState('');
+    const [consoleEntries, setConsoleEntries] = useState<ExecutionConsoleEntry[]>([]);
+    const [rawLogLines, setRawLogLines] = useState<RawBackendLogLine[]>([]);
 
     const abortRef = useRef(false);
+
+    const pushConsoleEntry = useCallback((entry: Omit<ExecutionConsoleEntry, 'id' | 'timestamp'>) => {
+        const timestamp = Date.now();
+        const nextEntry: ExecutionConsoleEntry = {
+            ...entry,
+            id: `${timestamp}-${Math.random().toString(36).slice(2, 8)}`,
+            timestamp
+        };
+
+        setConsoleEntries(prev => {
+            const latest = prev[0];
+            if (
+                latest
+                && latest.level === nextEntry.level
+                && latest.origin === nextEntry.origin
+                && latest.title === nextEntry.title
+                && latest.detail === nextEntry.detail
+            ) {
+                return prev;
+            }
+            return [nextEntry, ...prev].slice(0, MAX_CONSOLE_ENTRIES);
+        });
+    }, []);
+
+    const pushRawLogLine = useCallback((line: Omit<RawBackendLogLine, 'id'>) => {
+        const nextLine: RawBackendLogLine = {
+            ...line,
+            id: `${line.timestamp}-${Math.random().toString(36).slice(2, 8)}`
+        };
+        setRawLogLines(prev => [nextLine, ...prev].slice(0, MAX_RAW_LOG_LINES));
+    }, []);
+
+    const clearExecutionConsole = useCallback(() => {
+        setConsoleEntries([]);
+        setRawLogLines([]);
+    }, []);
 
     useEffect(() => {
         localStorage.setItem('audioMixMode', audioMixMode);
@@ -117,7 +158,9 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
         setTranslatedSegments,
         setInstallingDeps,
         setDepsPackageName,
-        setStatus
+        setStatus,
+        pushConsoleEntry,
+        pushRawLogLine
     });
 
     const {
@@ -353,6 +396,9 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
         feedback, setFeedback,
         installingDeps, setInstallingDeps,
         depsPackageName, setDepsPackageName,
+        consoleEntries,
+        rawLogLines,
+        clearExecutionConsole,
 
         handleASR,
         handleTranslate,

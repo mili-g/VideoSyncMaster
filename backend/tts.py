@@ -14,11 +14,14 @@ import torchaudio
 from torch.nn.utils.rnn import pad_sequence
 from audio_validation import validate_generated_audio, validate_generated_audio_array
 from event_protocol import emit_issue, emit_partial_result, emit_progress, emit_stage
+from ffmpeg_utils import ensure_portable_ffmpeg_in_path, resolve_ffmpeg_executable
 from gpu_runtime import choose_adaptive_batch_size, format_gpu_snapshot
 
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 if BACKEND_DIR not in sys.path:
     sys.path.append(BACKEND_DIR)
+
+ensure_portable_ffmpeg_in_path()
 
 try:
     from dependency_manager import ensure_transformers_version
@@ -935,12 +938,20 @@ def trim_silence(audio_path, output_path=None):
         filter_str = "silenceremove=start_periods=1:start_duration=0.1:start_threshold=-50dB,areverse,silenceremove=start_periods=1:start_duration=0.1:start_threshold=-50dB,areverse"
         
         cmd = [
-            'ffmpeg', '-y', '-i', audio_path,
+            resolve_ffmpeg_executable(), '-y', '-i', audio_path,
             '-af', filter_str,
             temp_path
         ]
         
-        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(
+            cmd,
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding='utf-8',
+            errors='replace'
+        )
         
         if os.path.exists(temp_path) and os.path.getsize(temp_path) > 1000: # >1KB
             if os.path.exists(output_path) and output_path != audio_path:
@@ -957,6 +968,12 @@ def trim_silence(audio_path, output_path=None):
             if os.path.exists(temp_path): os.remove(temp_path)
             return False
             
+    except subprocess.CalledProcessError as e:
+        print(f"[Trim] Error trimming silence: {(e.stderr or '').strip() or e}")
+        if os.path.exists(temp_path): 
+            try: os.remove(temp_path)
+            except: pass
+        return False
     except Exception as e:
         print(f"[Trim] Error trimming silence: {e}")
         if os.path.exists(temp_path): 

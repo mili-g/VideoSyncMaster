@@ -36,3 +36,518 @@
 .read-the-docs {
   color: #888;
 }
+
+.execution-console {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 18px 20px;
+  border-radius: 18px 18px 0 0;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: none;
+  background: rgba(11, 15, 25, 0.94);
+  backdrop-filter: blur(22px);
+  color: #e5eefc;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.top-command-bar {
+  margin-top: 0;
+  margin-bottom: 14px;
+  display: flex;
+  justify-content: center;
+  position: relative;
+  min-height: 56px;
+}
+
+.top-engine-chip {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  font-size: 0.8em;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+  white-space: nowrap;
+}
+
+.output-dir-toolbar {
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.07);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.output-dir-toolbar__path {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: rgba(255,255,255,0.72);
+  flex: 1;
+}
+
+.output-dir-toolbar__label {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: rgba(255,255,255,0.5);
+}
+
+.output-dir-toolbar__value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.output-dir-toolbar__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.toolbar-button {
+  padding: 7px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.08);
+  color: #fff;
+  cursor: pointer;
+}
+
+.toolbar-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.toolbar-button--primary {
+  background: rgba(59,130,246,0.18);
+}
+
+.console-drawer {
+  position: fixed;
+  left: 112px;
+  right: 20px;
+  bottom: 0;
+  z-index: 30;
+  pointer-events: none;
+}
+
+.console-drawer__toggle {
+  pointer-events: auto;
+  position: absolute;
+  right: 8px;
+  bottom: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 14px 14px 0 0;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-bottom: none;
+  background: rgba(11, 15, 25, 0.92);
+  color: #f8fbff;
+  cursor: pointer;
+  box-shadow: 0 -8px 28px rgba(0,0,0,0.25);
+}
+
+.console-drawer__toggle--attention {
+  border-color: rgba(248, 113, 113, 0.34);
+}
+
+.console-drawer__toggle-icon {
+  font-size: 12px;
+  opacity: 0.8;
+}
+
+.console-drawer__toggle-label {
+  font-weight: 700;
+}
+
+.console-drawer__toggle-badge {
+  min-width: 22px;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: rgba(248, 113, 113, 0.2);
+  color: #fecaca;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.console-drawer__toggle-badge--busy {
+  background: rgba(34, 197, 94, 0.18);
+  color: #bbf7d0;
+}
+
+.console-drawer__panel {
+  pointer-events: auto;
+  transform: translateY(calc(100% + 12px));
+  opacity: 0;
+  transition: transform 0.22s ease, opacity 0.22s ease;
+  height: min(60vh, calc(100vh - 96px));
+  width: 100%;
+  overflow: hidden;
+}
+
+.console-drawer--open .console-drawer__panel {
+  transform: translateY(0);
+  opacity: 1;
+}
+
+.console-drawer--open .console-drawer__toggle {
+  bottom: calc(min(60vh, calc(100vh - 96px)) - 2px);
+}
+
+.execution-console__header,
+.execution-console__workspace,
+.execution-console__rail,
+.execution-console__panel-head,
+.execution-console__event-top,
+.execution-console__issue-head,
+.execution-console__progress-meta,
+.execution-console__meta,
+.execution-console__actions {
+  display: flex;
+}
+
+.execution-console__header,
+.execution-console__workspace,
+.execution-console__rail {
+  gap: 16px;
+}
+
+.execution-console__header {
+  align-items: flex-start;
+  justify-content: space-between;
+  flex: 0 0 auto;
+}
+
+.execution-console__status {
+  min-width: 0;
+  flex: 1;
+}
+
+.execution-console__eyebrow {
+  margin-bottom: 8px;
+  color: rgba(191, 219, 254, 0.72);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.execution-console__headline {
+  font-size: 20px;
+  line-height: 1.35;
+  font-weight: 700;
+  color: #f8fbff;
+  word-break: break-word;
+}
+
+.execution-console__meta,
+.execution-console__actions,
+.execution-console__progress-meta {
+  flex-wrap: wrap;
+}
+
+.execution-console__meta {
+  gap: 10px;
+  margin-top: 10px;
+  color: rgba(226, 232, 240, 0.76);
+  font-size: 13px;
+}
+
+.execution-console__meta span,
+.execution-console__progress-meta span {
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.execution-console__actions {
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.execution-console__button {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.05);
+  color: #eff6ff;
+  border-radius: 10px;
+  padding: 10px 14px;
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease, transform 0.18s ease;
+}
+
+.execution-console__button:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+.execution-console__button--primary {
+  background: rgba(37, 99, 235, 0.22);
+  border-color: rgba(96, 165, 250, 0.25);
+}
+
+.execution-console__button--danger {
+  background: rgba(220, 38, 38, 0.22);
+  border-color: rgba(248, 113, 113, 0.26);
+}
+
+.execution-console__progress {
+  flex: 0 0 auto;
+}
+
+.execution-console__progress-track {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(51, 65, 85, 0.8);
+}
+
+.execution-console__progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #22c55e 0%, #38bdf8 100%);
+  transition: width 0.25s ease;
+}
+
+.execution-console__progress-fill--indeterminate {
+  background: linear-gradient(90deg, rgba(34, 197, 94, 0.35) 0%, #22c55e 50%, rgba(56, 189, 248, 0.35) 100%);
+  background-size: 200% 100%;
+  animation: indeterminate-progress 1.2s linear infinite;
+}
+
+.execution-console__progress-meta {
+  gap: 10px;
+  margin-top: 10px;
+  color: rgba(226, 232, 240, 0.82);
+  font-size: 13px;
+}
+
+.execution-console__workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(320px, 1fr) minmax(280px, 0.9fr);
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  align-items: stretch;
+}
+
+.execution-console__panel {
+  min-width: 0;
+  flex: 1;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  min-height: 0;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.execution-console__panel--raw {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.execution-console__panel--events,
+.execution-console__panel--issues {
+  display: flex;
+  flex-direction: column;
+}
+
+.execution-console__panel-head {
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.execution-console__panel-head h3 {
+  margin: 0;
+  font-size: 15px;
+  color: #f8fbff;
+}
+
+.execution-console__panel-head span {
+  font-size: 12px;
+  color: rgba(191, 219, 254, 0.7);
+}
+
+.execution-console__event-list,
+.execution-console__issues,
+.execution-console__raw-list {
+  display: grid;
+  gap: 10px;
+  min-height: 0;
+}
+
+.execution-console__event-list,
+.execution-console__issues {
+  flex: 1;
+  max-height: none;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.execution-console__event,
+.execution-console__issue {
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.62);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.execution-console__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.execution-console__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+}
+
+.execution-console__event-top,
+.execution-console__issue-head {
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.execution-console__time,
+.execution-console__issue-head span {
+  color: rgba(191, 219, 254, 0.7);
+  font-size: 12px;
+}
+
+.execution-console__title,
+.execution-console__issue-head strong {
+  margin-top: 10px;
+  color: #f8fbff;
+  font-size: 14px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.execution-console__detail,
+.execution-console__issue-detail,
+.execution-console__empty {
+  margin-top: 6px;
+  color: rgba(226, 232, 240, 0.72);
+  font-size: 13px;
+  line-height: 1.55;
+  word-break: break-word;
+}
+
+.execution-console__issue--warn {
+  border-color: rgba(245, 158, 11, 0.22);
+  background: rgba(120, 53, 15, 0.24);
+}
+
+.execution-console__issue--error {
+  border-color: rgba(248, 113, 113, 0.24);
+  background: rgba(127, 29, 29, 0.24);
+}
+
+.execution-console__raw-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.execution-console__raw {
+  display: flex;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(2, 6, 23, 0.66);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.execution-console__raw--warn {
+  border-color: rgba(245, 158, 11, 0.18);
+}
+
+.execution-console__raw--error {
+  border-color: rgba(248, 113, 113, 0.2);
+}
+
+.execution-console__raw-meta {
+  flex: 0 0 auto;
+  color: rgba(148, 163, 184, 0.9);
+}
+
+.execution-console__raw-text {
+  color: #e2e8f0;
+  word-break: break-word;
+}
+
+@media (max-width: 1100px) {
+  .top-command-bar {
+    min-height: 120px;
+  }
+
+  .execution-console__header,
+  .execution-console__workspace,
+  .execution-console__rail {
+    flex-direction: column;
+  }
+
+  .execution-console__workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .execution-console__actions {
+    justify-content: flex-start;
+  }
+
+  .execution-console__raw {
+    flex-direction: column;
+  }
+
+  .output-dir-toolbar,
+  .output-dir-toolbar__path {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .output-dir-toolbar__actions {
+    width: 100%;
+  }
+
+  .console-drawer {
+    left: 12px;
+    right: 12px;
+  }
+
+  .console-drawer__panel {
+    width: 100%;
+    height: min(65vh, calc(100vh - 84px));
+  }
+}
