@@ -1220,12 +1220,24 @@ async function recoverExistingBatchAudioSegments(
     sessionAudioDir: string
 ) {
     const recovered = await Promise.all(segments.map(async (segment, index) => {
-        const audioPath = `${sessionAudioDir}\\segment_${index}.wav`;
-        const exists = await window.api.checkFileExists(audioPath);
-        if (!exists) {
+        const candidatePaths = [
+            `${sessionAudioDir}\\segment_${index}.wav`,
+            `${sessionAudioDir}\\segment_retry_${index}.wav`
+        ];
+
+        let resolvedPath: string | undefined;
+        for (const candidatePath of candidatePaths) {
+            const exists = await window.api.checkFileExists(candidatePath);
+            if (exists) {
+                resolvedPath = candidatePath;
+                break;
+            }
+        }
+
+        if (!resolvedPath) {
             return false;
         }
-        segment.path = audioPath;
+        segment.path = resolvedPath;
         return true;
     }));
 
@@ -1289,7 +1301,7 @@ async function retryFailedBatchSegments({
         const segment = translatedSegments[index];
         if (!segment) continue;
 
-        const outputPath = `${sessionDir}\\segment_retry_${index}.wav`;
+        const outputPath = `${sessionDir}\\segment_${index}.wav`;
         const result = await window.api.runBackend(
             buildSingleTtsArgs(
                 sourcePath,
