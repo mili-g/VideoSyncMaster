@@ -138,6 +138,7 @@ function App() {
     acknowledgeBatchQueueResume();
     setStatus('检测到上次未完成的批量任务，正在自动继续...');
     void startBatchQueue({
+      outputDirOverride,
       targetLang,
       asrService,
       ttsService,
@@ -159,6 +160,7 @@ function App() {
     batchSize,
     cloneBatchSize,
     maxNewTokens,
+    outputDirOverride,
     setStatus,
     shouldResumeBatchQueue,
     startBatchQueue,
