@@ -308,7 +308,7 @@ import json
 import shutil
 from action_handlers import dispatch_basic_action
 from cli_options import build_parser, build_tts_kwargs, build_translation_kwargs
-from dependency_manager import ensure_transformers_version, check_gpu_deps
+from dependency_manager import ensure_transformers_version, check_gpu_deps, get_installed_version
 from error_model import emit_error_issue, error_result, exception_result, make_error
 from runtime_config import build_dub_video_runtime_config
 from tts_action_handlers import generate_batch_tts_results, handle_generate_batch_tts, handle_generate_single_tts, handle_prepare_reference_audio
@@ -369,6 +369,50 @@ def get_tts_runner(service="indextts", check_deps=True):
     except ImportError as e:
         log_error(logger, f"Failed to import TTS service {service}", event="tts_import_failed", stage="bootstrap", detail=str(e))
         return None, None
+
+
+def warmup_tts_runtime(service="indextts"):
+    log_business(
+        logger,
+        logging.INFO,
+        "Warming up TTS runtime",
+        event="tts_runtime_warmup",
+        stage="bootstrap",
+        detail=service
+    )
+    emit_stage(
+        "warmup_tts_runtime",
+        "bootstrap",
+        f"正在准备 {service} 运行环境",
+        stage_label="正在切换 TTS 环境"
+    )
+
+    run_tts_func, run_batch_tts_func = get_tts_runner(service)
+    if not run_tts_func or not run_batch_tts_func:
+        backend_error = make_error(
+            "TTS_RUNTIME_WARMUP_FAILED",
+            f"TTS 运行环境准备失败: {service}",
+            category="tts",
+            stage="bootstrap",
+            retryable=True,
+            detail=f"runner_init_failed:{service}",
+            suggestion="请检查模型依赖、Python 运行环境或切换缓存"
+        )
+        emit_error_issue("warmup_tts_runtime", backend_error)
+        return error_result(backend_error)
+
+    emit_stage(
+        "warmup_tts_runtime",
+        "bootstrap",
+        f"{service} 运行环境已就绪",
+        status="completed",
+        stage_label="正在切换 TTS 环境"
+    )
+    return {
+        "success": True,
+        "service": service,
+        "runtime_version": get_installed_version("transformers"),
+    }
 
 
 
@@ -948,6 +992,9 @@ def execute_with_args(args):
                 sf=sf
             )
             return result_data
+
+        if args.action == "warmup_tts_runtime":
+            return warmup_tts_runtime(args.tts_service)
 
         log_error(logger, f"Unknown action: {args.action}", event="unknown_action", stage="dispatch", code="UNKNOWN_ACTION", retryable=False)
         return None

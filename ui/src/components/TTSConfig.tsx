@@ -7,7 +7,7 @@ import type { TtsVoiceMode } from '../utils/runtimeSettings';
 interface TTSConfigProps {
     themeMode?: 'light' | 'dark' | 'gradient';
     activeService: 'indextts' | 'qwen';
-    onServiceChange: (service: 'indextts' | 'qwen') => boolean;
+    onServiceChange: (service: 'indextts' | 'qwen') => Promise<boolean>;
     onQwenModeChange: (mode: 'clone' | 'design' | 'preset') => void;
     batchSize: number;
     setBatchSize: (size: number) => void;
@@ -132,35 +132,22 @@ const TTSConfig: React.FC<TTSConfigProps> = ({ themeMode, activeService, onServi
     const handleSwitchService = async (target: 'indextts' | 'qwen') => {
         if (target === activeService) return;
 
-        // Perform validation first
-        const success = onServiceChange(target);
-        if (!success) return; // Blocked by incompatibility
-
         setSwitching(true);
-        setSwitchStatus('正在配置环境...');
+        setSwitchStatus('正在切换运行环境...');
 
         try {
-            // Restart the persistent backend worker before switching runtime profiles.
-            // The Python process keeps imported modules and model state in memory,
-            // so a clean worker is the most reliable way to apply dependency swaps.
-            await window.api.killBackend();
-            setSwitchStatus('正在重启运行环境...');
-
-            await window.api.runBackend([
-                '--action', 'generate_single_tts',
-                '--tts_service', target,
-                '--input', 'dummy', '--output', 'dummy', '--text', 'dummy'
-            ]);
-
-            setSwitchStatus('');
-            setSwitching(false);
-            // No alert needed, UI update is enough feedback.
-
+            const success = await onServiceChange(target);
+            if (!success) {
+                return;
+            }
         } catch (e) {
             console.error(e);
             setSwitchStatus('切换失败');
-            setSwitching(false);
             setFeedback({ title: '切换失败', message: '切换环境失败，请查看日志。', type: 'error' });
+            return;
+        } finally {
+            setSwitchStatus('');
+            setSwitching(false);
         }
     };
 

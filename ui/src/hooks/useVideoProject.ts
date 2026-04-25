@@ -144,16 +144,70 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
         return true;
     };
 
-    const handleTtsServiceChange = (newService: 'indextts' | 'qwen') => {
+    const switchTtsRuntime = useCallback(async (newService: 'indextts' | 'qwen') => {
         const check = validateServiceIncompatibility(asrService, newService, 'tts');
         if (!check.valid) {
             setFeedback({ title: '选择冲突', message: check.message!, type: 'error' });
             return false;
         }
 
-        setTtsService(newService);
-        return true;
-    };
+        if (newService === ttsService) {
+            return true;
+        }
+
+        setInstallingDeps(true);
+        setDepsPackageName(newService === 'qwen' ? 'Qwen3 TTS Runtime' : 'IndexTTS Runtime');
+        setStatus(`正在切换到 ${newService === 'qwen' ? 'Qwen3-TTS' : 'Index-TTS'} 运行环境...`);
+
+        try {
+            await window.api.killBackend();
+            const result = await window.api.runBackend([
+                '--action', 'warmup_tts_runtime',
+                '--tts_service', newService,
+                '--json'
+            ]);
+
+            const errorInfo = normalizeBackendError(result, 'TTS 运行环境切换失败');
+            if (!result || result.success !== true) {
+                setFeedback({
+                    title: '切换失败',
+                    message: buildUserFacingErrorMessage(errorInfo),
+                    type: 'error'
+                });
+                setStatus(buildUserFacingErrorMessage(errorInfo));
+                return false;
+            }
+
+            setTtsService(newService);
+            setStatus(`${newService === 'qwen' ? 'Qwen3-TTS' : 'Index-TTS'} 运行环境已就绪`);
+            return true;
+        } catch (e) {
+            logUiError('切换 TTS 运行环境失败', {
+                domain: 'workflow.tts',
+                action: 'switchTtsRuntime',
+                detail: e instanceof Error ? e.message : String(e)
+            });
+            const errorInfo = normalizeBackendError(e, 'TTS 运行环境切换失败');
+            setFeedback({
+                title: '切换失败',
+                message: buildUserFacingErrorMessage(errorInfo),
+                type: 'error'
+            });
+            setStatus(buildUserFacingErrorMessage(errorInfo));
+            return false;
+        } finally {
+            setInstallingDeps(false);
+            setDepsPackageName('');
+        }
+    }, [
+        asrService,
+        setDepsPackageName,
+        setFeedback,
+        setInstallingDeps,
+        setStatus,
+        setTtsService,
+        ttsService
+    ]);
 
     useBackendEvents({
         setIsIndeterminate,
@@ -533,7 +587,7 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
         targetLang, setTargetLang,
         asrService, handleAsrServiceChange,
         asrOriLang,
-        ttsService, handleTtsServiceChange,
+        ttsService, handleTtsServiceChange: switchTtsRuntime,
         batchSize, setBatchSize,
         cloneBatchSize, setCloneBatchSize,
         maxNewTokens, setMaxNewTokens,
