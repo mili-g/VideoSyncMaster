@@ -10,8 +10,10 @@ import atexit
 import threading
 import time
 import math
+import logging
 import torchaudio
 from torch.nn.utils.rnn import pad_sequence
+from app_logging import get_logger, log_business, log_debug, log_error, redirect_print
 from audio_validation import validate_generated_audio, validate_generated_audio_array
 from event_protocol import emit_issue, emit_partial_result, emit_progress, emit_stage
 from ffmpeg_utils import ensure_portable_ffmpeg_in_path, resolve_ffmpeg_executable
@@ -20,6 +22,9 @@ from gpu_runtime import choose_adaptive_batch_size, format_gpu_snapshot
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 if BACKEND_DIR not in sys.path:
     sys.path.append(BACKEND_DIR)
+
+logger = get_logger("tts.indextts")
+print = redirect_print(logger, default_level=logging.DEBUG)
 
 ensure_portable_ffmpeg_in_path()
 
@@ -857,9 +862,9 @@ def _cleanup_indextts_instance():
     if torch.cuda.is_available():
         try:
             torch.cuda.empty_cache()
-            print("[IndexTTS] VRAM cleared.")
+            log_debug(logger, "IndexTTS VRAM cache cleared", event="vram_cleared", stage="cleanup")
         except Exception as cleanup_error:
-            print(f"[IndexTTS] Failed to clear VRAM: {cleanup_error}")
+            log_error(logger, "Failed to clear IndexTTS VRAM cache", event="vram_clear_failed", stage="cleanup", detail=str(cleanup_error))
 
 
 def _get_indextts_instance(model_dir=None, config_path=None):
@@ -874,11 +879,11 @@ def _get_indextts_instance(model_dir=None, config_path=None):
 
     with _INDEXTTS_INSTANCE_LOCK:
         if _INDEXTTS_INSTANCE is not None and _INDEXTTS_INSTANCE_KEY == instance_key:
-            print(f"[IndexTTS] Reusing loaded model from {resolved_model_dir}.")
+            log_debug(logger, "Reusing existing IndexTTS instance", event="instance_reused", stage="init", detail=resolved_model_dir)
             return _INDEXTTS_INSTANCE
 
         if _INDEXTTS_INSTANCE is not None and _INDEXTTS_INSTANCE_KEY != instance_key:
-            print("[IndexTTS] Model path changed, releasing previous instance before reload.")
+            log_business(logger, logging.INFO, "IndexTTS model path changed, releasing old instance", event="instance_replaced", stage="init", detail=resolved_model_dir)
             try:
                 del _INDEXTTS_INSTANCE
             except Exception:
@@ -889,9 +894,13 @@ def _get_indextts_instance(model_dir=None, config_path=None):
                 torch.cuda.empty_cache()
 
         use_fp16 = not _read_indextts_force_fp32_flag()
-        print(
-            f"Initializing IndexTTS2 from {resolved_model_dir}... "
-            f"(use_fp16={use_fp16})"
+        log_business(
+            logger,
+            logging.INFO,
+            "Initializing IndexTTS instance",
+            event="instance_init",
+            stage="init",
+            detail=f"model_dir={resolved_model_dir} use_fp16={use_fp16}"
         )
         tts_instance = None
         try:
@@ -911,7 +920,7 @@ def _get_indextts_instance(model_dir=None, config_path=None):
             infer_module = sys.modules.get("indextts.infer_v2")
             init_stage = getattr(tts_instance, "init_stage", None) or getattr(infer_module, "LAST_INDEXTTS_INIT_STAGE", None)
             if init_stage:
-                print(f"[IndexTTS] Initialization failed at stage: {init_stage}")
+                log_error(logger, "IndexTTS initialization failed", event="instance_init_failed", stage="init", detail=f"stage={init_stage}")
             _handle_fatal_indextts_cuda_error(init_error, "model_init")
             if _is_fatal_cuda_runtime_error(init_error):
                 raise RuntimeError(
@@ -964,18 +973,18 @@ def trim_silence(audio_path, output_path=None):
                 os.rename(temp_path, output_path)
             return True
         else:
-            print(f"[Trim] Warning: Trim resulted in empty file, keeping original. {audio_path}")
+            log_business(logger, logging.WARNING, "Trim resulted in empty output; keeping original audio", event="trim_empty_result", stage="trim", detail=audio_path)
             if os.path.exists(temp_path): os.remove(temp_path)
             return False
             
     except subprocess.CalledProcessError as e:
-        print(f"[Trim] Error trimming silence: {(e.stderr or '').strip() or e}")
+        log_error(logger, "FFmpeg trim silence failed", event="trim_failed", stage="trim", detail=(e.stderr or '').strip() or str(e))
         if os.path.exists(temp_path): 
             try: os.remove(temp_path)
             except: pass
         return False
     except Exception as e:
-        print(f"[Trim] Error trimming silence: {e}")
+        log_error(logger, "Unexpected trim silence failure", event="trim_failed", stage="trim", detail=str(e))
         if os.path.exists(temp_path): 
             try: os.remove(temp_path)
             except: pass
@@ -984,7 +993,7 @@ def trim_silence(audio_path, output_path=None):
 
 def run_tts(text, ref_audio_path, output_path, model_dir=None, config_path=None, language="English", **kwargs):
     if IndexTTS2 is None:
-        print("IndexTTS2 not available.")
+        log_error(logger, "IndexTTS2 runtime is unavailable", event="service_unavailable", stage="single_tts")
         return False
     
     if model_dir is None:
@@ -992,10 +1001,9 @@ def run_tts(text, ref_audio_path, output_path, model_dir=None, config_path=None,
     if config_path is None:
         config_path = DEFAULT_CONFIG_PATH
         
-    print(f"TTS Text with tag: {text}")
     normalized_text = _normalize_indextts_text(text)
     if normalized_text != text:
-        print(f"[TextNorm] {text} -> {normalized_text}")
+        log_debug(logger, "Normalized TTS input text", event="text_normalized", stage="single_tts", detail=f"{text} -> {normalized_text}")
     
 
     
@@ -1005,7 +1013,7 @@ def run_tts(text, ref_audio_path, output_path, model_dir=None, config_path=None,
         if tts is None:
             return False
         
-        print(f"Synthesizing text: '{normalized_text}' using ref: {ref_audio_path}")
+        log_business(logger, logging.INFO, "Starting single TTS synthesis", event="single_tts_started", stage="single_tts", detail=f"ref={ref_audio_path}")
         
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
         
@@ -1026,14 +1034,14 @@ def run_tts(text, ref_audio_path, output_path, model_dir=None, config_path=None,
             f"audio={duration:.2f}s rtf={rtf:.3f} retry={retry_mode} path={output_path}"
         )
         
-        print(f"TTS complete. Saved to {output_path}")
+        log_business(logger, logging.INFO, "Single TTS synthesis completed", event="single_tts_completed", stage="single_tts", detail=output_path)
         return True
         
     except Exception as e:
         _handle_fatal_indextts_cuda_error(e, "single_tts")
         elapsed_ms = (time.perf_counter() - started_at) * 1000.0
         print(f"[TTSTiming] mode=single_failed total={elapsed_ms:.0f}ms path={output_path}")
-        print(f"Error during TTS: {e}")
+        log_error(logger, "Single TTS synthesis failed", event="single_tts_failed", stage="single_tts", detail=str(e))
         import traceback
         traceback.print_exc()
         return False
@@ -1046,7 +1054,7 @@ def run_batch_tts(tasks, model_dir=None, config_path=None, language="English", *
     :param language: Default language for tasks if not specified in task item
     """
     if IndexTTS2 is None:
-        print("IndexTTS2 not available.")
+        log_error(logger, "IndexTTS2 runtime is unavailable", event="service_unavailable", stage="batch_tts")
         # Fix: Yield error for each task so main.py knows it failed explicitly
         for task in tasks:
             yield {"success": False, "error": "IndexTTS2 not available: " + str(sys.modules.get('indextts.infer_v2', 'Unknown Import Error'))}
@@ -1069,7 +1077,7 @@ def run_batch_tts(tasks, model_dir=None, config_path=None, language="English", *
         requested_batch_size = max(int(kwargs.get('batch_size', 1) or 1), 1)
         adaptive_batch_size, adaptive_detail = choose_adaptive_batch_size(requested_batch_size, "indextts")
         if adaptive_detail:
-            print(f"[IndexTTS] Adaptive batch size selected: {format_gpu_snapshot(adaptive_detail)}")
+            log_business(logger, logging.INFO, "Adaptive batch size selected", event="adaptive_batch_selected", stage="batch_tts", detail=format_gpu_snapshot(adaptive_detail))
 
         runtime_kwargs = _sanitize_indextts_batch_runtime_kwargs(kwargs)
         runtime_kwargs['batch_size'] = adaptive_batch_size
@@ -1101,7 +1109,7 @@ def run_batch_tts(tasks, model_dir=None, config_path=None, language="English", *
         dynamic_buckets = _build_dynamic_batch_buckets(batchable_tasks, adaptive_batch_size)
 
         if dynamic_buckets and not _should_use_indextts_true_batch(adaptive_batch_size):
-            print("[IndexTTS] True batch temporarily disabled due to CUDA instability. Using sequential generation.")
+            log_business(logger, logging.WARNING, "True batch disabled due to CUDA instability; falling back to sequential mode", event="true_batch_disabled", stage="batch_tts")
             sequential_tasks = [entry["task"] for bucket in dynamic_buckets for entry in bucket] + sequential_tasks
             dynamic_buckets = []
 
@@ -1141,7 +1149,7 @@ def run_batch_tts(tasks, model_dir=None, config_path=None, language="English", *
                     )
                 except Exception as batch_error:
                     _handle_fatal_indextts_cuda_error(batch_error, "true_batch")
-                    print(f"[BatchTTS] True batch execution failed, falling back to single inference: {batch_error}")
+                    log_error(logger, "True batch execution failed; falling back to single inference", event="true_batch_failed", stage="batch_tts", detail=str(batch_error))
                     batch_results = []
                     for entry in batch_entries:
                         task = entry["task"]
@@ -1203,7 +1211,7 @@ def run_batch_tts(tasks, model_dir=None, config_path=None, language="English", *
             out = task['output_path']
             item_position = processed + 1
 
-            print(f"Synthesizing [{item_position}/{total}]: '{text}'")
+            log_debug(logger, "Running sequential TTS item", event="sequential_item_started", stage="batch_tts", detail=f"item={item_position}/{total}")
             emit_progress(
                 "generate_batch_tts",
                 "tts_generate",
@@ -1248,7 +1256,7 @@ def run_batch_tts(tasks, model_dir=None, config_path=None, language="English", *
                 _handle_fatal_indextts_cuda_error(e, "sequential_tts")
                 single_elapsed_ms = (time.perf_counter() - single_started_at) * 1000.0
                 print(f"[TTSTiming] mode=sequential_failed total={single_elapsed_ms:.0f}ms index={task.get('index')}")
-                print(f"Failed task {item_position - 1}: {e}")
+                log_error(logger, "Sequential TTS item failed", event="sequential_item_failed", stage="batch_tts", detail=f"index={task.get('index')} error={e}")
                 emit_issue(
                     "generate_batch_tts",
                     "tts_generate",
@@ -1278,7 +1286,7 @@ def run_batch_tts(tasks, model_dir=None, config_path=None, language="English", *
                 yield error_result
 
     except Exception as e:
-        print(f"Error during Batch TTS: {e}")
+        log_error(logger, "Batch TTS execution failed", event="batch_tts_failed", stage="batch_tts", detail=str(e))
         emit_issue(
             "generate_batch_tts",
             "tts_generate",

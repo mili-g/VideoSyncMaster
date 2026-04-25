@@ -25,6 +25,7 @@ export interface SingleProjectOutputPaths {
     originalSubtitlePath: string;
     translatedSubtitlePath: string;
     sessionCacheDir: string;
+    sessionManifestPath: string;
     sessionAudioDir: string;
     sessionTempDir: string;
 }
@@ -33,6 +34,10 @@ export interface BatchProjectOutputPaths extends SingleProjectOutputPaths {}
 
 function resolveOutputDir(paths: DesktopProjectPaths, outputDirOverride?: string) {
     return outputDirOverride?.trim() || paths.outputDir;
+}
+
+function buildSessionCacheRoot(outputDir: string) {
+    return `${outputDir}\\.videosync-cache\\sessions`;
 }
 
 export function getFileNameFromPath(filePath: string, fallback = 'video.mp4') {
@@ -48,7 +53,7 @@ export function buildSingleOutputPaths(
     const sessionKey = buildSessionKey(fileName);
     const outputDir = resolveOutputDir(paths, outputDirOverride);
     const finalDir = `${outputDir}\\${sessionKey}`;
-    const sessionCacheDir = `${paths.cacheDir}\\sessions\\single\\${sessionKey}`;
+    const sessionCacheDir = `${buildSessionCacheRoot(outputDir)}\\single\\${sessionKey}`;
 
     return {
         baseName,
@@ -59,6 +64,7 @@ export function buildSingleOutputPaths(
         originalSubtitlePath: `${finalDir}\\${baseName}.en.srt`,
         translatedSubtitlePath: `${finalDir}\\${baseName}.zh-CN.srt`,
         sessionCacheDir,
+        sessionManifestPath: `${sessionCacheDir}\\session-manifest.json`,
         sessionAudioDir: `${sessionCacheDir}\\audio`,
         sessionTempDir: `${sessionCacheDir}\\temp`
     };
@@ -74,7 +80,7 @@ export function buildBatchOutputPaths(
     const sessionKey = `${buildSessionKey(fileName)}_${itemId.slice(-4)}`;
     const outputDir = resolveOutputDir(paths, outputDirOverride);
     const finalDir = `${outputDir}\\${sessionKey}`;
-    const sessionCacheDir = `${paths.cacheDir}\\sessions\\batch\\${sessionKey}`;
+    const sessionCacheDir = `${buildSessionCacheRoot(outputDir)}\\batch\\${sessionKey}`;
 
     return {
         baseName,
@@ -85,6 +91,7 @@ export function buildBatchOutputPaths(
         originalSubtitlePath: `${finalDir}\\${baseName}.en.srt`,
         translatedSubtitlePath: `${finalDir}\\${baseName}.zh-CN.srt`,
         sessionCacheDir,
+        sessionManifestPath: `${sessionCacheDir}\\session-manifest.json`,
         sessionAudioDir: `${sessionCacheDir}\\audio`,
         sessionTempDir: `${sessionCacheDir}\\temp`
     };

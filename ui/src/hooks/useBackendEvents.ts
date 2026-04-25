@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import type { Segment } from './useVideoProject';
 import type { ExecutionConsoleEntry, RawBackendLogLine } from '../types/executionConsole';
+import type { BackendEventContext } from '../types/workflow';
 
 interface PartialResultPayload {
     index?: number;
@@ -34,11 +35,14 @@ interface IssuePayload {
     level?: 'info' | 'warn' | 'error';
     stage?: string;
     code?: string;
+    category?: string;
+    retryable?: boolean;
     message?: string;
     detail?: string;
     suggestion?: string;
     item_index?: number;
     item_total?: number;
+    context?: BackendEventContext;
 }
 
 interface BackendEventsOptions {
@@ -198,13 +202,25 @@ export function useBackendEvents({
                 : '';
             const suggestion = payload.suggestion ? `，建议：${payload.suggestion}` : '';
             const message = `${prefix}: ${code}${payload.message || '发生异常'}${itemText}${suggestion}`;
+            const detailParts = [
+                payload.detail || '',
+                payload.category ? `分类：${payload.category}` : '',
+                typeof payload.retryable === 'boolean' ? `可重试：${payload.retryable ? '是' : '否'}` : '',
+                payload.context?.trace_id ? `Trace: ${payload.context.trace_id}` : '',
+                payload.suggestion ? `建议：${payload.suggestion}` : ''
+            ].filter(Boolean);
             setStatus(message);
             pushConsoleEntry({
                 level: payload.level === 'error' ? 'error' : payload.level === 'warn' ? 'warn' : 'info',
                 origin: 'issue',
                 title: payload.message || '发生异常',
-                detail: [payload.detail || '', payload.suggestion ? `建议：${payload.suggestion}` : ''].filter(Boolean).join(' - '),
-                stage: payload.stage
+                detail: detailParts.join(' - '),
+                stage: payload.stage,
+                category: payload.category,
+                retryable: payload.retryable,
+                traceId: payload.context?.trace_id,
+                requestId: payload.context?.request_id,
+                action: payload.context?.action
             });
         };
 
@@ -292,7 +308,20 @@ export function useBackendEvents({
                     level: line.level,
                     origin: 'raw',
                     title: line.text,
-                    detail: `${line.source} · ${line.lane}`
+                    detail: [
+                        `${line.source} · ${line.lane}`,
+                        line.logType ? `类型: ${line.logType}` : '',
+                        line.domain ? `域: ${line.domain}` : '',
+                        line.stage ? `阶段: ${line.stage}` : '',
+                        line.code ? `编码: ${line.code}` : '',
+                        typeof line.retryable === 'boolean' ? `可重试: ${line.retryable ? '是' : '否'}` : '',
+                        line.traceId ? `Trace: ${line.traceId}` : ''
+                    ].filter(Boolean).join(' · ') || line.detail,
+                    category: line.logType,
+                    retryable: line.retryable,
+                    traceId: line.traceId,
+                    requestId: line.requestId,
+                    action: line.action
                 });
             }
         };

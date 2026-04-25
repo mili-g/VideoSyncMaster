@@ -6,9 +6,14 @@ import traceback
 import json
 import shutil
 import types
+import logging
+from app_logging import get_logger, redirect_print
 from audio_validation import validate_generated_audio
 from event_protocol import emit_issue, emit_partial_result, emit_progress, emit_stage
 from gpu_runtime import choose_adaptive_batch_size, format_gpu_snapshot
+
+logger = get_logger("tts.qwen")
+print = redirect_print(logger, default_level=logging.DEBUG)
 
 
 def _setup_portable_audio_tools():

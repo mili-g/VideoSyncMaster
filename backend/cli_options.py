@@ -1,5 +1,7 @@
 import argparse
 
+from runtime_config import build_translation_runtime_config, build_tts_runtime_config
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="VideoSync Backend")
@@ -57,38 +59,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def build_tts_kwargs(args: argparse.Namespace) -> dict:
-    return {
-        "temperature": args.temperature,
-        "top_p": args.top_p,
-        "top_k": args.top_k,
-        "repetition_penalty": args.repetition_penalty,
-        "inference_cfg_rate": args.cfg_scale,
-        "cfg_scale": args.cfg_scale,
-        "num_beams": args.num_beams,
-        "length_penalty": args.length_penalty,
-        "max_new_tokens": args.max_new_tokens,
-        "max_mel_tokens": args.max_new_tokens,
-        "target_duration": args.duration,
-        "qwen_mode": args.qwen_mode,
-        "voice_instruct": args.voice_instruct,
-        "preset_voice": args.preset_voice,
-        "qwen_model_size": args.qwen_model_size,
-        "qwen_ref_text": args.qwen_ref_text,
-        "batch_size": args.batch_size,
-        "voice_mode": args.voice_mode,
-        "ref_audio": args.ref_audio,
-        "fallback_ref_audio": args.fallback_ref_audio,
-        "fallback_ref_text": args.fallback_ref_text,
-        "nearby_ref_audios": args.nearby_ref_audios
-    }
+    return build_tts_runtime_config(args).to_runner_kwargs()
 
 
 def build_translation_kwargs(args: argparse.Namespace) -> dict:
-    extra_kwargs = {}
-    if args.api_key:
-        extra_kwargs["api_key"] = args.api_key
-        if args.base_url:
-            extra_kwargs["base_url"] = args.base_url
-        if args.model:
-            extra_kwargs["model"] = args.model
-    return extra_kwargs
+    return build_translation_runtime_config(args).to_translator_kwargs()

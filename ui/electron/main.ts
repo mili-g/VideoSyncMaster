@@ -1,9 +1,4 @@
 import { app, BrowserWindow, ipcMain, shell, dialog } from 'electron'
-
-console.log("Main process script loaded.");
-process.on('uncaughtException', (error) => {
-  console.error("Uncaught exception in main process:", error);
-});
 import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import path from 'node:path'
@@ -11,6 +6,79 @@ import { spawn, exec, execFile, ChildProcess } from 'child_process'
 import fs from 'fs'
 
 const activeDownloads = new Map<string, ChildProcess>();
+const VERBOSE_MAIN_LOGS = process.env.VSM_VERBOSE_MAIN === '1'
+
+type MainLogLevel = 'info' | 'warn' | 'error' | 'debug'
+type MainLogType = 'business' | 'error' | 'security' | 'debug'
+
+interface MainLogFields {
+  domain: string
+  action?: string
+  event?: string
+  stage?: string
+  code?: string
+  detail?: string
+}
+
+function emitMainLog(level: MainLogLevel, logType: MainLogType, message: string, fields: MainLogFields) {
+  if (level === 'debug' && !VERBOSE_MAIN_LOGS) {
+    return
+  }
+
+  const payload = {
+    timestamp: new Date().toISOString(),
+    level,
+    logger: 'electron.main',
+    domain: fields.domain,
+    log_type: logType,
+    message,
+    action: fields.action || '-',
+    event: fields.event,
+    stage: fields.stage,
+    code: fields.code,
+    detail: fields.detail
+  }
+
+  const line = `__MAIN_LOG__${JSON.stringify(payload)}`
+  if (level === 'error') {
+    console.error(line)
+    return
+  }
+  if (level === 'warn') {
+    console.warn(line)
+    return
+  }
+  console.log(line)
+}
+
+function logMainBusiness(message: string, fields: MainLogFields) {
+  emitMainLog('info', 'business', message, fields)
+}
+
+function logMainWarn(message: string, fields: MainLogFields) {
+  emitMainLog('warn', 'business', message, fields)
+}
+
+function logMainSecurity(message: string, fields: MainLogFields) {
+  emitMainLog('warn', 'security', message, fields)
+}
+
+function logMainError(message: string, fields: MainLogFields) {
+  emitMainLog('error', 'error', message, fields)
+}
+
+function logMainDebug(message: string, fields: MainLogFields) {
+  emitMainLog('debug', 'debug', message, fields)
+}
+
+logMainDebug('Main process initialized', { domain: 'bootstrap', action: 'startup' })
+process.on('uncaughtException', (error) => {
+  logMainError('Main process uncaught exception', {
+    domain: 'bootstrap',
+    action: 'uncaughtException',
+    detail: error instanceof Error ? `${error.message}\n${error.stack || ''}` : String(error)
+  })
+});
 
 const require = createRequire(import.meta.url)
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -140,10 +208,29 @@ interface BackendStructuredEvent {
   name?: string
   action?: string | null
   payload?: Record<string, any>
+  context?: Record<string, any>
   timestamp?: string
 }
 
+interface BackendStructuredLogLine {
+  timestamp?: string
+  level?: string
+  logger?: string
+  domain?: string
+  log_type?: string
+  message?: string
+  trace_id?: string
+  request_id?: string
+  action?: string
+  event?: string
+  stage?: string
+  code?: string
+  retryable?: boolean
+  detail?: string
+}
+
 const BACKEND_EVENT_PREFIX = '__EVENT__'
+const BACKEND_LOG_PREFIX = '__LOG__'
 const BACKEND_WORKER_RESULT_PREFIX = '__WORKER_RESULT__'
 const MAX_BACKEND_CAPTURE_CHARS = 200_000
 const BACKEND_VERBOSE_STREAMS = process.env.VSM_VERBOSE_BACKEND === '1'
@@ -202,6 +289,22 @@ function shouldMirrorBackendLine(source: 'stdout' | 'stderr', line: string) {
     || normalized.includes('cuda')
 }
 
+function parseBackendStructuredLogLine(line: string): BackendStructuredLogLine | null {
+  const trimmed = line.trim()
+  if (!trimmed.startsWith(BACKEND_LOG_PREFIX)) return null
+
+  try {
+    return JSON.parse(trimmed.slice(BACKEND_LOG_PREFIX.length))
+  } catch (error) {
+    logMainError('解析后端结构化日志失败', {
+      domain: 'backend.protocol',
+      action: 'parseBackendStructuredLogLine',
+      detail: `${trimmed}\n${error instanceof Error ? error.message : String(error)}`
+    })
+    return null
+  }
+}
+
 function parseBackendStructuredEvent(line: string): BackendStructuredEvent | null {
   const trimmed = line.trim()
   if (!trimmed.startsWith(BACKEND_EVENT_PREFIX)) return null
@@ -209,13 +312,19 @@ function parseBackendStructuredEvent(line: string): BackendStructuredEvent | nul
   try {
     return JSON.parse(trimmed.slice(BACKEND_EVENT_PREFIX.length))
   } catch (error) {
-    console.error('Failed to parse backend structured event:', trimmed, error)
+    logMainError('解析后端结构化事件失败', {
+      domain: 'backend.protocol',
+      action: 'parseBackendStructuredEvent',
+      detail: `${trimmed}\n${error instanceof Error ? error.message : String(error)}`
+    })
     return null
   }
 }
 
 function dispatchBackendStructuredEvent(sender: Electron.WebContents, event: BackendStructuredEvent) {
-  const payload = event.payload || {}
+  const payload = event.context
+    ? { ...(event.payload || {}), context: event.context }
+    : (event.payload || {})
 
   if (event.name === 'progress') {
     sender.send('backend-progress', payload)
@@ -252,13 +361,23 @@ function dispatchBackendStructuredEvent(sender: Electron.WebContents, event: Bac
 
 function dispatchBackendLogLine(
   sender: Electron.WebContents,
-  payload: {
-    lane: BackendLane
-    source: 'stdout' | 'stderr'
-    level: 'info' | 'warn' | 'error'
-    text: string
-    timestamp: number
-  }
+    payload: {
+      lane: BackendLane
+      source: 'stdout' | 'stderr'
+      level: 'info' | 'warn' | 'error'
+      logType?: 'business' | 'error' | 'security' | 'debug'
+      domain?: string
+      traceId?: string
+      requestId?: string
+      action?: string
+      event?: string
+      stage?: string
+      code?: string
+      retryable?: boolean
+      detail?: string
+      text: string
+      timestamp: number
+    }
 ) {
   sender.send('backend-log-line', payload)
 }
@@ -287,11 +406,19 @@ function restartBackendWorkerAfterFatalCuda(lane: BackendLane, message: string) 
   if (workerState.activeRequest) {
     workerState.activeRequest.errorData += `${resetMessage}\n`
   }
-  console.error(resetMessage)
+  logMainSecurity('检测到致命 CUDA 错误，重启后端工作进程', {
+    domain: 'backend.worker',
+    action: 'restartBackendWorkerAfterFatalCuda',
+    detail: message
+  })
 
   workerState.process = null
   terminateProcessTree(backendProcess).catch((error) => {
-    console.error(`[BackendReset] Failed to restart backend worker [${lane}]:`, error)
+    logMainError('重启后端工作进程失败', {
+      domain: 'backend.worker',
+      action: 'restartBackendWorkerAfterFatalCuda',
+      detail: `[${lane}] ${error instanceof Error ? error.message : String(error)}`
+    })
   })
 }
 
@@ -320,7 +447,11 @@ function getPythonProcessEnv() {
       env.PATH = `${cudaPaths.join(path.delimiter)}${path.delimiter}${env.PATH || ''}`
     }
   } catch (error) {
-    console.error('[PythonEnv] Failed to extend PATH for CUDA DLLs:', error)
+    logMainError('扩展 CUDA 运行时路径失败', {
+      domain: 'runtime.env',
+      action: 'getPythonProcessEnv',
+      detail: error instanceof Error ? error.message : String(error)
+    })
   }
 
   return env
@@ -375,6 +506,55 @@ function getAppPaths() {
   }
 }
 
+function isResumeAudioSegmentFile(fileName: string) {
+  return /^segment(?:_retry)?_\d+\.wav$/i.test(fileName)
+}
+
+async function cleanupSessionCacheArtifacts(
+  sessionCacheDir: string,
+  mode: 'success' | 'failed' | 'interrupted'
+) {
+  if (!sessionCacheDir) {
+    return { success: false, removed: false, preservedResumeFiles: 0 }
+  }
+
+  if (mode === 'success') {
+    await fs.promises.rm(sessionCacheDir, { recursive: true, force: true })
+    return { success: true, removed: true, preservedResumeFiles: 0 }
+  }
+
+  const audioDir = path.join(sessionCacheDir, 'audio')
+  const tempDir = path.join(sessionCacheDir, 'temp')
+
+  await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => undefined)
+
+  let preservedResumeFiles = 0
+  const audioEntries = await fs.promises.readdir(audioDir, { withFileTypes: true }).catch(() => [])
+
+  for (const entry of audioEntries) {
+    const entryPath = path.join(audioDir, entry.name)
+
+    if (entry.isDirectory()) {
+      await fs.promises.rm(entryPath, { recursive: true, force: true }).catch(() => undefined)
+      continue
+    }
+
+    if (entry.isFile() && isResumeAudioSegmentFile(entry.name)) {
+      preservedResumeFiles += 1
+      continue
+    }
+
+    await fs.promises.rm(entryPath, { recursive: true, force: true }).catch(() => undefined)
+  }
+
+  if (preservedResumeFiles === 0) {
+    await fs.promises.rm(sessionCacheDir, { recursive: true, force: true }).catch(() => undefined)
+    return { success: true, removed: true, preservedResumeFiles: 0 }
+  }
+
+  return { success: true, removed: false, preservedResumeFiles }
+}
+
 function parseBackendWorkerResult(line: string) {
   const trimmed = line.trim()
   if (!trimmed.startsWith(BACKEND_WORKER_RESULT_PREFIX)) return null
@@ -382,7 +562,11 @@ function parseBackendWorkerResult(line: string) {
   try {
     return JSON.parse(trimmed.slice(BACKEND_WORKER_RESULT_PREFIX.length))
   } catch (error) {
-    console.error('Failed to parse backend worker result:', trimmed, error)
+    logMainError('解析后端工作结果失败', {
+      domain: 'backend.protocol',
+      action: 'parseBackendWorkerResult',
+      detail: `${trimmed}\n${error instanceof Error ? error.message : String(error)}`
+    })
     return null
   }
 }
@@ -426,6 +610,62 @@ function createBackendProcessLineHandler(lane: BackendLane, source: 'stdout' | '
       return
     }
 
+    const structuredLogLine = parseBackendStructuredLogLine(normalizedLine)
+    if (structuredLogLine) {
+      const normalizedLevel = structuredLogLine.level === 'warning'
+        ? 'warn'
+        : structuredLogLine.level === 'debug'
+          ? 'info'
+          : structuredLogLine.level === 'error'
+            ? 'error'
+            : 'info'
+      const logType = ['business', 'error', 'security', 'debug'].includes(String(structuredLogLine.log_type))
+        ? structuredLogLine.log_type as 'business' | 'error' | 'security' | 'debug'
+        : undefined
+      const shouldSend = BACKEND_VERBOSE_STREAMS
+        || logType === 'error'
+        || logType === 'security'
+        || normalizedLevel !== 'info'
+        || logType === 'business'
+
+      if (shouldSend && workerState.activeRequest) {
+        dispatchBackendLogLine(workerState.activeRequest.sender, {
+          lane,
+          source,
+          level: normalizedLevel,
+          logType,
+          domain: structuredLogLine.domain,
+          traceId: structuredLogLine.trace_id,
+          requestId: structuredLogLine.request_id,
+          action: structuredLogLine.action,
+          event: structuredLogLine.event,
+          stage: structuredLogLine.stage,
+          code: structuredLogLine.code,
+          retryable: structuredLogLine.retryable,
+          detail: structuredLogLine.detail,
+          text: structuredLogLine.message || normalizedLine,
+          timestamp: Date.now()
+        })
+      }
+
+      if (logType === 'error' || normalizedLevel === 'error') {
+        logMainError('后端输出错误日志', {
+          domain: 'backend.stream',
+          action: 'createBackendProcessLineHandler',
+          stage: source,
+          detail: `[${lane}] ${structuredLogLine.message || normalizedLine}`
+        })
+      } else if (BACKEND_VERBOSE_STREAMS && logType !== 'debug') {
+        logMainDebug('后端输出关键日志', {
+          domain: 'backend.stream',
+          action: 'createBackendProcessLineHandler',
+          stage: source,
+          detail: `[${lane}] ${structuredLogLine.message || normalizedLine}`
+        })
+      }
+      return
+    }
+
     if (workerState.activeRequest) {
       if (source === 'stdout') {
         workerState.activeRequest.outputData = appendCappedText(workerState.activeRequest.outputData, normalizedLine)
@@ -448,7 +688,11 @@ function createBackendProcessLineHandler(lane: BackendLane, source: 'stdout' | '
             const pData = JSON.parse(partialMatch[1].trim())
             workerState.activeRequest.sender.send('backend-partial-result', pData)
           } catch (e) {
-            console.error('Failed to parse partial:', e)
+            logMainError('解析部分结果失败', {
+              domain: 'backend.protocol',
+              action: 'createBackendProcessLineHandler',
+              detail: e instanceof Error ? e.message : String(e)
+            })
           }
         }
 
@@ -474,7 +718,11 @@ function createBackendProcessLineHandler(lane: BackendLane, source: 'stdout' | '
             timestamp: Date.now()
           })
         }
-        console.log(`[Py Stdout:${lane}]`, normalizedLine)
+        logMainDebug('镜像后端标准输出', {
+          domain: 'backend.stream',
+          action: 'mirrorStdout',
+          detail: `[${lane}] ${normalizedLine}`
+        })
       }
       return
     }
@@ -489,7 +737,11 @@ function createBackendProcessLineHandler(lane: BackendLane, source: 'stdout' | '
           timestamp: Date.now()
         })
       }
-      console.error(`[Py Stderr:${lane}]:`, normalizedLine)
+      logMainError('镜像后端标准错误输出', {
+        domain: 'backend.stream',
+        action: 'mirrorStderr',
+        detail: `[${lane}] ${normalizedLine}`
+      })
     }
   }
 }
@@ -542,7 +794,11 @@ async function ensureBackendWorker(lane: BackendLane) {
   }
 
   const { scriptPath, modelsDir, finalPythonExe } = getBackendLaunchConfig()
-  console.log(`Starting persistent backend worker [${lane}]:`, { finalPythonExe, scriptPath, modelsDir })
+  logMainBusiness('启动持久化后端工作进程', {
+    domain: 'backend.worker',
+    action: 'ensureBackendWorker',
+    detail: `[${lane}] python=${finalPythonExe} script=${scriptPath}`
+  })
 
   if (finalPythonExe !== 'python' && !fs.existsSync(finalPythonExe)) {
     throw new Error(`Python environment not found at ${finalPythonExe}`)
@@ -559,7 +815,13 @@ async function ensureBackendWorker(lane: BackendLane) {
     ...getPythonProcessEnv(),
     ...workerState.launchEnvOverrides
   }
-  console.log(`Backend worker env overrides [${lane}]:`, workerState.launchEnvOverrides)
+  if (Object.keys(workerState.launchEnvOverrides).length > 0) {
+    logMainSecurity('后端工作进程启用了安全降级环境变量', {
+      domain: 'backend.worker',
+      action: 'ensureBackendWorker',
+      detail: `[${lane}] ${JSON.stringify(workerState.launchEnvOverrides)}`
+    })
+  }
 
   const backendProcess = spawn(finalPythonExe, [scriptPath, '--worker', '--model_dir', modelsDir], {
     env: workerEnv
@@ -699,10 +961,18 @@ async function cleanupExpiredCacheSessions() {
 
         if (now - lastTouched > CACHE_RETENTION_MS) {
           await fs.promises.rm(entryPath, { recursive: true, force: true })
-          console.log(`[CacheCleanup] Removed expired cache entry: ${entryPath}`)
+          logMainDebug('清理过期缓存项', {
+            domain: 'cache.lifecycle',
+            action: 'cleanupExpiredCacheSessions',
+            detail: entryPath
+          })
         }
       } catch (error) {
-        console.error(`[CacheCleanup] Failed to inspect cache entry: ${entryPath}`, error)
+        logMainError('检查缓存项失败', {
+          domain: 'cache.lifecycle',
+          action: 'cleanupExpiredCacheSessions',
+          detail: `${entryPath}\n${error instanceof Error ? error.message : String(error)}`
+        })
       }
     }
   }
@@ -724,7 +994,11 @@ async function cleanupExpiredCacheSessions() {
     await removeExpiredEntries(cleanupRoots[1], false)
     await removeExpiredEntries(cleanupRoots[2], false)
   } catch (error) {
-    console.error('[CacheCleanup] Startup cleanup failed:', error)
+    logMainError('启动阶段缓存清理失败', {
+      domain: 'cache.lifecycle',
+      action: 'cleanupExpiredCacheSessions',
+      detail: error instanceof Error ? error.message : String(error)
+    })
   }
 }
 
@@ -754,7 +1028,11 @@ function terminateProcessTree(proc: ChildProcess | null): Promise<boolean> {
         const combinedOutput = `${stdout || ''}\n${stderr || ''}`.trim()
 
         if (error && !isBenignTaskkillMessage(combinedOutput)) {
-          console.error(`[KillBackend] taskkill failed for PID ${proc.pid}:`, combinedOutput || error.message)
+          logMainError('终止后端进程失败', {
+            domain: 'process.control',
+            action: 'terminateProcessTree',
+            detail: `pid=${proc.pid} ${combinedOutput || error.message}`
+          })
           resolve(false)
           return
         }
@@ -769,7 +1047,11 @@ function terminateProcessTree(proc: ChildProcess | null): Promise<boolean> {
       proc.kill('SIGKILL')
       resolve(true)
     } catch (error) {
-      console.error('[KillBackend] Failed to terminate backend:', error)
+      logMainError('强制结束后端进程失败', {
+        domain: 'process.control',
+        action: 'terminateProcessTree',
+        detail: error instanceof Error ? error.message : String(error)
+      })
       resolve(false)
     }
   })
@@ -777,7 +1059,7 @@ function terminateProcessTree(proc: ChildProcess | null): Promise<boolean> {
 
 
 function createWindow() {
-  console.log("createWindow called");
+  logMainBusiness('创建主窗口', { domain: 'window.lifecycle', action: 'createWindow' })
   // ... existing createWindow code ...
   win = new BrowserWindow({
     width: 1500,
@@ -791,7 +1073,11 @@ function createWindow() {
     },
     autoHideMenuBar: true, // Hide the default menu bar (File, Edit, etc.)
   })
-  console.log("BrowserWindow created, id:", win.id);
+  logMainBusiness('主窗口创建完成', {
+    domain: 'window.lifecycle',
+    action: 'createWindow',
+    detail: `windowId=${win.id}`
+  })
 
   // Test active push message to Renderer-process.
   win.webContents.on('did-finish-load', () => {
@@ -825,11 +1111,18 @@ async function installVCRuntime(projectRoot: string): Promise<boolean> {
   const vcRedistPath = path.join(projectRoot, 'VC_redist.x64.exe');
 
   if (!fs.existsSync(vcRedistPath)) {
-    console.log('[VCRuntime] VC_redist.x64.exe not found, skipping installation.');
+    logMainWarn('未找到 VC++ 运行时安装包，跳过自动安装', {
+      domain: 'runtime.dependency',
+      action: 'installVCRuntime',
+      detail: vcRedistPath
+    })
     return false;
   }
 
-  console.log('[VCRuntime] Installing VC++ Runtime...');
+  logMainBusiness('开始安装 VC++ 运行时', {
+    domain: 'runtime.dependency',
+    action: 'installVCRuntime'
+  })
 
   return new Promise((resolve) => {
     const installProcess = spawn(vcRedistPath, ['/install', '/quiet', '/norestart'], {
@@ -838,16 +1131,28 @@ async function installVCRuntime(projectRoot: string): Promise<boolean> {
 
     installProcess.on('close', (code) => {
       if (code === 0 || code === 3010) { // 3010 = success, reboot required
-        console.log('[VCRuntime] Installation successful.');
+        logMainBusiness('VC++ 运行时安装成功', {
+          domain: 'runtime.dependency',
+          action: 'installVCRuntime',
+          detail: `code=${code}`
+        })
         resolve(true);
       } else {
-        console.error('[VCRuntime] Installation failed with code:', code);
+        logMainError('VC++ 运行时安装失败', {
+          domain: 'runtime.dependency',
+          action: 'installVCRuntime',
+          detail: `code=${code}`
+        })
         resolve(false);
       }
     });
 
     installProcess.on('error', (err) => {
-      console.error('[VCRuntime] Installation error:', err);
+      logMainError('VC++ 运行时安装发生异常', {
+        domain: 'runtime.dependency',
+        action: 'installVCRuntime',
+        detail: err instanceof Error ? err.message : String(err)
+      })
       resolve(false);
     });
   });
@@ -858,11 +1163,17 @@ async function checkAndInstallVCRuntime(): Promise<void> {
   const isInstalled = await checkVCRuntimeInstalled();
 
   if (isInstalled) {
-    console.log('[VCRuntime] VC++ Runtime is already installed.');
+    logMainDebug('VC++ 运行时已存在', {
+      domain: 'runtime.dependency',
+      action: 'checkAndInstallVCRuntime'
+    })
     return;
   }
 
-  console.log('[VCRuntime] VC++ Runtime not detected, attempting installation...');
+  logMainBusiness('未检测到 VC++ 运行时，尝试自动安装', {
+    domain: 'runtime.dependency',
+    action: 'checkAndInstallVCRuntime'
+  })
 
   // Determine project root
   const projectRoot = app.isPackaged
@@ -884,13 +1195,15 @@ async function checkAndInstallVCRuntime(): Promise<void> {
 }
 
 app.whenReady().then(async () => {
-  console.log("App is ready, checking VC++ Runtime...");
+  logMainBusiness('应用初始化完成，开始准备依赖与窗口', {
+    domain: 'bootstrap',
+    action: 'whenReady'
+  })
 
   // Check and install VC++ Runtime before creating window
   await checkAndInstallVCRuntime();
   await cleanupExpiredCacheSessions();
 
-  console.log("Creating window...");
   createWindow()
 
 
@@ -905,6 +1218,15 @@ app.whenReady().then(async () => {
       fs.writeFile(filePath, content, 'utf-8', (err: any) => {
         if (err) reject(err)
         else resolve(true)
+      })
+    })
+  })
+
+  ipcMain.handle('read-file', async (_event: any, filePath: string) => {
+    return new Promise((resolve, reject) => {
+      fs.readFile(filePath, 'utf-8', (err: any, content: string) => {
+        if (err) reject(err)
+        else resolve(content)
       })
     })
   })
@@ -935,10 +1257,30 @@ app.whenReady().then(async () => {
       await fs.promises.rm(targetPath, { recursive: true, force: true })
       return true
     } catch (error) {
-      console.error('Failed to delete path:', targetPath, error)
+      logMainError('删除路径失败', {
+        domain: 'filesystem',
+        action: 'delete-path',
+        detail: `${targetPath}\n${error instanceof Error ? error.message : String(error)}`
+      })
       return false
     }
   })
+
+  ipcMain.handle(
+    'cleanup-session-cache',
+    async (_event: any, payload: { sessionCacheDir: string; mode: 'success' | 'failed' | 'interrupted' }) => {
+      try {
+        return await cleanupSessionCacheArtifacts(payload?.sessionCacheDir, payload?.mode || 'failed')
+      } catch (error) {
+        logMainError('清理会话缓存失败', {
+          domain: 'cache.lifecycle',
+          action: 'cleanup-session-cache',
+          detail: `${payload?.sessionCacheDir || ''}\n${error instanceof Error ? error.message : String(error)}`
+        })
+        return { success: false, removed: false, preservedResumeFiles: 0 }
+      }
+    }
+  )
 
   // IPC Handler to get paths
   ipcMain.handle('get-paths', async () => {
@@ -958,7 +1300,11 @@ app.whenReady().then(async () => {
     }
 
     return enqueueBackendRun(lane, async () => {
-      console.log(`Running backend with args via worker [${lane}]:`, requestArgs)
+      logMainDebug('派发后端任务', {
+        domain: 'backend.request',
+        action: 'run-backend',
+        detail: `[${lane}] ${JSON.stringify(requestArgs)}`
+      })
       const backendProcess = await ensureBackendWorker(lane)
       const workerState = getBackendWorkerState(lane)
       const requestId = `req-${Date.now()}-${++workerState.requestCounter}`
@@ -1019,17 +1365,29 @@ app.whenReady().then(async () => {
 
       // 3. Check if we already have it
       if (fs.existsSync(destPath)) {
-        console.log(`Using existing cached file for: ${filePath}`);
+        logMainDebug('复用已缓存源文件', {
+          domain: 'cache.source',
+          action: 'cache-video',
+          detail: filePath
+        })
         return destPath;
       }
 
       // 4. Copy if new
-      console.log(`Caching new file: ${filePath} -> ${destPath}`);
+      logMainBusiness('写入新的源文件缓存', {
+        domain: 'cache.source',
+        action: 'cache-video',
+        detail: `${filePath} -> ${destPath}`
+      })
       await fs.promises.copyFile(filePath, destPath);
 
       return destPath;
     } catch (error) {
-      console.error('Failed to cache video:', error);
+      logMainError('源文件缓存失败', {
+        domain: 'cache.source',
+        action: 'cache-video',
+        detail: error instanceof Error ? error.message : String(error)
+      })
       throw error;
     }
   })
@@ -1049,7 +1407,11 @@ app.whenReady().then(async () => {
       }
       return false;
     } catch (e) {
-      console.error("Failed to open folder:", e);
+      logMainError('打开目录失败', {
+        domain: 'filesystem',
+        action: 'open-folder',
+        detail: e instanceof Error ? e.message : String(e)
+      })
       return false;
     }
   })
@@ -1060,7 +1422,11 @@ app.whenReady().then(async () => {
       await shell.openPath(filePath);
       return true;
     } catch (e) {
-      console.error("Failed to open external:", e);
+      logMainError('调用系统程序打开文件失败', {
+        domain: 'filesystem',
+        action: 'open-external',
+        detail: e instanceof Error ? e.message : String(e)
+      })
       return false;
     }
   })
@@ -1085,12 +1451,20 @@ app.whenReady().then(async () => {
 
     try {
       const results = await Promise.all(processesToKill.map(async (proc) => {
-        console.log(`Killing python process ${proc.pid}...`)
+        logMainSecurity('终止后端进程', {
+          domain: 'process.control',
+          action: 'kill-backend',
+          detail: `pid=${proc.pid}`
+        })
         return terminateProcessTree(proc)
       }))
       return results.every(Boolean)
     } catch (e) {
-      console.error("Failed to kill backend:", e)
+      logMainError('停止全部后端进程失败', {
+        domain: 'process.control',
+        action: 'kill-backend',
+        detail: e instanceof Error ? e.message : String(e)
+      })
       return false
     }
   })
@@ -1107,18 +1481,30 @@ app.whenReady().then(async () => {
       const logPath = path.join(projectRoot, 'logs', 'backend_debug.log');
 
       if (!fs.existsSync(logPath)) {
-        console.error(`Log file not found at: ${logPath}`);
+        logMainWarn('未找到后端日志文件', {
+          domain: 'observability',
+          action: 'open-backend-log',
+          detail: logPath
+        })
         return { success: false, error: 'Log file not found' };
       }
 
       const error = await shell.openPath(logPath);
       if (error) {
-        console.error(`Failed to open log: ${error}`);
+        logMainError('打开后端日志失败', {
+          domain: 'observability',
+          action: 'open-backend-log',
+          detail: error
+        })
         return { success: false, error };
       }
       return { success: true };
     } catch (e) {
-      console.error("Failed to open backend log:", e);
+      logMainError('打开后端日志发生异常', {
+        domain: 'observability',
+        action: 'open-backend-log',
+        detail: e instanceof Error ? e.message : String(e)
+      })
       return { success: false, error: String(e) };
     }
   })
@@ -1144,7 +1530,11 @@ app.whenReady().then(async () => {
           return;
         }
 
-        console.log(`[FixEnv] Starting repair... Python: ${pythonExe}, Req: ${requirementsPath}`);
+        logMainSecurity('开始修复 Python 运行环境', {
+          domain: 'runtime.env',
+          action: 'fix-python-env',
+          detail: `python=${pythonExe}`
+        })
 
         const installProcess = spawn(pythonExe, ['-m', 'pip', 'install', '-r', requirementsPath], {
           env: getPythonProcessEnv()
@@ -1156,21 +1546,36 @@ app.whenReady().then(async () => {
         installProcess.stdout.on('data', (data) => {
           const s = normalizeKnownProcessMessage(decodeProcessChunk(data));
           output += s;
-          console.log(`[Pip]: ${s}`);
+          logMainDebug('pip 标准输出', {
+            domain: 'runtime.env',
+            action: 'fix-python-env',
+            detail: s.trim()
+          })
         });
 
         installProcess.stderr.on('data', (data) => {
           const s = normalizeKnownProcessMessage(decodeProcessChunk(data));
           errorOut += s;
-          console.error(`[Pip Err]: ${s}`);
+          logMainWarn('pip 标准错误输出', {
+            domain: 'runtime.env',
+            action: 'fix-python-env',
+            detail: s.trim()
+          })
         });
 
         installProcess.on('close', (code) => {
           if (code === 0) {
-            console.log('[FixEnv] Success!');
+            logMainBusiness('Python 运行环境修复完成', {
+              domain: 'runtime.env',
+              action: 'fix-python-env'
+            })
             resolve({ success: true, output });
           } else {
-            console.error('[FixEnv] Failed code:', code);
+            logMainError('Python 运行环境修复失败', {
+              domain: 'runtime.env',
+              action: 'fix-python-env',
+              detail: `code=${code}`
+            })
             resolve({ success: false, error: `Pip install failed (Code ${code}). \nError: ${errorOut}` });
           }
         });
@@ -1219,7 +1624,11 @@ app.whenReady().then(async () => {
           output += normalizeKnownProcessMessage(decodeProcessChunk(data));
         });
         checkProcess.stderr.on('data', (data) => {
-          console.error('[CheckEnv Err]:', normalizeKnownProcessMessage(decodeProcessChunk(data)));
+          logMainWarn('依赖检查输出告警', {
+            domain: 'runtime.env',
+            action: 'check-python-env',
+            detail: normalizeKnownProcessMessage(decodeProcessChunk(data)).trim()
+          })
         });
 
         checkProcess.on('close', (code) => {
@@ -1279,7 +1688,11 @@ app.whenReady().then(async () => {
     return new Promise((resolve) => {
       try {
         const { modelsRoot } = resolveModelsRoot();
-        console.log('[CheckModel] Models Root:', modelsRoot);
+        logMainDebug('检查模型目录状态', {
+          domain: 'model.lifecycle',
+          action: 'check-model-status',
+          detail: modelsRoot
+        })
 
         const checkDir = (subpath: string[]) => {
           // Check variations
@@ -1323,7 +1736,11 @@ app.whenReady().then(async () => {
       if (!filePath) return false;
       return fs.existsSync(filePath);
     } catch (e) {
-      console.error("Check file exists error:", e);
+      logMainError('检查文件存在性失败', {
+        domain: 'filesystem',
+        action: 'check-file-exists',
+        detail: e instanceof Error ? e.message : String(e)
+      })
       return false;
     }
   });
@@ -1337,12 +1754,22 @@ app.whenReady().then(async () => {
 
     const proc = activeDownloads.get(trackingKey);
     if (proc) {
-      console.log(`[DownloadModel] Cancelling download for ${trackingKey} (PID: ${proc.pid})`);
+      logMainSecurity('取消模型下载任务', {
+        domain: 'download.lifecycle',
+        action: 'cancel-download',
+        detail: `${trackingKey} pid=${proc.pid}`
+      })
 
       // Force kill
       if (process.platform === 'win32' && proc.pid) {
         exec(`taskkill /pid ${proc.pid} /T /F`, (err) => {
-          if (err) console.error("Taskkill error:", err);
+          if (err) {
+            logMainError('取消模型下载时 taskkill 失败', {
+              domain: 'download.lifecycle',
+              action: 'cancel-download',
+              detail: err.message
+            })
+          }
         });
       }
 
@@ -1359,7 +1786,11 @@ app.whenReady().then(async () => {
     // Re-use logic if possible, or maintain separate map
     const proc = activeDownloads.get(key);
     if (proc) {
-      console.log(`[DownloadFile] Cancelling ${key} (PID: ${proc.pid})`);
+      logMainSecurity('取消文件下载任务', {
+        domain: 'download.lifecycle',
+        action: 'cancel-file-download',
+        detail: `${key} pid=${proc.pid}`
+      })
       if (process.platform === 'win32' && proc.pid) {
         exec(`taskkill /pid ${proc.pid} /T /F`, () => { });
       }
@@ -1382,7 +1813,11 @@ app.whenReady().then(async () => {
           fs.mkdirSync(finalDir, { recursive: true });
         }
 
-        console.log(`[DownloadFile] ${name} -> ${finalDir}`);
+        logMainBusiness('启动文件下载任务', {
+          domain: 'download.lifecycle',
+          action: 'download-file',
+          detail: `${name} -> ${finalDir}`
+        })
 
         const pythonExe = getPythonExe(projectRoot);
 
@@ -1437,12 +1872,20 @@ except Exception as e:
 
         proc.stdout.on('data', (data) => {
           const s = normalizeKnownProcessMessage(decodeProcessChunk(data));
-          console.log(`[DownloadFile]: ${s}`);
+          logMainDebug('文件下载标准输出', {
+            domain: 'download.lifecycle',
+            action: 'download-file',
+            detail: s.trim()
+          })
           output += s;
         });
         proc.stderr.on('data', (data) => {
           const s = normalizeKnownProcessMessage(decodeProcessChunk(data));
-          console.error(`[DownloadFile Err]: ${s}`);
+          logMainWarn('文件下载标准错误输出', {
+            domain: 'download.lifecycle',
+            action: 'download-file',
+            detail: s.trim()
+          })
           errorOut += s;
         });
 
@@ -1489,7 +1932,11 @@ except Exception as e:
         const relativePath = localDir.replace(/^models[\\/]/, '');
         const targetPath = path.join(modelsRoot, relativePath);
 
-        console.log(`[DownloadModel] Target: ${targetPath}`);
+        logMainBusiness('启动模型下载任务', {
+          domain: 'download.lifecycle',
+          action: 'download-model',
+          detail: targetPath
+        })
 
         // Ensure directory exists
         if (!fs.existsSync(targetPath)) {
@@ -1527,13 +1974,17 @@ except Exception as e:
     print(f"ERROR: {e}")
 `;
 
-        console.log(`[DownloadModel] Spawning python...`);
-
         // Log to logs/backend_debug.log
         const logFile = path.join(projectRoot, 'logs', 'backend_debug.log');
         const logDir = path.dirname(logFile);
         if (!fs.existsSync(logDir)) {
-          try { fs.mkdirSync(logDir, { recursive: true }); } catch (e) { console.error("Failed to create log dir", e); }
+          try { fs.mkdirSync(logDir, { recursive: true }); } catch (e) {
+            logMainError('创建下载日志目录失败', {
+              domain: 'download.lifecycle',
+              action: 'download-model',
+              detail: e instanceof Error ? e.message : String(e)
+            })
+          }
         }
 
         let logStream: fs.WriteStream | null = null;
@@ -1541,7 +1992,11 @@ except Exception as e:
           logStream = fs.createWriteStream(logFile, { flags: 'a' });
           logStream.write(`\n[${new Date().toISOString()}] [DownloadModel] Starting download: ${model} -> ${targetPath}\n`);
         } catch (e) {
-          console.error("Failed to create log stream", e);
+          logMainError('创建下载日志流失败', {
+            domain: 'download.lifecycle',
+            action: 'download-model',
+            detail: e instanceof Error ? e.message : String(e)
+          })
         }
 
         const proc = spawn(pythonExe, ['-c', script], {
@@ -1555,13 +2010,21 @@ except Exception as e:
 
         proc.stdout.on('data', (data) => {
           const s = normalizeKnownProcessMessage(decodeProcessChunk(data));
-          console.log(`[ModelScope]: ${s}`);
+          logMainDebug('模型下载标准输出', {
+            domain: 'download.lifecycle',
+            action: 'download-model',
+            detail: s.trim()
+          })
           output += s;
           if (logStream) logStream.write(s);
         });
         proc.stderr.on('data', (data) => {
           const s = normalizeKnownProcessMessage(decodeProcessChunk(data));
-          console.error(`[ModelScope Err]: ${s}`);
+          logMainWarn('模型下载标准错误输出', {
+            domain: 'download.lifecycle',
+            action: 'download-model',
+            detail: s.trim()
+          })
           errorOut += s;
           if (logStream) logStream.write(`[STDERR] ${s}`);
         });

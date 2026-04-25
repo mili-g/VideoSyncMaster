@@ -1,8 +1,10 @@
 import hashlib
 import os
+import logging
 from typing import Dict
 
 import ffmpeg
+from app_logging import get_logger, redirect_print
 
 
 TARGET_SAMPLE_RATE = 44100
@@ -34,6 +36,9 @@ def _setup_portable_ffmpeg() -> None:
 
 
 _setup_portable_ffmpeg()
+
+logger = get_logger("media.source_separation")
+print = redirect_print(logger, default_level=logging.DEBUG)
 
 
 def _video_fingerprint(video_path: str) -> str:

@@ -1,4 +1,5 @@
 import React, { useRef, useEffect } from 'react';
+import { logUiBusiness, logUiDebug, logUiError, logUiWarn } from '../utils/frontendLogger';
 
 interface VideoUploadProps {
     onFileSelected: (path: string) => void;
@@ -27,7 +28,11 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFileSelected, onTimeUpdate,
             isProgrammaticSeek.current = true;
             isProgrammaticPlay.current = true;
             activeRef.current.currentTime = seekTime;
-            activeRef.current.play().catch(e => console.error("Auto-play failed:", e));
+            activeRef.current.play().catch((e) => logUiWarn('视频片段自动播放失败', {
+                domain: 'ui.video',
+                action: 'autoPlay',
+                detail: e instanceof Error ? e.message : String(e)
+            }));
         }
     }, [seekTime]);
 
@@ -46,7 +51,11 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFileSelected, onTimeUpdate,
                     setVideoSrc(url);
                 }
             } catch (error) {
-                console.error("Failed to load video:", error);
+                logUiError('加载视频预览失败', {
+                    domain: 'ui.video',
+                    action: 'loadVideo',
+                    detail: error instanceof Error ? error.message : String(error)
+                });
             }
         };
 
@@ -60,23 +69,27 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFileSelected, onTimeUpdate,
         setVideoSrc(blobUrl);
 
         try {
-            console.log("Caching file...");
+            logUiDebug('开始缓存源视频', { domain: 'ui.video', action: 'cacheVideo' });
             const cachedPath = await window.api.cacheVideo(file.path);
-            console.log("Cached path:", cachedPath);
+            logUiDebug('源视频已写入缓存', { domain: 'ui.video', action: 'cacheVideo', detail: cachedPath });
             onFileSelected(cachedPath);
 
-            console.log("Analyzing video codec...");
+            logUiDebug('开始分析视频编码', { domain: 'ui.video', action: 'analyzeCodec' });
             const analysis = await window.api.analyzeVideoMetadata(cachedPath);
 
             if (analysis && analysis.success && analysis.info) {
                 const { video_codec } = analysis.info;
-                console.log("Video Codec:", video_codec);
+                logUiDebug('视频编码分析完成', { domain: 'ui.video', action: 'analyzeCodec', detail: video_codec });
 
                 const supportedCodecs = ['h264', 'vp8', 'vp9', 'av1'];
                 const isSupported = supportedCodecs.some((c: string) => video_codec.toLowerCase().includes(c));
 
                 if (!isSupported) {
-                    console.log(`Codec ${video_codec} not natively supported. Transcoding...`);
+                    logUiWarn('当前编码不适合直接预览，准备转码', {
+                        domain: 'ui.video',
+                        action: 'transcodePreview',
+                        detail: video_codec
+                    });
                     setStatusText("转码中，请稍候...");
 
                     const transcodedPath = cachedPath.replace(/\.(\w+)$/, '_transcoded.mp4');
@@ -89,19 +102,30 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFileSelected, onTimeUpdate,
 
                     if (transcodeResult && transcodeResult.success) {
                         setStatusText("");
-                        console.log("Transcoding complete. Reloading video...");
+                        logUiBusiness('预览转码完成', {
+                            domain: 'ui.video',
+                            action: 'transcodePreview'
+                        });
                         const newUrl = await window.api.getFileUrl(transcodedPath);
                         setVideoSrc(newUrl);
                         onFileSelected(transcodedPath);
                     } else {
                         setStatusText("转码失败");
-                        console.error("Transcoding failed:", transcodeResult?.error);
+                        logUiError('预览转码失败', {
+                            domain: 'ui.video',
+                            action: 'transcodePreview',
+                            detail: String(transcodeResult?.error || '未知错误')
+                        });
                     }
                 }
             }
 
         } catch (error) {
-            console.error("Caching failed:", error);
+            logUiError('源视频缓存失败，回退到原路径', {
+                domain: 'ui.video',
+                action: 'cacheVideo',
+                detail: error instanceof Error ? error.message : String(error)
+            });
             // @ts-ignore
             onFileSelected(file.path);
         }
@@ -230,7 +254,11 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFileSelected, onTimeUpdate,
                                 }
                             }}
                             onError={(e) => {
-                                console.error("Video playback error:", e);
+                                logUiError('视频播放失败', {
+                                    domain: 'ui.video',
+                                    action: 'playback',
+                                    detail: String(e.type)
+                                });
                             }}
                         />
                     </div>

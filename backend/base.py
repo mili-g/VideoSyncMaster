@@ -11,6 +11,7 @@ from pydub import AudioSegment
 # from app.core.utils.cache import get_asr_cache, is_cache_enabled
 # from app.core.utils.logger import setup_logger
 import logging
+from app_logging import get_logger, redirect_print
 
 def setup_logger(name):
     logger = logging.getLogger(name)
@@ -31,6 +32,8 @@ def is_cache_enabled():
 from asr_data import ASRData, ASRDataSeg
 
 logger = setup_logger("asr")
+logger = get_logger("asr.base")
+print = redirect_print(logger, default_level=logging.DEBUG)
 
 
 class BaseASR:

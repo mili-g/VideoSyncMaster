@@ -2,6 +2,7 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App.tsx'
 import './index.css'
+import { logUiDebug } from './utils/frontendLogger'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
@@ -10,5 +11,9 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
 )
 
 window.api.onMainProcessMessage((message) => {
-  console.log(message)
+  logUiDebug('收到主进程消息', {
+    domain: 'ui.bootstrap',
+    action: 'onMainProcessMessage',
+    detail: String(message)
+  })
 })

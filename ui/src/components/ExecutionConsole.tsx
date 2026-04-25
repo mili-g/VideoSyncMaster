@@ -63,6 +63,14 @@ export default function ExecutionConsole({
     const errorCount = entries.filter(entry => entry.level === 'error').length;
     const warnCount = entries.filter(entry => entry.level === 'warn').length;
     const latestEntry = entries[0];
+    const retryableIssueCount = entries.filter(entry => (entry.level === 'error' || entry.level === 'warn') && entry.retryable).length;
+    const categorySummary = Array.from(
+        entries.reduce((map, entry) => {
+            if (!entry.category) return map;
+            map.set(entry.category, (map.get(entry.category) || 0) + 1);
+            return map;
+        }, new Map<string, number>())
+    ).slice(0, 4);
 
     return (
         <section className="execution-console">
@@ -76,6 +84,7 @@ export default function ExecutionConsole({
                         <span>{isBusy ? '任务进行中' : '空闲'}</span>
                         {installingDeps && <span>依赖切换: {depsPackageName || '处理中'}</span>}
                         {latestEntry && <span>最近更新 {formatRelative(latestEntry.timestamp)}</span>}
+                        {retryableIssueCount > 0 && <span>{retryableIssueCount} 条问题可重试</span>}
                     </div>
                 </div>
 
@@ -112,6 +121,7 @@ export default function ExecutionConsole({
                         <span>{isIndeterminate ? '处理中' : `${Math.round(progress)}%`}</span>
                         <span>{summaryLabel(errorCount, '无错误', '个错误')}</span>
                         <span>{summaryLabel(warnCount, '无警告', '个警告')}</span>
+                        {categorySummary.length > 0 && <span>{categorySummary.map(([key, count]) => `${key}:${count}`).join(' / ')}</span>}
                     </div>
                 </div>
             )}
@@ -130,6 +140,8 @@ export default function ExecutionConsole({
                             <div key={line.id} className={`execution-console__raw execution-console__raw--${line.level}`}>
                                 <span className="execution-console__raw-meta">
                                     [{formatClock(line.timestamp)}] [{line.source}] [{line.lane}]
+                                    {line.logType ? ` [${line.logType}]` : ''}
+                                    {line.domain ? ` [${line.domain}]` : ''}
                                 </span>
                                 <span className="execution-console__raw-text">{line.text}</span>
                             </div>
@@ -159,6 +171,16 @@ export default function ExecutionConsole({
                                     </div>
                                     <div className="execution-console__title">{entry.title}</div>
                                     {entry.detail && <div className="execution-console__detail">{entry.detail}</div>}
+                                    {(entry.category || entry.traceId || entry.action || typeof entry.retryable === 'boolean') && (
+                                        <div className="execution-console__detail">
+                                            {[
+                                                entry.category ? `分类 ${entry.category}` : '',
+                                                typeof entry.retryable === 'boolean' ? `可重试 ${entry.retryable ? '是' : '否'}` : '',
+                                                entry.action ? `动作 ${entry.action}` : '',
+                                                entry.traceId ? `Trace ${entry.traceId}` : ''
+                                            ].filter(Boolean).join(' · ')}
+                                        </div>
+                                    )}
                                 </div>
                             );
                         })}

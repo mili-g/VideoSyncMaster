@@ -1,9 +1,15 @@
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
 import type { AudioMixMode, Segment } from './useVideoProject';
-import { cleanupOutputArtifacts, saveSubtitleArtifacts } from '../utils/outputArtifacts';
+import { saveSubtitleArtifacts } from '../utils/outputArtifacts';
 import { prepareSingleProjectPaths } from '../utils/projectPaths';
 import { isBackendCanceledError } from '../utils/backendCancellation';
-import { getStoredQwenTtsSettings, getStoredTtsVoiceMode } from '../utils/runtimeSettings';
+import { buildUserFacingErrorMessage, normalizeBackendError } from '../utils/backendErrors';
+import { getStoredTtsVoiceMode } from '../utils/runtimeSettings';
+import { cleanupSessionArtifacts } from '../utils/sessionCleanup';
+import { getSessionResumePlan, initializeSessionManifest, readSessionManifest, updateSessionManifest } from '../utils/sessionManifest';
+import { buildBatchTtsArgs, buildSingleTtsArgs, buildTtsExtraArgs, collectNearbySuccessfulAudioRefs, prepareFallbackReferenceAudio, recoverExistingAudioSegments } from '../utils/dubbingWorkflowService';
+import { logUiError } from '../utils/frontendLogger';
+import type { SessionManifest } from '../utils/sessionManifest';
 
 type FeedbackType = 'success' | 'error';
 
@@ -80,6 +86,7 @@ export function useDubbingWorkflow({
         try {
             const { projectPaths } = await prepareSingleProjectPaths(originalVideoPath, outputDirOverride);
             const outputPath = `${projectPaths.sessionAudioDir}\\segment_${index}.wav`;
+            await ensureSingleSessionManifest(projectPaths, originalVideoPath, sourceSegments, translatedSegments);
 
             const fallbackRefAudio = await prepareFallbackReferenceAudio(
                 originalVideoPath,
@@ -97,7 +104,7 @@ export function useDubbingWorkflow({
                     videoStrategy,
                     fallbackRefAudio: fallbackRefAudio?.audioPath,
                     fallbackRefText: fallbackRefAudio?.refText,
-                    nearbyRefAudios: useNarrationMode ? [] : collectNearbySuccessfulAudioPaths(translatedSegments, index),
+                    nearbyRefAudios: useNarrationMode ? [] : collectNearbySuccessfulAudioRefs(translatedSegments, index),
                     qwenRefText: useNarrationMode ? '' : (sourceSegments[index]?.text || '')
                 })
             );
@@ -117,6 +124,7 @@ export function useDubbingWorkflow({
                 });
                 setStatus(`片段 ${index + 1} 配音生成完成`);
             } else {
+                const errorInfo = normalizeBackendError(result, `片段 ${index + 1} 配音生成失败`);
                 setTranslatedSegments(prev => {
                     const next = [...prev];
                     next[index] = {
@@ -126,20 +134,25 @@ export function useDubbingWorkflow({
                     };
                     return next;
                 });
-                setStatus(`片段 ${index + 1} 配音生成失败`);
+                setStatus(buildUserFacingErrorMessage(errorInfo));
             }
         } catch (error) {
             if (isBackendCanceledError(error)) {
                 setStatus('任务已由用户停止');
                 return;
             }
-            console.error(error);
+            logUiError('单段配音生成失败', {
+                domain: 'workflow.dubbing',
+                action: 'handleGenerateSingleDubbing',
+                detail: error instanceof Error ? error.message : String(error)
+            });
+            const errorInfo = normalizeBackendError(error, `片段 ${index + 1} 配音生成失败`);
             setTranslatedSegments(prev => {
                 const next = [...prev];
                 next[index] = { ...next[index], audioStatus: 'error' };
                 return next;
             });
-            setStatus(`片段 ${index + 1} 配音生成失败`);
+            setStatus(buildUserFacingErrorMessage(errorInfo));
         } finally {
             setGeneratingSegmentId(null);
         }
@@ -154,39 +167,76 @@ export function useDubbingWorkflow({
         setStatus('正在批量生成配音...');
         setProgress(0);
         setIsIndeterminate(false);
+        let sessionCacheDir: string | null = null;
+        let tempJsonPath: string | null = null;
 
         try {
             const { projectPaths } = await prepareSingleProjectPaths(originalVideoPath, outputDirOverride);
-            const tempJsonPath = `${projectPaths.sessionTempDir}\\segments.json`;
+            sessionCacheDir = projectPaths.sessionCacheDir;
+            tempJsonPath = `${projectPaths.sessionTempDir}\\segments.json`;
+            const resumePlan = await ensureSingleSessionManifest(projectPaths, originalVideoPath, sourceSegments, segmentsToUse);
+            await updateSessionManifest(projectPaths, {
+                phase: 'dubbing',
+                currentStage: '准备生成配音',
+                resume: {
+                    recoverable: true
+                },
+                lastError: null
+            });
 
-            await window.api.saveFile(tempJsonPath, JSON.stringify(
-                segmentsToUse.map((segment, index) => ({
+            const workingSegments = segmentsToUse.map(segment => ({ ...segment }));
+            const recoveredCount = await recoverExistingAudioSegments(
+                workingSegments,
+                projectPaths.sessionAudioDir,
+                resumePlan?.preservedAudioSegments || [],
+                'audioPath'
+            );
+            const pendingSegments = workingSegments
+                .map((segment, index) => ({
                     ...segment,
                     source_text: sourceSegments[index]?.text || ''
                 }))
+                .filter(segment => !segment.audioPath);
+
+            await window.api.saveFile(tempJsonPath, JSON.stringify(
+                pendingSegments
             ));
 
-            const { args: extraArgs, effectiveBatchSize, blocked } = buildTtsExtraArgs(ttsService, batchSize, cloneBatchSize);
+            const { blocked } = buildTtsExtraArgs(ttsService, batchSize, cloneBatchSize);
             if (blocked) {
                 setFeedback(blocked);
                 setDubbingLoading(false);
                 return null;
             }
 
-            const result = await window.api.runBackend([
-                '--action', 'generate_batch_tts',
-                '--tts_service', ttsService,
-                '--input', originalVideoPath,
-                '--output', projectPaths.sessionAudioDir,
-                '--ref', tempJsonPath,
-                '--batch_size', effectiveBatchSize.toString(),
-                '--max_new_tokens', maxNewTokens.toString(),
-                '--lang', targetLang,
-                '--strategy', videoStrategy,
-                '--audio_mix_mode', audioMixMode,
-                '--dub_retry_attempts', '3',
-                ...extraArgs
-            ]);
+            if (recoveredCount > 0) {
+                setStatus(pendingSegments.length > 0 ? `继续生成剩余配音（已复用 ${recoveredCount} 条）` : `已复用全部 ${recoveredCount} 条配音`);
+            }
+
+            if (pendingSegments.length === 0) {
+                setTranslatedSegments(workingSegments);
+                setStatus('所有配音片段均已复用');
+                return workingSegments;
+            }
+
+            const result = await window.api.runBackend(
+                buildBatchTtsArgs(
+                    originalVideoPath,
+                    projectPaths.sessionAudioDir,
+                    tempJsonPath,
+                    {
+                        targetLang,
+                        ttsService,
+                        batchSize,
+                        cloneBatchSize,
+                        maxNewTokens,
+                        videoStrategy,
+                        audioMixMode
+                    },
+                    recoveredCount,
+                    workingSegments.length
+                )
+            );
 
             if (abortRef.current) return null;
 
@@ -194,7 +244,17 @@ export function useDubbingWorkflow({
                 return new Promise<Segment[]>((resolve) => {
                     setTranslatedSegments(prev => {
                         const next = [...prev];
-                        const updatedSegments = segmentsToUse.map(segment => ({ ...segment }));
+                        const updatedSegments = workingSegments.map(segment => ({ ...segment }));
+
+                        updatedSegments.forEach((segment, idx) => {
+                            if (segment.audioPath) {
+                                next[idx] = {
+                                    ...next[idx],
+                                    audioPath: segment.audioPath,
+                                    audioStatus: segment.audioStatus || 'ready'
+                                };
+                            }
+                        });
 
                         result.results.forEach((resultSegment: any) => {
                             const idx = resultSegment.index !== undefined ? resultSegment.index : resultSegment.original_index;
@@ -221,26 +281,55 @@ export function useDubbingWorkflow({
                         resolve(updatedSegments);
                         return next;
                     });
+                    void updateSessionManifest(projectPaths, {
+                        phase: 'dubbing',
+                        currentStage: '配音已生成',
+                        resume: {
+                            recoverable: true
+                        },
+                        lastError: null
+                    });
                     setStatus('批量配音生成完成');
                 });
             }
 
+            const errorInfo = normalizeBackendError(result, '批量配音失败');
             setStatus('配音生成失败');
+            if (sessionCacheDir) {
+                await cleanupSessionArtifacts({ sessionCacheDir }, 'failed', tempJsonPath ? [tempJsonPath] : []);
+                tempJsonPath = null;
+            }
             setFeedback({
                 title: '生成失败',
-                message: `批量配音失败：\n${result?.error || '未知错误'}`,
+                message: buildUserFacingErrorMessage(errorInfo),
                 type: 'error'
             });
             return null;
         } catch (e: any) {
             if (abortRef.current || isBackendCanceledError(e)) {
+                if (sessionCacheDir) {
+                    await cleanupSessionArtifacts({ sessionCacheDir }, 'interrupted', tempJsonPath ? [tempJsonPath] : []);
+                    tempJsonPath = null;
+                }
                 setStatus('任务已由用户停止');
                 return null;
             }
-            console.error(e);
-            setStatus(`配音生成错误: ${e.message}`);
+            logUiError('批量配音执行失败', {
+                domain: 'workflow.dubbing',
+                action: 'handleGenerateAllDubbing',
+                detail: e instanceof Error ? e.message : String(e)
+            });
+            const errorInfo = normalizeBackendError(e, '批量配音错误');
+            if (sessionCacheDir) {
+                await cleanupSessionArtifacts({ sessionCacheDir }, 'failed', tempJsonPath ? [tempJsonPath] : []);
+                tempJsonPath = null;
+            }
+            setStatus(buildUserFacingErrorMessage(errorInfo));
             return null;
         } finally {
+            if (tempJsonPath) {
+                await window.api.deletePath(tempJsonPath);
+            }
             if (!abortRef.current) {
                 setDubbingLoading(false);
                 setProgress(0);
@@ -298,7 +387,7 @@ export function useDubbingWorkflow({
                         videoStrategy,
                         fallbackRefAudio: fallbackRefAudio?.audioPath,
                         fallbackRefText: fallbackRefAudio?.refText,
-                        nearbyRefAudios: useNarrationMode ? [] : collectNearbySuccessfulAudioPaths(translatedSegments, index),
+                        nearbyRefAudios: useNarrationMode ? [] : collectNearbySuccessfulAudioRefs(translatedSegments, index),
                         qwenRefText: useNarrationMode ? '' : (sourceSegments[index]?.text || '')
                     })
                 );
@@ -326,8 +415,13 @@ export function useDubbingWorkflow({
                 setStatus('任务已由用户停止');
                 return;
             }
-            console.error(error);
-            setStatus(`重试失败: ${error?.message || String(error)}`);
+            logUiError('失败片段重试失败', {
+                domain: 'workflow.dubbing',
+                action: 'handleRetryErrors',
+                detail: error instanceof Error ? error.message : String(error)
+            });
+            const errorInfo = normalizeBackendError(error, '失败片段重试失败');
+            setStatus(buildUserFacingErrorMessage(errorInfo));
         } finally {
             if (!abortRef.current) {
                 setDubbingLoading(false);
@@ -346,9 +440,12 @@ export function useDubbingWorkflow({
         setStatus('正在合并视频（这可能需要几分钟）...');
 
         let tempJsonPath: string | null = null;
+        let sessionCacheDir: string | null = null;
 
         try {
             const { fileName, projectPaths } = await prepareSingleProjectPaths(originalVideoPath, outputDirOverride);
+            sessionCacheDir = projectPaths.sessionCacheDir;
+            await ensureSingleSessionManifest(projectPaths, originalVideoPath, sourceSegments, segmentsToUse);
             const outputVideoPath = projectPaths.finalVideoPath;
             const segmentsForBackend = segmentsToUse
                 .map(segment => ({ ...segment, path: segment.audioPath }))
@@ -366,6 +463,14 @@ export function useDubbingWorkflow({
 
             tempJsonPath = `${projectPaths.sessionTempDir}\\merge_segments.json`;
             await window.api.saveFile(tempJsonPath, JSON.stringify(segmentsForBackend));
+            await updateSessionManifest(projectPaths, {
+                phase: 'merging',
+                currentStage: '开始合并视频',
+                resume: {
+                    recoverable: true
+                },
+                lastError: null
+            });
 
             const result = await window.api.runBackend([
                 '--action', 'merge_video',
@@ -385,7 +490,7 @@ export function useDubbingWorkflow({
                     sourceSegments.map(segment => ({ start: segment.start, end: segment.end, text: segment.text })),
                     segmentsToUse.map(segment => ({ start: segment.start, end: segment.end, text: segment.text }))
                 );
-                await cleanupOutputArtifacts(projectPaths.finalDir, [tempJsonPath]);
+                await cleanupSessionArtifacts(projectPaths, 'success', [tempJsonPath]);
                 tempJsonPath = null;
                 setMergedVideoPath(result.output);
                 setStatus('视频合并完成');
@@ -395,20 +500,38 @@ export function useDubbingWorkflow({
                     type: 'success'
                 });
             } else {
+                const errorInfo = normalizeBackendError(result, '视频合并失败');
                 setStatus('合并失败');
                 setFeedback({
                     title: '合并失败',
-                    message: `视频合并失败：\n${result?.error || '未知错误'}`,
+                    message: buildUserFacingErrorMessage(errorInfo),
                     type: 'error'
                 });
+                if (sessionCacheDir) {
+                    await cleanupSessionArtifacts({ sessionCacheDir }, 'failed', tempJsonPath ? [tempJsonPath] : []);
+                    tempJsonPath = null;
+                }
             }
         } catch (e: any) {
             if (abortRef.current || isBackendCanceledError(e)) {
+                if (sessionCacheDir) {
+                    await cleanupSessionArtifacts({ sessionCacheDir }, 'interrupted', tempJsonPath ? [tempJsonPath] : []);
+                    tempJsonPath = null;
+                }
                 setStatus('任务已由用户停止');
                 return;
             }
-            console.error(e);
-            setStatus(`合并错误: ${e.message}`);
+            logUiError('视频合并失败', {
+                domain: 'workflow.merge',
+                action: 'handleMergeVideo',
+                detail: e instanceof Error ? e.message : String(e)
+            });
+            const errorInfo = normalizeBackendError(e, '视频合并错误');
+            if (sessionCacheDir) {
+                await cleanupSessionArtifacts({ sessionCacheDir }, 'failed', tempJsonPath ? [tempJsonPath] : []);
+                tempJsonPath = null;
+            }
+            setStatus(buildUserFacingErrorMessage(errorInfo));
         } finally {
             if (tempJsonPath) {
                 await window.api.deletePath(tempJsonPath);
@@ -429,173 +552,67 @@ export function useDubbingWorkflow({
     };
 }
 
-function buildSingleTtsArgs(
-    sourcePath: string,
-    outputPath: string,
-    segment: Segment,
-    options: {
-        targetLang: string;
-        ttsService: 'indextts' | 'qwen';
-        batchSize: number;
-        cloneBatchSize: number;
-        maxNewTokens: number;
-        videoStrategy: string;
-        fallbackRefAudio?: string;
-        fallbackRefText?: string;
-        nearbyRefAudios?: Array<{ audio_path: string; ref_text?: string }>;
-        qwenRefText?: string;
-    }
+async function ensureSingleSessionManifest(
+    projectPaths: Awaited<ReturnType<typeof prepareSingleProjectPaths>>['projectPaths'],
+    originalVideoPath: string,
+    sourceSegments: Segment[],
+    translatedSegments: Segment[]
 ) {
-    const { args: extraArgs } = buildTtsExtraArgs(options.ttsService, options.batchSize, options.cloneBatchSize);
-    const args = [
-        '--action', 'generate_single_tts',
-        '--tts_service', options.ttsService,
-        '--input', sourcePath,
-        '--output', outputPath,
-        '--text', segment.text,
-        '--lang', options.targetLang,
-        '--start', segment.start.toString(),
-        '--duration', String(Math.max(segment.end - segment.start, 0.1)),
-        '--strategy', options.videoStrategy,
-        '--max_new_tokens', String(options.maxNewTokens),
-        '--dub_retry_attempts', '3',
-        ...extraArgs,
-        '--json'
-    ];
+    const existingManifest = await readSessionManifest(projectPaths);
+    const resumePlan = await getSessionResumePlan(existingManifest, projectPaths);
 
-    if (options.fallbackRefAudio) {
-        args.push('--fallback_ref_audio', options.fallbackRefAudio);
-    }
+    const nextPhase = translatedSegments.length > 0
+        ? 'translated_subtitles_ready'
+        : sourceSegments.length > 0
+            ? 'source_subtitles_ready'
+            : 'preparing';
+    const currentStage = translatedSegments.length > 0
+        ? '翻译字幕已准备'
+        : sourceSegments.length > 0
+            ? '原字幕已准备'
+            : '准备工作流上下文';
 
-    if (options.fallbackRefText) {
-        args.push('--fallback_ref_text', options.fallbackRefText);
-    }
+    const patch = {
+        sessionKey: projectPaths.sessionKey,
+        fileName: `${projectPaths.baseName}.mp4`,
+        sourcePath: originalVideoPath,
+        phase: nextPhase as 'preparing' | 'source_subtitles_ready' | 'translated_subtitles_ready',
+        currentStage,
+        outputDir: projectPaths.outputDir,
+        artifacts: {
+            sessionCacheDir: projectPaths.sessionCacheDir,
+            sessionAudioDir: projectPaths.sessionAudioDir,
+            sessionTempDir: projectPaths.sessionTempDir,
+            finalDir: projectPaths.finalDir,
+            finalVideoPath: projectPaths.finalVideoPath,
+            originalSubtitlePath: projectPaths.originalSubtitlePath,
+            translatedSubtitlePath: projectPaths.translatedSubtitlePath
+        },
+        resume: {
+            recoverable: resumePlan.isRecoverable
+        },
+        lastError: null
+    };
 
-    if (options.nearbyRefAudios && options.nearbyRefAudios.length > 0) {
-        args.push('--nearby_ref_audios', JSON.stringify(options.nearbyRefAudios));
-    }
-
-    if (options.qwenRefText) {
-        args.push('--qwen_ref_text', options.qwenRefText);
-    }
-
-    return args;
-}
-
-function collectNearbySuccessfulAudioPaths(segments: Segment[], index: number, maxRefs = 2) {
-    const candidates = segments
-        .map((segment, candidateIndex) => ({
-            distance: Math.abs(candidateIndex - index),
-            path: segment.audioPath,
-            candidateIndex,
-            status: segment.audioStatus,
-            refText: segment.text
-        }))
-        .filter(candidate =>
-            candidate.candidateIndex !== index &&
-            candidate.status === 'ready' &&
-            Boolean(candidate.path)
-        )
-        .sort((a, b) => a.distance - b.distance);
-
-    const refs: Array<{ audio_path: string; ref_text?: string }> = [];
-    const seen = new Set<string>();
-    for (const candidate of candidates) {
-        if (!candidate.path || seen.has(candidate.path)) continue;
-        seen.add(candidate.path);
-        refs.push({
-            audio_path: candidate.path,
-            ref_text: candidate.refText || ''
-        });
-        if (refs.length >= maxRefs) break;
-    }
-    return refs;
-}
-
-async function prepareFallbackReferenceAudio(
-    sourcePath: string,
-    workDir: string,
-    segments: Segment[]
-) {
-    if (segments.length === 0) {
-        return undefined;
-    }
-
-    const refJsonPath = `${workDir}\\fallback_ref_segments.json`;
-    await window.api.saveFile(refJsonPath, JSON.stringify(
-        segments.map(segment => ({
-            start: segment.start,
-            end: segment.end,
-            text: segment.text
-        })),
-        null,
-        2
-    ));
-
-    try {
-        const result = await window.api.runBackend([
-            '--action', 'prepare_reference_audio',
-            '--input', sourcePath,
-            '--ref', refJsonPath,
-            '--output', workDir,
-            '--json'
-        ]);
-        if (result?.success && result.ref_audio_path) {
-            return {
-                audioPath: result.ref_audio_path as string,
-                refText: result.meta?.text || ''
-            };
-        }
-        return undefined;
-    } finally {
-        await window.api.deletePath(refJsonPath);
-    }
-}
-
-function buildTtsExtraArgs(
-    ttsService: 'indextts' | 'qwen',
-    batchSize: number,
-    cloneBatchSize: number
-) {
-    const args: string[] = [];
-    const voiceMode = getStoredTtsVoiceMode();
-    let effectiveBatchSize = batchSize;
-    let blocked: FeedbackPayload | null = null;
-
-    args.push('--voice_mode', voiceMode);
-
-    if (ttsService === 'qwen') {
-        const qwenSettings = getStoredQwenTtsSettings();
-        const selectedQwenMode = qwenSettings.mode;
-
-        if (selectedQwenMode === 'design') {
-            if (!qwenSettings.designRefAudio) {
-                blocked = {
-                    title: '需要预览',
-                    message: '您还没有完成“声音设计”测试音频。请先在参数设置中点击“合成”，锁定音色效果后再批量生成。',
-                    type: 'error'
-                };
-                return { args, effectiveBatchSize, blocked };
-            }
-        }
-
-        args.push('--qwen_mode', selectedQwenMode);
-        args.push('--qwen_model_size', qwenSettings.modelSize);
-
-        if (selectedQwenMode === 'preset') {
-            args.push('--preset_voice', qwenSettings.presetVoice);
-        } else if (selectedQwenMode === 'design') {
-            args.push('--voice_instruct', qwenSettings.voiceInstruction);
-            if (qwenSettings.designRefAudio) args.push('--ref_audio', qwenSettings.designRefAudio);
-        } else {
-            effectiveBatchSize = voiceMode === 'clone' ? cloneBatchSize : batchSize;
-            if (qwenSettings.refAudio) args.push('--ref_audio', qwenSettings.refAudio);
-            if (qwenSettings.refText) args.push('--qwen_ref_text', qwenSettings.refText);
-        }
+    if (existingManifest) {
+        await updateSessionManifest(projectPaths, patch);
     } else {
-        const refAudio = localStorage.getItem('tts_ref_audio_path');
-        if (refAudio) args.push('--ref_audio', refAudio);
+        const initialManifest: Omit<SessionManifest, 'version' | 'updatedAt'> = {
+            sessionKey: projectPaths.sessionKey,
+            fileName: `${projectPaths.baseName}.mp4`,
+            sourcePath: originalVideoPath,
+            phase: nextPhase,
+            currentStage,
+            outputDir: projectPaths.outputDir,
+            artifacts: patch.artifacts,
+            resume: {
+                recoverable: false,
+                preservedAudioSegments: []
+            },
+            lastError: undefined
+        };
+        await initializeSessionManifest(projectPaths, initialManifest);
     }
 
-    return { args, effectiveBatchSize, blocked };
+    return resumePlan;
 }

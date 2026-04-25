@@ -36,5 +36,15 @@ export async function cleanupOutputArtifacts(
     if (extraPaths.length === 0) {
         return;
     }
-    await Promise.all(extraPaths.map((targetPath) => window.api.deletePath(targetPath)));
+    const normalizedPaths = Array.from(
+        new Set(
+            extraPaths
+                .filter((targetPath): targetPath is string => Boolean(targetPath))
+                .sort((left, right) => right.length - left.length)
+        )
+    );
+
+    for (const targetPath of normalizedPaths) {
+        await window.api.deletePath(targetPath);
+    }
 }

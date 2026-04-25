@@ -2,11 +2,16 @@
 import os
 # import torch # Moved to inside main/functions for safety
 import pathlib
+import builtins
+import logging
+current_script_dir = os.path.dirname(os.path.abspath(__file__))
+if current_script_dir not in sys.path:
+    sys.path.insert(0, current_script_dir)
+from app_logging import get_logger, log_business, log_debug, log_error, log_security, redirect_print
 
 # FORCE IMMEDIATE FLUSH
 sys.stdout.reconfigure(encoding='utf-8')
 sys.stderr.reconfigure(encoding='utf-8')
-print("DEBUG: Pre-import check passed", file=sys.stderr, flush=True)
 
 # [USER REQUEST] Force Offline for manual handling of models
 os.environ['HF_HUB_OFFLINE'] = '1'
@@ -39,11 +44,11 @@ class EncodingSafePopen(_original_popen):
 
 subprocess.Popen = EncodingSafePopen
 
-current_script_dir = os.path.dirname(os.path.abspath(__file__))
-if current_script_dir not in sys.path:
-    sys.path.insert(0, current_script_dir)
+logger = get_logger("main")
+_stdout_print = builtins.print
+print = redirect_print(logger, default_level=logging.DEBUG)
 
-from event_protocol import emit_issue, emit_partial_result, emit_progress, emit_stage
+from event_protocol import clear_event_context, emit_issue, emit_partial_result, emit_progress, emit_stage, scoped_event_context, set_event_context
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 # With flat structure, APP_ROOT is consistently the parent of backend/
@@ -81,7 +86,7 @@ try:
                 ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 f.write(f"[{ts}] {msg}\n")
         except:
-            print(f"Log Error: {msg}")
+            builtins.print(f"Log Error: {msg}", file=sys.stderr)
 
     debug_log("Backend starting...")
     debug_log(f"Executable: {sys.executable}")
@@ -90,10 +95,10 @@ try:
     debug_log(f"Is Prod: {IS_PROD}")
 
 except Exception as e:
-    print(f"Logging setup failed: {e}")
+    builtins.print(f"Logging setup failed: {e}", file=sys.stderr)
     # Fallback logger
     def debug_log(msg):
-        print(f"[LOG_FAIL] {msg}")
+        builtins.print(f"[LOG_FAIL] {msg}", file=sys.stderr)
 
 def exception_hook(exc_type, exc_value, exc_traceback):
     import traceback
@@ -119,7 +124,7 @@ if not getattr(sys, 'frozen', False):
             current_py = sys.executable.lower()
             
             if target_py != current_py:
-                print(f"[BOOTSTRAP] Relaunching with portable python: {target_py}")
+                log_security(logger, logging.WARNING, "Relaunching with portable python", event="python_relaunch", stage="bootstrap", detail=target_py)
                 # Ensure we pass all original arguments
                 cmd = [target_py, __file__] + sys.argv[1:]
                 
@@ -131,7 +136,7 @@ if not getattr(sys, 'frozen', False):
                 sys.exit(ret)
                 
     except Exception as e:
-        print(f"[BOOTSTRAP WARNING] Failed to enforce portable python: {e}")
+        log_error(logger, "Failed to enforce portable python", event="python_relaunch_failed", stage="bootstrap", detail=str(e))
 
 class DualWriter:
     def __init__(self, file_path, original_stream):
@@ -202,13 +207,12 @@ if not MODELS_HUB_DIR:
          MODELS_HUB_DIR = os.path.join(APP_ROOT, "models", "index-tts", "hub")
 
 if not os.path.exists(MODELS_HUB_DIR):
-    print(f"[WARNING] Model directory not found: {MODELS_HUB_DIR}", file=sys.stderr)
-    print(f"[WARNING] Local WhisperX models will be unavailable. API-based services (Jianying/Bcut) can still be used.", file=sys.stderr)
+    log_error(logger, "Model directory not found", event="model_dir_missing", stage="bootstrap", detail=MODELS_HUB_DIR)
+    log_business(logger, logging.WARNING, "Local WhisperX models unavailable; API services remain available", event="model_dir_missing", stage="bootstrap")
     # Don't exit, allow startup for API usage
     # sys.exit(1)
     
-log_location = f"Models found at: {MODELS_HUB_DIR}"
-print(log_location)
+log_business(logger, logging.INFO, "Models directory resolved", event="model_dir_ready", stage="bootstrap", detail=MODELS_HUB_DIR)
 
 os.environ["HF_HOME"] = MODELS_HUB_DIR
 os.environ["HF_HUB_CACHE"] = MODELS_HUB_DIR
@@ -223,10 +227,10 @@ backend_root = os.path.dirname(os.path.abspath(sys.executable)) if sys_frozen el
 ffmpeg_bin = os.path.join(backend_root, "ffmpeg", "bin")
 
 if os.path.exists(os.path.join(ffmpeg_bin, "ffmpeg.exe")):
-    print(f"Using portable FFmpeg from: {ffmpeg_bin}")
+    log_business(logger, logging.INFO, "Using portable FFmpeg", event="ffmpeg_ready", stage="bootstrap", detail=ffmpeg_bin)
     os.environ["PATH"] = ffmpeg_bin + os.pathsep + os.environ["PATH"]
 else:
-    print("Portable FFmpeg not found, using system PATH.")
+    log_business(logger, logging.WARNING, "Portable FFmpeg not found, falling back to system PATH", event="ffmpeg_fallback", stage="bootstrap")
 
 def setup_gpu_paths():
     """
@@ -284,7 +288,7 @@ def setup_gpu_paths():
             pass # Ignore import errors here, we relied on heuristic above
 
     except Exception as e:
-        print(f"[WARNING] Failed to patch DLL paths: {e}")
+        log_error(logger, "Failed to patch DLL paths", event="dll_patch_failed", stage="bootstrap", detail=str(e))
 
 
 # Apply DLL path patching before importing any ASR/TTS modules that may load torch/cuDNN.
@@ -305,6 +309,8 @@ import shutil
 from action_handlers import dispatch_basic_action
 from cli_options import build_parser, build_tts_kwargs, build_translation_kwargs
 from dependency_manager import ensure_transformers_version, check_gpu_deps
+from error_model import emit_error_issue, error_result, exception_result, make_error
+from runtime_config import build_dub_video_runtime_config
 from tts_action_handlers import generate_batch_tts_results, handle_generate_batch_tts, handle_generate_single_tts, handle_prepare_reference_audio
 
 # Global TTS entry points (lazy loaded)
@@ -330,21 +336,21 @@ def get_tts_runner(service="indextts", check_deps=True):
     # Dependency Check
     if check_deps:
         if service == "qwen":
-            print("[Main] Ensuring dependencies for Qwen3-TTS...")
+            log_business(logger, logging.INFO, "Ensuring dependencies for Qwen3-TTS", event="deps_check", stage="bootstrap")
             setup_gpu_paths()
             if ensure_transformers_version("4.57.3"):
                  check_gpu_deps()
-                 print("[Main] Qwen3 dependencies ready.")
+                 log_business(logger, logging.INFO, "Qwen3 dependencies ready", event="deps_ready", stage="bootstrap")
             else:
-                 print("[Main] Failed to setup Qwen3 dependencies.")
+                 log_error(logger, "Failed to setup Qwen3 dependencies", event="deps_failed", stage="bootstrap", code="QWEN_DEPS_FAILED")
                  return None, None
         else:
             # Default/IndexTTS
-            print("[Main] Ensuring dependencies for IndexTTS...")
+            log_business(logger, logging.INFO, "Ensuring dependencies for IndexTTS", event="deps_check", stage="bootstrap")
             if ensure_transformers_version("4.52.1"):
-                 print("[Main] IndexTTS dependencies ready.")
+                 log_business(logger, logging.INFO, "IndexTTS dependencies ready", event="deps_ready", stage="bootstrap")
             else:
-                 print("[Main] Failed to setup IndexTTS dependencies.")
+                 log_error(logger, "Failed to setup IndexTTS dependencies", event="deps_failed", stage="bootstrap", code="INDEXTTS_DEPS_FAILED")
                  return None, None
     
     # Import
@@ -361,7 +367,7 @@ def get_tts_runner(service="indextts", check_deps=True):
             _loaded_tts_service = service
             return _run_tts, _run_batch_tts
     except ImportError as e:
-        print(f"[Main] Failed to import TTS service {service}: {e}")
+        log_error(logger, f"Failed to import TTS service {service}", event="tts_import_failed", stage="bootstrap", detail=str(e))
         return None, None
 
 
@@ -382,10 +388,17 @@ def analyze_video(file_path):
         }
         return {"success": True, "info": info}
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        return exception_result(
+            "ANALYZE_VIDEO_FAILED",
+            "视频信息分析失败",
+            e,
+            category="media",
+            stage="analyze_video",
+            retryable=True
+        )
 
 def transcode_video(input_path, output_path):
-    print(f"Transcoding {input_path} to {output_path}...")
+    log_business(logger, logging.INFO, "Starting video transcode", event="transcode_start", stage="transcode", detail=f"{input_path} -> {output_path}")
     try:
         stream = ffmpeg.input(input_path)
         stream = ffmpeg.output(stream, output_path, vcodec='libx264', acodec='aac', preset='fast', crf=23)
@@ -393,11 +406,234 @@ def transcode_video(input_path, output_path):
         return {"success": True, "output": output_path}
     except ffmpeg.Error as e:
         err = e.stderr.decode() if e.stderr else str(e)
-        print(f"Transcoding failed: {err}")
-        return {"success": False, "error": err}
+        log_error(logger, "Video transcode failed", event="transcode_failed", stage="transcode", detail=err, code="TRANSCODE_FAILED")
+        return error_result(
+            make_error(
+                "TRANSCODE_FAILED",
+                "视频转码失败",
+                category="media",
+                stage="transcode",
+                retryable=False,
+                detail=err
+            )
+        )
     except Exception as e:
-        print(f"Transcoding failed: {e}")
-        return {"success": False, "error": str(e)}
+        log_error(logger, "Video transcode failed with exception", event="transcode_exception", stage="transcode", detail=str(e), code="TRANSCODE_EXCEPTION")
+        return exception_result(
+            "TRANSCODE_EXCEPTION",
+            "视频转码失败",
+            e,
+            category="system",
+            stage="transcode",
+            retryable=False
+        )
+
+
+def _build_dub_segments_dir(config):
+    return os.path.join(config.work_dir, f"{config.basename}_segments")
+
+
+def _prepare_dub_workspace(config):
+    os.makedirs(config.output_dir_root, exist_ok=True)
+    os.makedirs(config.work_dir, exist_ok=True)
+
+    cache_dir = os.path.join(config.work_dir, ".cache")
+    if not os.path.exists(cache_dir):
+        os.makedirs(cache_dir)
+
+    segments_dir = _build_dub_segments_dir(config)
+    if os.path.exists(segments_dir):
+        shutil.rmtree(segments_dir)
+    os.makedirs(segments_dir)
+
+    return cache_dir, segments_dir
+
+
+def _run_dub_asr_stage(config, cache_dir):
+    log_business(logger, logging.INFO, "Starting dub ASR stage", event="dub_step", stage="asr")
+    emit_stage("dub_video", "asr", "正在识别字幕", stage_label="正在识别字幕")
+
+    segments = run_asr(
+        config.input_path,
+        service=config.asr_service,
+        output_dir=cache_dir,
+        vad_onset=config.vad_onset,
+        vad_offset=config.vad_offset,
+        language=config.ori_lang
+    )
+    if not segments:
+        emit_error_issue(
+            "dub_video",
+            make_error(
+                "ASR_NO_SEGMENTS",
+                "识别失败或未检测到有效语音",
+                category="asr",
+                stage="asr",
+                retryable=True,
+                suggestion="请调整源语言、VAD 阈值或更换 ASR 引擎后重试"
+            )
+        )
+        return None
+    return segments
+
+
+def _run_dub_translation_stage(translator, segments, target_lang):
+    log_business(logger, logging.INFO, "Starting dub translation stage", event="dub_step", stage="translate", detail=f"segments={len(segments)}")
+    emit_stage("dub_video", "translate", f"正在翻译 {len(segments)} 个片段", stage_label="正在翻译字幕")
+
+    source_texts = [seg.get("text", "") for seg in segments]
+    translated_texts = translator.translate_batch(source_texts, target_lang)
+    if len(translated_texts) != len(source_texts):
+        print(f"[DubVideo] Translation batch length mismatch. Expected {len(source_texts)}, got {len(translated_texts)}")
+        if len(translated_texts) < len(source_texts):
+            translated_texts.extend(source_texts[len(translated_texts):])
+        else:
+            translated_texts = translated_texts[:len(source_texts)]
+    return translated_texts
+
+
+def _build_dub_tts_tasks(segments, translated_texts):
+    tts_tasks = []
+    for idx, seg in enumerate(segments):
+        original_text = seg["text"]
+        start = seg["start"]
+        end = seg["end"]
+        duration = max(end - start, 0.1)
+        translated_text = translated_texts[idx] if idx < len(translated_texts) else original_text
+        translated_text = translated_text.strip() if isinstance(translated_text, str) else ""
+
+        print(f"  [{idx+1}/{len(segments)}] Translating: {original_text}")
+        print(f"    -> {translated_text}")
+
+        if not translated_text:
+            print("    Skipping (Translation failed)")
+            continue
+
+        tts_tasks.append({
+            "idx": idx,
+            "translated_text": translated_text,
+            "start": start,
+            "duration": duration,
+            "original_seg": seg
+        })
+    return tts_tasks
+
+
+def _build_dub_tts_segments(tts_tasks, segments_dir):
+    return [
+        {
+            "original_index": item["idx"],
+            "start": item["start"],
+            "end": item["start"] + item["duration"],
+            "text": item["translated_text"],
+            "source_text": item["original_seg"].get("text", ""),
+            "audioPath": os.path.join(segments_dir, f"dub_{item['idx']}.wav")
+        }
+        for item in tts_tasks
+    ]
+
+
+def _align_dubbed_segment_if_needed(tts_output_path, duration, strategy, segment_index):
+    should_align = strategy not in ["frame_blend", "freeze_frame", "rife"]
+    if not should_align:
+        print(f"    [DubVideo] Strategy is {strategy}, skipping audio alignment.")
+        return
+
+    if duration <= 0 or not tts_output_path:
+        return
+
+    try:
+        current_dur = get_audio_duration(tts_output_path)
+        if current_dur and current_dur > duration + 0.1:
+            print(f"    [DubVideo] Segment {segment_index} duration {current_dur:.2f}s > {duration:.2f}s. Aligning...")
+            temp_aligned = tts_output_path.replace(".wav", "_aligned_temp.wav")
+            if align_audio(tts_output_path, temp_aligned, duration):
+                try:
+                    if os.path.exists(tts_output_path):
+                        os.remove(tts_output_path)
+                    os.rename(temp_aligned, tts_output_path)
+                    print(f"    [DubVideo] Aligned and overwritten: {tts_output_path}")
+                except Exception as error:
+                    print(f"    [DubVideo] Failed to overwrite aligned file: {error}")
+    except Exception as error:
+        print(f"    [DubVideo] Auto-align warning: {error}")
+
+
+def _collect_dub_tts_results(tts_tasks, batch_tts_result, strategy):
+    new_audio_segments = []
+    result_segments = []
+
+    for item in tts_tasks:
+        idx = item["idx"]
+        start = item["start"]
+        duration = item["duration"]
+        translated_text = item["translated_text"]
+        original_seg = item["original_seg"]
+        result = next((segment for segment in batch_tts_result.get("results", []) if segment.get("index") == idx), None)
+        tts_output_path = result.get("audio_path") if isinstance(result, dict) else None
+        success = bool(result and result.get("success") and tts_output_path and os.path.exists(tts_output_path))
+        last_error = result.get("error") if isinstance(result, dict) else None
+
+        if success:
+            _align_dubbed_segment_if_needed(tts_output_path, duration, strategy, idx)
+            new_audio_segments.append({
+                "start": start,
+                "path": tts_output_path,
+                "duration": duration
+            })
+            result_segments.append({
+                "index": idx,
+                "start": start,
+                "end": start + duration,
+                "original_text": original_seg.get("text", ""),
+                "text": translated_text,
+                "audio_path": tts_output_path,
+                "duration": duration,
+                "success": True
+            })
+            continue
+
+        print(f"    [DubVideo] Segment {idx} failed after retries: {last_error}")
+        emit_error_issue(
+            "dub_video",
+            make_error(
+                "TTS_SEGMENT_FAILED",
+                f"片段 {idx + 1} 配音失败",
+                category="tts",
+                stage="tts_generate",
+                retryable=True,
+                detail=last_error or "TTS generation failed after retries",
+                suggestion="请查看完整日志或切换参考音频后重试"
+            ),
+            level="warn",
+            item_index=idx + 1,
+            item_total=len(tts_tasks)
+        )
+        result_segments.append({
+            "index": idx,
+            "start": start,
+            "end": start + duration,
+            "original_text": original_seg.get("text", ""),
+            "text": translated_text,
+            "audio_path": tts_output_path,
+            "duration": duration,
+            "success": False,
+            "error": last_error or "TTS generation failed after retries"
+        })
+
+    return new_audio_segments, result_segments
+
+
+def _merge_dub_video(config, new_audio_segments):
+    log_business(logger, logging.INFO, "Starting dub merge stage", event="dub_step", stage="merge_video", detail=f"segments={len(new_audio_segments)}")
+    emit_stage("dub_video", "merge_video", "正在合成视频", stage_label="正在合成视频")
+    return merge_audios_to_video(
+        config.input_path,
+        new_audio_segments,
+        config.output_path,
+        strategy=config.strategy,
+        audio_mix_mode=config.audio_mix_mode
+    )
 
 def translate_text(input_text_or_json, target_lang, **kwargs):
     """
@@ -492,140 +728,91 @@ def translate_text(input_text_or_json, target_lang, **kwargs):
         translator.cleanup()
         return {"success": True, "text": trans}
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        return exception_result(
+            "TRANSLATE_FAILED",
+            "翻译失败",
+            e,
+            category="translation",
+            stage="translate",
+            retryable=True
+        )
 
 
 # 333: 
 def dub_video(input_path, target_lang, output_path, asr_service="whisperx", vad_onset=0.700, vad_offset=0.700, tts_service="indextts", **kwargs):
-    print(f"Starting AI Dubbing for {input_path} -> {target_lang} using ASR:{asr_service} TTS:{tts_service}", flush=True)
+    log_business(logger, logging.INFO, "Starting AI dubbing workflow", event="dub_start", stage="bootstrap", detail=f"input={input_path} target={target_lang} asr={asr_service} tts={tts_service}")
     emit_stage("dub_video", "bootstrap", "正在准备配音任务", stage_label="正在准备任务")
-    
-    # 0. Get TTS Runner (This will switch deps if needed)
-    run_tts_func, run_batch_tts_func = get_tts_runner(tts_service)
-    if not run_tts_func:
-        emit_issue("dub_video", "bootstrap", "error", "TTS_INIT_FAILED", f"初始化 TTS 服务失败: {tts_service}")
-        return {"success": False, "error": f"Failed to initialize TTS service: {tts_service}"}
-
-    # 1. Initialize LLM
-    translator_kwargs = {
-        "model_dir": kwargs.get("model_dir"),
-        "api_key": kwargs.get("api_key"),
-        "base_url": kwargs.get("base_url"),
-        "model": kwargs.get("model")
-    }
-    LLMTranslator = get_llm_translator_class()
-    translator = LLMTranslator(**translator_kwargs)
-    
-    # 2. Run ASR
-    print("Step 1/4: Running ASR...", flush=True)
-    emit_stage("dub_video", "asr", "正在识别字幕", stage_label="正在识别字幕")
-    
-    output_dir_root = os.path.dirname(output_path)
-    work_dir_root = kwargs.get("work_dir") or output_dir_root
-    os.makedirs(output_dir_root, exist_ok=True)
-    os.makedirs(work_dir_root, exist_ok=True)
-    basename = os.path.splitext(os.path.basename(output_path))[0]
-    segments_dir = os.path.join(work_dir_root, f"{basename}_segments") 
-    
-    
-    cache_dir = os.path.join(work_dir_root, ".cache")
-    if not os.path.exists(cache_dir):
-        os.makedirs(cache_dir)
-        
-    segments = run_asr(
-        input_path,
-        service=asr_service,
-        output_dir=cache_dir,
+    config = build_dub_video_runtime_config(
+        input_path=input_path,
+        target_lang=target_lang,
+        output_path=output_path,
+        asr_service=asr_service,
         vad_onset=vad_onset,
         vad_offset=vad_offset,
-        language=kwargs.get("ori_lang")
-    ) 
+        tts_service=tts_service,
+        kwargs=kwargs
+    )
+    cache_dir = None
+    segments_dir = None
+    
+    # 0. Get TTS Runner (This will switch deps if needed)
+    run_tts_func, run_batch_tts_func = get_tts_runner(config.tts_service)
+    if not run_tts_func:
+        backend_error = make_error(
+            "TTS_INIT_FAILED",
+            f"初始化 TTS 服务失败: {config.tts_service}",
+            category="tts",
+            stage="bootstrap",
+            retryable=True,
+            suggestion="请检查模型依赖、显卡环境或切换 TTS 引擎"
+        )
+        emit_error_issue("dub_video", backend_error)
+        return error_result(backend_error)
+
+    # 1. Initialize LLM
+    LLMTranslator = get_llm_translator_class()
+    translator = LLMTranslator(**config.translation.to_translator_kwargs())
+    
+    cache_dir, segments_dir = _prepare_dub_workspace(config)
+    segments = _run_dub_asr_stage(config, cache_dir)
     if not segments:
-        emit_issue("dub_video", "asr", "error", "ASR_NO_SEGMENTS", "识别失败或未检测到有效语音")
-        return {"success": False, "error": "ASR failed or no speech detected."}
+        return error_result(
+            make_error(
+                "ASR_NO_SEGMENTS",
+                "识别失败或未检测到有效语音",
+                category="asr",
+                stage="asr",
+                retryable=True,
+                suggestion="请调整源语言、VAD 阈值或更换 ASR 引擎后重试"
+            )
+        )
     
-    
-    basename = os.path.splitext(os.path.basename(output_path))[0]
-    segments_dir = os.path.join(work_dir_root, f"{basename}_segments")
-    
-    print(f"DEBUG: Output Path: {output_path}")
+    print(f"DEBUG: Output Path: {config.output_path}")
     print(f"DEBUG: Segments Dir: {segments_dir}")
-    print(f"DEBUG: Input Path: {input_path}")
-    
-    if os.path.exists(segments_dir):
-        shutil.rmtree(segments_dir)
-    os.makedirs(segments_dir)
+    print(f"DEBUG: Input Path: {config.input_path}")
 
-    new_audio_segments = []
-    result_segments = [] 
-    
-    
-    print(f"Step 2: Translating {len(segments)} segments...", flush=True)
-    emit_stage("dub_video", "translate", f"正在翻译 {len(segments)} 个片段", stage_label="正在翻译字幕")
-    source_texts = [seg.get('text', '') for seg in segments]
-    translated_texts = translator.translate_batch(source_texts, target_lang)
-    if len(translated_texts) != len(source_texts):
-        print(f"[DubVideo] Translation batch length mismatch. Expected {len(source_texts)}, got {len(translated_texts)}")
-        if len(translated_texts) < len(source_texts):
-            translated_texts.extend(source_texts[len(translated_texts):])
-        else:
-            translated_texts = translated_texts[:len(source_texts)]
-
-    tts_tasks = []
-    for idx, seg in enumerate(segments):
-        original_text = seg['text']
-        start = seg['start']
-        end = seg['end']
-        duration = max(end - start, 0.1)
-        translated_text = translated_texts[idx] if idx < len(translated_texts) else original_text
-        translated_text = translated_text.strip() if isinstance(translated_text, str) else ""
-
-        print(f"  [{idx+1}/{len(segments)}] Translating: {original_text}")
-        print(f"    -> {translated_text}")
-
-        if not translated_text:
-            print("    Skipping (Translation failed)")
-            continue
-
-        tts_tasks.append({
-            "idx": idx,
-            "translated_text": translated_text,
-            "start": start,
-            "duration": duration,
-            "original_seg": seg
-        })
+    translated_texts = _run_dub_translation_stage(translator, segments, config.target_lang)
+    tts_tasks = _build_dub_tts_tasks(segments, translated_texts)
         
     print("Translation done. Releasing LLM VRAM...", flush=True)
     translator.cleanup()
     del translator
     
-    print(f"Step 3: Cloning Voice for {len(tts_tasks)} segments using {tts_service}...", flush=True)
+    log_business(logger, logging.INFO, "Starting dub TTS stage", event="dub_step", stage="tts_generate", detail=f"segments={len(tts_tasks)} service={config.tts_service}")
     emit_stage("dub_video", "tts_generate", f"正在生成 {len(tts_tasks)} 条配音", stage_label="正在生成配音")
 
-    tts_segments = [
-        {
-            "original_index": item["idx"],
-            "start": item["start"],
-            "end": item["start"] + item["duration"],
-            "text": item["translated_text"],
-            "source_text": item["original_seg"].get("text", ""),
-            "audioPath": os.path.join(segments_dir, f"dub_{item['idx']}.wav")
-        }
-        for item in tts_tasks
-    ]
-
-    batch_runtime_kwargs = dict(kwargs)
-    batch_runtime_kwargs["batch_size"] = int(batch_runtime_kwargs.get("batch_size") or 1)
+    tts_segments = _build_dub_tts_segments(tts_tasks, segments_dir)
+    batch_runtime_kwargs = config.tts.to_runner_kwargs()
     batch_tts_result = generate_batch_tts_results(
-        video_path=input_path,
+        video_path=config.input_path,
         segments=tts_segments,
         work_dir=segments_dir,
-        target_lang=target_lang,
-        tts_service_name=tts_service,
+        target_lang=config.target_lang,
+        tts_service_name=config.tts_service,
         tts_kwargs=batch_runtime_kwargs,
-        args_ref_audio=kwargs.get("ref_audio"),
-        explicit_qwen_ref_text=kwargs.get("qwen_ref_text", "") or "",
-        max_retry_attempts=int(kwargs.get("dub_retry_attempts", 3) or 3),
+        args_ref_audio=config.tts.ref_audio,
+        explicit_qwen_ref_text=config.tts.qwen_ref_text or "",
+        max_retry_attempts=config.dub_retry_attempts,
         get_tts_runner=get_tts_runner,
         get_audio_duration=get_audio_duration,
         ffmpeg=ffmpeg,
@@ -637,132 +824,72 @@ def dub_video(input_path, target_lang, output_path, asr_service="whisperx", vad_
     if not batch_tts_result.get("success"):
         return batch_tts_result
 
-    for item in tts_tasks:
-        idx = item["idx"]
-        start = item["start"]
-        duration = item["duration"]
-        translated_text = item["translated_text"]
-        original_seg = item["original_seg"]
-        result = next((segment for segment in batch_tts_result.get("results", []) if segment.get("index") == idx), None)
-        tts_output_path = result.get("audio_path") if isinstance(result, dict) else None
-        success = bool(result and result.get("success") and tts_output_path and os.path.exists(tts_output_path))
-        last_error = result.get("error") if isinstance(result, dict) else None
-
-        if success:
-            should_align = True
-            strategy = kwargs.get('strategy', 'auto_speedup')
-            if strategy in ['frame_blend', 'freeze_frame', 'rife']:
-                should_align = False
-                print(f"    [DubVideo] Strategy is {strategy}, skipping audio alignment.")
-
-            if duration > 0 and should_align and tts_output_path:
-                try:
-                    current_dur = get_audio_duration(tts_output_path)
-                    if current_dur and current_dur > duration + 0.1:
-                        print(f"    [DubVideo] Segment {idx} duration {current_dur:.2f}s > {duration:.2f}s. Aligning...")
-                        temp_aligned = tts_output_path.replace('.wav', '_aligned_temp.wav')
-                        if align_audio(tts_output_path, temp_aligned, duration):
-                            try:
-                                if os.path.exists(tts_output_path):
-                                    os.remove(tts_output_path)
-                                os.rename(temp_aligned, tts_output_path)
-                                print(f"    [DubVideo] Aligned and overwritten: {tts_output_path}")
-                            except Exception as e:
-                                print(f"    [DubVideo] Failed to overwrite aligned file: {e}")
-                except Exception as e:
-                    print(f"    [DubVideo] Auto-align warning: {e}")
-
-            new_audio_segments.append({
-                'start': start,
-                'path': tts_output_path,
-                'duration': duration
-            })
-            result_segments.append({
-                "index": idx,
-                "start": start,
-                "end": start + duration,
-                "original_text": original_seg.get("text", ""),
-                "text": translated_text,
-                "audio_path": tts_output_path,
-                "duration": duration,
-                "success": True
-            })
-        else:
-            print(f"    [DubVideo] Segment {idx} failed after retries: {last_error}")
-            emit_issue(
-                "dub_video",
-                "tts_generate",
-                "warn",
-                "TTS_SEGMENT_FAILED",
-                f"片段 {idx + 1} 配音失败",
-                item_index=idx + 1,
-                item_total=len(tts_tasks),
-                detail=last_error or "TTS generation failed after retries",
-                suggestion="请查看完整日志或切换参考音频后重试"
-            )
-            result_segments.append({
-                "index": idx,
-                "start": start,
-                "end": start + duration,
-                "original_text": original_seg.get("text", ""),
-                "text": translated_text,
-                "audio_path": tts_output_path,
-                "duration": duration,
-                "success": False,
-                "error": last_error or "TTS generation failed after retries"
-            })
+    new_audio_segments, result_segments = _collect_dub_tts_results(
+        tts_tasks,
+        batch_tts_result,
+        config.strategy
+    )
 
     failed_segments = [seg for seg in result_segments if seg.get("success") is False]
     if failed_segments:
         failed_indexes = [str(seg.get("index")) for seg in failed_segments]
         print(f"[DubVideo] Warning: segments still failed after retries: {', '.join(failed_indexes)}")
-        emit_issue(
+        emit_error_issue(
             "dub_video",
-            "tts_generate",
-            "warn",
-            "TTS_PARTIAL_FAILURE",
-            f"{len(failed_segments)} 个片段在重试后仍然失败",
-            detail=", ".join(failed_indexes),
-            suggestion="可先导出日志，再对失败片段单独重试"
+            make_error(
+                "TTS_PARTIAL_FAILURE",
+                f"{len(failed_segments)} 个片段在重试后仍然失败",
+                category="tts",
+                stage="tts_generate",
+                retryable=True,
+                detail=", ".join(failed_indexes),
+                suggestion="可先导出日志，再对失败片段单独重试"
+            ),
+            level="warn"
         )
         if not new_audio_segments:
             return {
-                "success": False,
-                "error": f"All TTS segments failed after retries: {', '.join(failed_indexes)}",
+                **error_result(
+                    make_error(
+                        "TTS_ALL_SEGMENTS_FAILED",
+                        f"全部配音片段在重试后仍失败: {', '.join(failed_indexes)}",
+                        category="tts",
+                        stage="tts_generate",
+                        retryable=True,
+                        detail=", ".join(failed_indexes),
+                        suggestion="请先检查参考音频、TTS 引擎与显存状态，再重试失败片段"
+                    )
+                ),
                 "failed_segments": failed_segments,
                 "segments": result_segments
             }
         
-    # 4. Merge
-    print("Step 4/4: Merging Video...")
-    emit_stage("dub_video", "merge_video", "正在合成视频", stage_label="正在合成视频")
-    success = merge_audios_to_video(
-        input_path,
-        new_audio_segments,
-        output_path,
-        strategy=kwargs.get('strategy', 'auto_speedup'),
-        audio_mix_mode=kwargs.get('audio_mix_mode', 'preserve_background')
-    )
+    success = _merge_dub_video(config, new_audio_segments)
     
     if success:
+        if cache_dir and os.path.isdir(cache_dir):
+            shutil.rmtree(cache_dir, ignore_errors=True)
+        if segments_dir and os.path.isdir(segments_dir):
+            shutil.rmtree(segments_dir, ignore_errors=True)
         return {
             "success": True, 
-            "output": output_path, 
+            "output": config.output_path, 
             "segments": result_segments,
             "failed_segments": failed_segments,
             "partial_success": len(failed_segments) > 0,
             "warning": f"Segments failed after retries: {', '.join(str(seg.get('index')) for seg in failed_segments)}" if failed_segments else None
         }
     else:
-        emit_issue(
-            "dub_video",
-            "merge_video",
-            "error",
+        backend_error = make_error(
             "MERGE_VIDEO_FAILED",
             "视频合成失败",
+            category="merge",
+            stage="merge_video",
+            retryable=True,
             suggestion="请检查 FFmpeg、输出路径和完整日志"
         )
-        return {"success": False, "error": "Merging failed."}
+        emit_error_issue("dub_video", backend_error)
+        return error_result(backend_error)
 
 WORKER_RESULT_PREFIX = "__WORKER_RESULT__"
 
@@ -770,64 +897,67 @@ WORKER_RESULT_PREFIX = "__WORKER_RESULT__"
 def execute_with_args(args):
     tts_kwargs = build_tts_kwargs(args)
     extra_kwargs = build_translation_kwargs(args)
-
-    handled, basic_result = dispatch_basic_action(
-        args,
-        tts_kwargs,
-        extra_kwargs,
-        get_tts_runner=get_tts_runner,
-        run_asr=run_asr,
-        translate_text=translate_text,
-        align_audio=align_audio,
-        get_audio_duration=get_audio_duration,
-        merge_audios_to_video=merge_audios_to_video,
-        analyze_video=analyze_video,
-        transcode_video=transcode_video,
-        dub_video=dub_video
-    )
-    if handled:
-        return basic_result
-
-    if args.action == "generate_single_tts":
-        result_data, _ = handle_generate_single_tts(
+    set_event_context(action=args.action)
+    try:
+        handled, basic_result = dispatch_basic_action(
             args,
             tts_kwargs,
+            extra_kwargs,
             get_tts_runner=get_tts_runner,
-            get_audio_duration=get_audio_duration,
+            run_asr=run_asr,
+            translate_text=translate_text,
             align_audio=align_audio,
-            ffmpeg=ffmpeg,
-            librosa=librosa,
-            sf=sf
-        )
-        return result_data
-
-    if args.action == "generate_batch_tts":
-        return handle_generate_batch_tts(
-            args,
-            tts_kwargs,
-            get_tts_runner=get_tts_runner,
             get_audio_duration=get_audio_duration,
-            ffmpeg=ffmpeg,
-            librosa=librosa,
-            sf=sf
+            merge_audios_to_video=merge_audios_to_video,
+            analyze_video=analyze_video,
+            transcode_video=transcode_video,
+            dub_video=dub_video
         )
+        if handled:
+            return basic_result
 
-    if args.action == "prepare_reference_audio":
-        result_data, _ = handle_prepare_reference_audio(
-            args,
-            ffmpeg=ffmpeg,
-            librosa=librosa,
-            sf=sf
-        )
-        return result_data
+        if args.action == "generate_single_tts":
+            result_data, _ = handle_generate_single_tts(
+                args,
+                tts_kwargs,
+                get_tts_runner=get_tts_runner,
+                get_audio_duration=get_audio_duration,
+                align_audio=align_audio,
+                ffmpeg=ffmpeg,
+                librosa=librosa,
+                sf=sf
+            )
+            return result_data
 
-    print(f"Unknown action: {args.action}")
-    return None
+        if args.action == "generate_batch_tts":
+            return handle_generate_batch_tts(
+                args,
+                tts_kwargs,
+                get_tts_runner=get_tts_runner,
+                get_audio_duration=get_audio_duration,
+                ffmpeg=ffmpeg,
+                librosa=librosa,
+                sf=sf
+            )
+
+        if args.action == "prepare_reference_audio":
+            result_data, _ = handle_prepare_reference_audio(
+                args,
+                ffmpeg=ffmpeg,
+                librosa=librosa,
+                sf=sf
+            )
+            return result_data
+
+        log_error(logger, f"Unknown action: {args.action}", event="unknown_action", stage="dispatch", code="UNKNOWN_ACTION", retryable=False)
+        return None
+    finally:
+        clear_event_context()
 
 
 def run_worker_loop(base_args):
     parser = build_parser()
-    print("[Worker] Backend worker started", flush=True)
+    log_business(logger, logging.INFO, "Backend worker started", event="worker_started", stage="worker")
 
     for raw_line in sys.stdin:
         line = raw_line.strip()
@@ -843,7 +973,8 @@ def run_worker_loop(base_args):
                 raise ValueError("Worker request args must be a list")
 
             parsed_args = parser.parse_args(base_args + ["--json"] + request_args)
-            result = execute_with_args(parsed_args)
+            with scoped_event_context(trace_id=request_id or None, request_id=request_id or None):
+                result = execute_with_args(parsed_args)
             response = {
                 "id": request_id,
                 "success": True,
@@ -851,13 +982,22 @@ def run_worker_loop(base_args):
             }
         except Exception as e:
             debug_log(f"Worker request failed: {e}")
+            backend_error = make_error(
+                "WORKER_REQUEST_FAILED",
+                "后端工作线程请求执行失败",
+                category="system",
+                stage="worker",
+                retryable=False,
+                detail=str(e)
+            )
             response = {
                 "id": request_id,
                 "success": False,
-                "error": str(e)
+                "error": backend_error.message,
+                "error_info": backend_error.to_payload()
             }
 
-        print(f"{WORKER_RESULT_PREFIX}{json.dumps(response, ensure_ascii=False)}", flush=True)
+        _stdout_print(f"{WORKER_RESULT_PREFIX}{json.dumps(response, ensure_ascii=False)}", flush=True)
 
 
 def main():
@@ -865,12 +1005,14 @@ def main():
 
     parser = build_parser()
     args = parser.parse_args()
-    result_data = execute_with_args(args)
+    cli_trace_id = f"cli:{args.action}"
+    with scoped_event_context(trace_id=cli_trace_id, request_id=cli_trace_id):
+        result_data = execute_with_args(args)
 
     if result_data is not None and args.json:
-        print("\n__JSON_START__\n")
-        print(json.dumps(result_data, indent=None, ensure_ascii=False))
-        print("\n__JSON_END__\n", flush=True)
+        _stdout_print("\n__JSON_START__\n")
+        _stdout_print(json.dumps(result_data, indent=None, ensure_ascii=False))
+        _stdout_print("\n__JSON_END__\n", flush=True)
 
 
 if __name__ == "__main__":
@@ -890,13 +1032,12 @@ if __name__ == "__main__":
         import traceback
         err_msg = traceback.format_exc()
         debug_log(f"Unhandled Exception in main:\n{err_msg}")
-        print(f"ERROR: {e}", file=sys.stderr)
-        print(err_msg, file=sys.stderr)
+        logger.error("Unhandled exception in main: %s", e)
+        logger.error(err_msg)
         sys.exit(1)
         
     debug_log("Main finished normally")
     if not worker_mode:
-        print("Force exiting...")
         try:
             sys.stdout.close()
             sys.stderr.close()

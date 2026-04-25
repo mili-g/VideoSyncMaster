@@ -5,8 +5,10 @@ declare module 'rollup-plugin-javascript-obfuscator';
 interface DesktopApi {
     getFileUrl(filePath: string): Promise<string>;
     saveFile(filePath: string, content: string): Promise<boolean>;
+    readFile(filePath: string): Promise<string>;
     ensureDir(dirPath: string): Promise<boolean>;
     deletePath(targetPath: string): Promise<boolean>;
+    cleanupSessionCache(payload: { sessionCacheDir: string; mode: 'success' | 'failed' | 'interrupted' }): Promise<{ success: boolean; removed: boolean; preservedResumeFiles: number }>;
     checkFileExists(filePath: string): Promise<boolean>;
     getPaths(): Promise<{ projectRoot: string; outputDir: string; cacheDir: string }>;
     runBackend(args: string[], options?: { lane?: 'default' | 'prep' }): Promise<any>;

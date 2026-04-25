@@ -4,10 +4,15 @@ import sys
 import torch
 import traceback
 import re
+import logging
+from app_logging import get_logger, redirect_print
 
 # Force strict offline mode
 os.environ['HF_HUB_OFFLINE'] = '1'
 os.environ['TRANSFORMERS_OFFLINE'] = '1'
+
+logger = get_logger("asr.qwen")
+print = redirect_print(logger, default_level=logging.DEBUG)
 
 # Setup FFmpeg path for portable environment
 current_dir = os.path.dirname(os.path.abspath(__file__))

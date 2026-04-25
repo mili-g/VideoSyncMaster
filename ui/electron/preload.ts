@@ -30,11 +30,17 @@ contextBridge.exposeInMainWorld('api', {
   saveFile(filePath: string, content: string) {
     return ipcRenderer.invoke('save-file', filePath, content)
   },
+  readFile(filePath: string) {
+    return ipcRenderer.invoke('read-file', filePath)
+  },
   ensureDir(dirPath: string) {
     return ipcRenderer.invoke('ensure-dir', dirPath)
   },
   deletePath(targetPath: string) {
     return ipcRenderer.invoke('delete-path', targetPath)
+  },
+  cleanupSessionCache(payload: { sessionCacheDir: string; mode: 'success' | 'failed' | 'interrupted' }) {
+    return ipcRenderer.invoke('cleanup-session-cache', payload)
   },
   checkFileExists(filePath: string) {
     return ipcRenderer.invoke('check-file-exists', filePath)

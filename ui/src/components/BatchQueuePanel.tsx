@@ -1,6 +1,7 @@
 import React, { useMemo, useRef, useState } from 'react';
 import { BATCH_QUEUE_STAGE, type BatchQueueItem } from '../hooks/useBatchQueue';
 import { classifyBatchAsset, type BatchInputAsset } from '../utils/batchAssets';
+import { summarizeStructuredError } from '../utils/backendErrors';
 
 const suspiciousMojibakePattern = /[\uFFFD\u00C3\u00E2\u00D0\u00CF]/;
 
@@ -91,6 +92,7 @@ export default function BatchQueuePanel({
     const originalSubtitleInputRef = useRef<HTMLInputElement>(null);
     const translatedSubtitleInputRef = useRef<HTMLInputElement>(null);
     const [manualAssignments, setManualAssignments] = useState<Record<string, { itemId: string; kind: 'subtitle-original' | 'subtitle-translated' }>>({});
+    const [expandedItems, setExpandedItems] = useState<Record<string, boolean>>({});
     const getSubtitleKind = (asset: BatchInputAsset): 'subtitle-original' | 'subtitle-translated' => (
         classifyBatchAsset(asset) === 'subtitle-translated' ? 'subtitle-translated' : 'subtitle-original'
     );
@@ -353,79 +355,144 @@ export default function BatchQueuePanel({
                             key={item.id}
                             style={{
                                 display: 'grid',
-                                gridTemplateColumns: '1.2fr 1fr 1fr 0.7fr 0.9fr 1fr auto',
-                                gap: '12px',
-                                alignItems: 'center',
+                                gap: '10px',
                                 padding: '14px 16px',
                                 borderRadius: '14px',
                                 background: 'rgba(15, 23, 42, 0.45)',
                                 border: '1px solid rgba(255,255,255,0.08)'
                             }}
                         >
-                            <Cell title="视频文件" primary={item.fileName} secondary={item.sourcePath} />
-                            <Cell
-                                title="原字幕"
-                                primary={displayName(item.originalSubtitlePath)}
-                                secondary={item.originalSubtitlePath}
-                                emptyText="自动 ASR"
-                                badge={getSourceSubtitleBadge(item)}
-                            />
-                            <Cell
-                                title="翻译字幕"
-                                primary={displayName(item.translatedSubtitlePath)}
-                                secondary={item.translatedSubtitlePath}
-                                emptyText="自动翻译"
-                                badge={getTranslatedSubtitleBadge(item)}
-                            />
-                            <div>
-                                <span style={{
-                                    display: 'inline-flex',
-                                    padding: '4px 10px',
-                                    borderRadius: '999px',
-                                    color: '#fff',
-                                    background: statusColor[item.status],
-                                    fontSize: '0.8em',
-                                    fontWeight: 600
-                                }}>
-                                    {statusLabel(item.status)}
-                                </span>
-                            </div>
-                            <div style={{ color: 'rgba(255,255,255,0.72)', fontSize: '0.9em' }}>
-                                <div>视频: {formatDuration(item.sourceDurationSec)}</div>
-                                <div style={{ marginTop: '6px' }}>耗时: {formatItemElapsed(item, summary.nowEpochMs)}</div>
-                            </div>
-                            <div style={{ color: 'rgba(255,255,255,0.72)', fontSize: '0.9em' }}>
-                                <div>{item.stage}</div>
-                                {item.outputPath && <div style={{ marginTop: '6px', color: '#93c5fd' }}>输出已生成</div>}
-                                {item.error && (
-                                    <div
-                                        title={item.error}
-                                        style={{
-                                            marginTop: '6px',
-                                            color: '#fca5a5',
-                                            overflow: 'hidden',
-                                            textOverflow: 'ellipsis',
-                                            whiteSpace: 'nowrap'
-                                        }}
-                                    >
-                                        {summarizeBatchError(item.error)}
+                            <div style={{
+                                display: 'grid',
+                                gridTemplateColumns: 'minmax(0, 1.4fr) minmax(180px, 0.8fr) auto auto auto',
+                                gap: '12px',
+                                alignItems: 'center'
+                            }}>
+                                <div style={{ minWidth: 0 }}>
+                                    <div style={{ color: '#fff', fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                        {item.fileName}
                                     </div>
-                                )}
-                            </div>
-                            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                                {item.outputPath && (
-                                    <button onClick={() => onOpenOutput(item)} style={buttonStyle('rgba(59,130,246,0.18)')}>
-                                        打开输出
+                                    <div style={{ color: 'rgba(255,255,255,0.56)', fontSize: '0.82em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: '4px' }}>
+                                        {item.stage}
+                                    </div>
+                                </div>
+
+                                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                                    {getCompactBadges(item).map((badge) => (
+                                        <span
+                                            key={badge.label}
+                                            style={{
+                                                display: 'inline-flex',
+                                                alignItems: 'center',
+                                                padding: '3px 9px',
+                                                borderRadius: '999px',
+                                                fontSize: '0.74em',
+                                                fontWeight: 700,
+                                                color: badge.color,
+                                                background: badge.background,
+                                                whiteSpace: 'nowrap'
+                                            }}
+                                        >
+                                            {badge.label}
+                                        </span>
+                                    ))}
+                                </div>
+
+                                <div style={{ color: 'rgba(255,255,255,0.72)', fontSize: '0.86em', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                                    <div>{formatDuration(item.sourceDurationSec)}</div>
+                                    <div style={{ marginTop: '4px', color: 'rgba(255,255,255,0.5)' }}>{formatItemElapsed(item, summary.nowEpochMs)}</div>
+                                </div>
+
+                                <div>
+                                    <span style={{
+                                        display: 'inline-flex',
+                                        padding: '4px 10px',
+                                        borderRadius: '999px',
+                                        color: '#fff',
+                                        background: statusColor[item.status],
+                                        fontSize: '0.8em',
+                                        fontWeight: 600,
+                                        whiteSpace: 'nowrap'
+                                    }}>
+                                        {statusLabel(item.status)}
+                                    </span>
+                                </div>
+
+                                <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', alignItems: 'center' }}>
+                                    {hasSecondaryInfo(item) && (
+                                        <button
+                                            onClick={() => setExpandedItems(prev => ({ ...prev, [item.id]: !prev[item.id] }))}
+                                            style={buttonStyle('rgba(255,255,255,0.08)')}
+                                        >
+                                            {expandedItems[item.id] ? '收起' : '详情'}
+                                        </button>
+                                    )}
+                                    {item.outputPath && (
+                                        <button onClick={() => onOpenOutput(item)} style={buttonStyle('rgba(59,130,246,0.18)')}>
+                                            打开输出
+                                        </button>
+                                    )}
+                                    <button
+                                        onClick={() => onRemoveItem(item.id)}
+                                        disabled={item.status === 'processing'}
+                                        style={buttonStyle('rgba(255,255,255,0.08)', item.status === 'processing')}
+                                    >
+                                        移除
                                     </button>
-                                )}
-                                <button
-                                    onClick={() => onRemoveItem(item.id)}
-                                    disabled={item.status === 'processing'}
-                                    style={buttonStyle('rgba(255,255,255,0.08)', item.status === 'processing')}
-                                >
-                                    移除
-                                </button>
+                                </div>
                             </div>
+
+                            {expandedItems[item.id] && hasSecondaryInfo(item) && (
+                                <div style={{
+                                    display: 'grid',
+                                    gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+                                    gap: '12px',
+                                    paddingTop: '10px',
+                                    borderTop: '1px solid rgba(255,255,255,0.08)'
+                                }}>
+                                    <Cell
+                                        title="原字幕"
+                                        primary={displayName(item.originalSubtitlePath)}
+                                        secondary={item.originalSubtitlePath}
+                                        emptyText="自动 ASR"
+                                        badge={getSourceSubtitleBadge(item)}
+                                    />
+                                    <Cell
+                                        title="翻译字幕"
+                                        primary={displayName(item.translatedSubtitlePath)}
+                                        secondary={item.translatedSubtitlePath}
+                                        emptyText="自动翻译"
+                                        badge={getTranslatedSubtitleBadge(item)}
+                                    />
+                                    <div style={{ minWidth: 0 }}>
+                                        <div style={{ color: 'rgba(255,255,255,0.5)', fontSize: '0.78em', marginBottom: '4px' }}>诊断信息</div>
+                                        {item.resumeInfo && (
+                                            <div style={{ color: 'rgba(255,255,255,0.68)', fontSize: '0.82em', lineHeight: 1.55 }}>
+                                                {formatResumeSummary(item)}
+                                            </div>
+                                        )}
+                                        {item.outputPath && <div style={{ marginTop: '6px', color: '#93c5fd', fontSize: '0.82em' }}>输出已生成</div>}
+                                        {item.errorInfo && (
+                                            <div
+                                                title={summarizeStructuredError(item.errorInfo)}
+                                                style={{
+                                                    marginTop: '6px',
+                                                    color: '#fca5a5',
+                                                    fontSize: '0.82em',
+                                                    lineHeight: 1.5
+                                                }}
+                                            >
+                                                {summarizeStructuredError(item.errorInfo)}
+                                            </div>
+                                        )}
+                                        {item.errorInfo?.detail && (
+                                            <div style={{ marginTop: '4px', color: 'rgba(255,255,255,0.5)', fontSize: '0.78em', lineHeight: 1.5 }}>
+                                                {truncateText(item.errorInfo.detail, 120)}
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            )}
                         </div>
                     ))}
                 </div>
@@ -434,29 +501,9 @@ export default function BatchQueuePanel({
     );
 }
 
-function summarizeBatchError(error?: string) {
-    if (!error) return '';
-
-    const normalized = error
-        .replace(/\r\n/g, '\n')
-        .replace(/\r/g, '\n')
-        .trim();
-
-    if (!normalized) return '';
-
-    const lines = normalized
-        .split('\n')
-        .map(line => line.trim())
-        .filter(Boolean);
-
-    const preferredLine =
-        lines.find(line => /error invoking remote method|process failed|python worker exited|cuda|cudnn|llvm error|fatal|failed|exception|traceback/i.test(line))
-        || lines.find(line => !/^\[\d+,\d+,\d+/.test(line))
-        || lines[lines.length - 1]
-        || normalized;
-
-    const compact = preferredLine.replace(/\s+/g, ' ').trim();
-    return compact.length <= 120 ? compact : `${compact.slice(0, 117)}...`;
+function truncateText(value: string, maxLength: number) {
+    const compact = value.replace(/\s+/g, ' ').trim();
+    return compact.length <= maxLength ? compact : `${compact.slice(0, maxLength - 3)}...`;
 }
 
 function SummaryCard({ label, value, color }: { label: string; value: number | string; color: string }) {
@@ -556,6 +603,74 @@ function getTranslatedSubtitleBadge(item: BatchQueueItem) {
     }
 
     return undefined;
+}
+
+function getCompactBadges(item: BatchQueueItem) {
+    const badges: Array<{ label: string; color: string; background: string }> = [];
+    const sourceBadge = getSourceSubtitleBadge(item);
+    const translatedBadge = getTranslatedSubtitleBadge(item);
+
+    if (sourceBadge) badges.push(sourceBadge);
+    if (translatedBadge) badges.push(translatedBadge);
+    if (item.resumeInfo?.recoverable) {
+        badges.push({
+            label: '可恢复',
+            color: '#7dd3fc',
+            background: 'rgba(56,189,248,0.16)'
+        });
+    }
+    if (item.errorInfo) {
+        badges.push({
+            label: '异常',
+            color: '#fca5a5',
+            background: 'rgba(248,113,113,0.16)'
+        });
+    }
+    if (item.outputPath) {
+        badges.push({
+            label: '已输出',
+            color: '#93c5fd',
+            background: 'rgba(59,130,246,0.16)'
+        });
+    }
+
+    return badges.slice(0, 4);
+}
+
+function hasSecondaryInfo(item: BatchQueueItem) {
+    return Boolean(
+        item.resumeInfo ||
+        item.errorInfo ||
+        item.outputPath ||
+        item.originalSubtitlePath ||
+        item.translatedSubtitlePath
+    );
+}
+
+function formatResumeSummary(item: BatchQueueItem) {
+    const resumeInfo = item.resumeInfo;
+    if (!resumeInfo) return '';
+
+    const parts = [];
+    if (resumeInfo.recoverable) {
+        parts.push('可恢复');
+    }
+    if (resumeInfo.canReuseSourceSubtitles) {
+        parts.push('跳过 ASR');
+    }
+    if (resumeInfo.canReuseTranslatedSubtitles) {
+        parts.push('跳过翻译');
+    }
+    if (resumeInfo.canResumeDubbing) {
+        parts.push(`保留音频 ${resumeInfo.preservedAudioSegments} 段`);
+    }
+    if (resumeInfo.canResumeMerge) {
+        parts.push('可直接继续合成');
+    }
+    if (resumeInfo.blockedReason) {
+        parts.push(`恢复受限: ${resumeInfo.blockedReason}`);
+    }
+    return parts.join(' · ');
 }
 
 function displayName(filePath?: string) {

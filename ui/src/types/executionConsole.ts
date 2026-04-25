@@ -8,6 +8,11 @@ export interface ExecutionConsoleEntry {
     title: string;
     detail?: string;
     stage?: string;
+    category?: string;
+    retryable?: boolean;
+    traceId?: string;
+    requestId?: string;
+    action?: string;
 }
 
 export interface RawBackendLogLine {
@@ -16,5 +21,15 @@ export interface RawBackendLogLine {
     source: 'stdout' | 'stderr';
     lane: 'default' | 'prep';
     level: 'info' | 'warn' | 'error';
+    logType?: 'business' | 'error' | 'security' | 'debug';
+    domain?: string;
+    traceId?: string;
+    requestId?: string;
+    action?: string;
+    event?: string;
+    stage?: string;
+    code?: string;
+    retryable?: boolean;
+    detail?: string;
     text: string;
 }

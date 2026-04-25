@@ -1,6 +1,8 @@
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
 import type { Segment } from './useVideoProject';
 import { isBackendCanceledError } from '../utils/backendCancellation';
+import { buildUserFacingErrorMessage, normalizeBackendError } from '../utils/backendErrors';
+import { logUiError, logUiWarn } from '../utils/frontendLogger';
 import { appendStoredTranslationArgs } from '../utils/runtimeSettings';
 
 type FeedbackType = 'success' | 'error';
@@ -80,10 +82,11 @@ export function useTranslationWorkflow({
                 return result.segments;
             }
 
+            const errorInfo = normalizeBackendError(result, '字幕翻译失败');
             setStatus('翻译失败');
             setFeedback({
                 title: '翻译失败',
-                message: `API 返回错误：\n${result?.error || '未知错误'}`,
+                message: buildUserFacingErrorMessage(errorInfo),
                 type: 'error'
             });
             return null;
@@ -92,8 +95,18 @@ export function useTranslationWorkflow({
                 setStatus('任务已由用户停止');
                 return null;
             }
-            console.error(e);
-            setStatus(`翻译错误: ${e.message}`);
+            logUiError('批量翻译失败', {
+                domain: 'workflow.translation',
+                action: 'handleTranslate',
+                detail: e instanceof Error ? e.message : String(e)
+            });
+            const errorInfo = normalizeBackendError(e, '翻译错误');
+            setStatus(buildUserFacingErrorMessage(errorInfo));
+            setFeedback({
+                title: '翻译错误',
+                message: buildUserFacingErrorMessage(errorInfo),
+                type: 'error'
+            });
             return null;
         } finally {
             if (!abortRef.current) {
@@ -136,16 +149,26 @@ export function useTranslationWorkflow({
                     setStatus('重新翻译失败：返回结果为空');
                 }
             } else {
-                console.error('Re-translation failed:', result);
-                setStatus(`重新翻译失败: ${result?.error || '未知错误'}`);
+                logUiWarn('单段重翻译返回失败结果', {
+                    domain: 'workflow.translation',
+                    action: 'handleReTranslate',
+                    detail: JSON.stringify(result)
+                });
+                const errorInfo = normalizeBackendError(result, '重新翻译失败');
+                setStatus(buildUserFacingErrorMessage(errorInfo));
             }
         } catch (e: any) {
             if (isBackendCanceledError(e)) {
                 setStatus('任务已由用户停止');
                 return;
             }
-            console.error(e);
-            setStatus(`重新翻译错误: ${e.message}`);
+            logUiError('单段重翻译异常', {
+                domain: 'workflow.translation',
+                action: 'handleReTranslate',
+                detail: e instanceof Error ? e.message : String(e)
+            });
+            const errorInfo = normalizeBackendError(e, '重新翻译错误');
+            setStatus(buildUserFacingErrorMessage(errorInfo));
         } finally {
             setProgress(0);
             setLoading(false);

@@ -7,8 +7,11 @@ import { useTranslationWorkflow } from './useTranslationWorkflow';
 import { saveSubtitleArtifacts } from '../utils/outputArtifacts';
 import { prepareSingleProjectPaths } from '../utils/projectPaths';
 import { isBackendCanceledError } from '../utils/backendCancellation';
+import { buildUserFacingErrorMessage, normalizeBackendError } from '../utils/backendErrors';
+import { logUiError } from '../utils/frontendLogger';
 import { getStoredWhisperVadSettings } from '../utils/runtimeSettings';
 import type { ExecutionConsoleEntry, RawBackendLogLine } from '../types/executionConsole';
+import type { WorkflowOverviewModel, WorkflowStepState } from '../types/workflow';
 
 export interface Segment {
     start: number;
@@ -251,10 +254,11 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
             if (abortRef.current) return null;
 
             if (!Array.isArray(result)) {
+                const errorInfo = normalizeBackendError(result, '识别失败：输出格式无效');
                 setStatus('识别失败：输出格式无效');
                 setFeedback({
                     title: '识别失败',
-                    message: '识别结果格式无效，请检查所选 ASR 引擎或后端日志。',
+                    message: buildUserFacingErrorMessage(errorInfo),
                     type: 'error'
                 });
                 return null;
@@ -287,8 +291,18 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
                 setStatus('任务已由用户停止');
                 return null;
             }
-            console.error(e);
-            setStatus(`识别错误: ${e.message}`);
+            logUiError('识别流程发生异常', {
+                domain: 'workflow.asr',
+                action: 'handleASR',
+                detail: e instanceof Error ? e.message : String(e)
+            });
+            const errorInfo = normalizeBackendError(e, '识别错误');
+            setStatus(buildUserFacingErrorMessage(errorInfo));
+            setFeedback({
+                title: '识别错误',
+                message: buildUserFacingErrorMessage(errorInfo),
+                type: 'error'
+            });
             return null;
         } finally {
             if (!abortRef.current) {
@@ -361,7 +375,11 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
             await window.api.killBackend();
             setStatus('任务已由用户停止');
         } catch (e) {
-            console.error('Stop failed', e);
+            logUiError('停止任务失败', {
+                domain: 'workflow.control',
+                action: 'handleStop',
+                detail: e instanceof Error ? e.message : String(e)
+            });
         } finally {
             setLoading(false);
             setDubbingLoading(false);
@@ -369,6 +387,132 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
             setProgress(0);
             setGeneratingSegmentId(null);
         }
+    };
+
+    const latestIssue = consoleEntries.find(entry => entry.level === 'error' || entry.level === 'warn');
+    const dubbedReadyCount = translatedSegments.filter(segment => segment.audioStatus === 'ready').length;
+    const dubbedErrorCount = translatedSegments.filter(segment => segment.audioStatus === 'error').length;
+    const hasPendingAudio = translatedSegments.some(segment => segment.audioStatus === 'pending' || segment.audioStatus === 'generating');
+    const steps: WorkflowStepState[] = [
+        {
+            key: 'video',
+            label: '视频准备',
+            status: originalVideoPath ? 'done' : 'idle',
+            detail: originalVideoPath ? '已加载源视频，可进入识别或导入字幕。' : '未加载视频，主流程尚未开始。'
+        },
+        {
+            key: 'asr',
+            label: '原字幕',
+            status: loading && segments.length === 0
+                ? 'active'
+                : segments.length > 0
+                    ? 'done'
+                    : originalVideoPath
+                        ? 'ready'
+                        : 'idle',
+            detail: segments.length > 0 ? `已准备 ${segments.length} 条原字幕。` : '可通过识别或导入 SRT 获取原字幕。'
+        },
+        {
+            key: 'translation',
+            label: '翻译字幕',
+            status: loading && segments.length > 0 && translatedSegments.length === 0
+                ? 'active'
+                : translatedSegments.length > 0
+                    ? 'done'
+                    : segments.length > 0
+                        ? 'ready'
+                        : 'blocked',
+            detail: translatedSegments.length > 0 ? `已准备 ${translatedSegments.length} 条翻译字幕。` : '依赖原字幕完成后才能继续。'
+        },
+        {
+            key: 'dubbing',
+            label: '配音生成',
+            status: dubbingLoading || hasPendingAudio
+                ? 'active'
+                : dubbedErrorCount > 0
+                    ? 'error'
+                    : dubbedReadyCount > 0 && translatedSegments.length > 0
+                        ? 'done'
+                        : translatedSegments.length > 0
+                            ? 'ready'
+                            : 'blocked',
+            detail: dubbedReadyCount > 0
+                ? `可用 ${dubbedReadyCount} 条，失败 ${dubbedErrorCount} 条。`
+                : '需先有翻译字幕，之后才能进入批量或单段配音。'
+        },
+        {
+            key: 'merge',
+            label: '视频合成',
+            status: mergedVideoPath
+                ? 'done'
+                : dubbedReadyCount > 0 && dubbedErrorCount === 0
+                    ? 'ready'
+                    : 'blocked',
+            detail: mergedVideoPath
+                ? '已输出最终视频。'
+                : dubbedReadyCount > 0 && dubbedErrorCount === 0
+                    ? '当前已满足合成条件。'
+                    : dubbedReadyCount > 0
+                        ? '仍有失败片段，建议先修复后再合成。'
+                        : '需要先完成可用配音。'
+        }
+    ];
+    const activeStepKey = steps.find(step => step.status === 'active')?.key
+        || steps.find(step => step.status === 'ready')?.key
+        || (mergedVideoPath ? 'merge' : dubbedErrorCount > 0 ? 'dubbing' : translatedSegments.length > 0 ? 'dubbing' : segments.length > 0 ? 'translation' : originalVideoPath ? 'asr' : 'video');
+    const blockers = [
+        !originalVideoPath ? '尚未导入源视频' : '',
+        originalVideoPath && segments.length === 0 ? '缺少原字幕' : '',
+        segments.length > 0 && translatedSegments.length === 0 ? '缺少翻译字幕' : '',
+        dubbedErrorCount > 0 ? `存在 ${dubbedErrorCount} 条失败配音` : ''
+    ].filter(Boolean);
+    const workflowOverview: WorkflowOverviewModel = {
+        phase: mergedVideoPath
+            ? 'completed'
+            : loading || dubbingLoading || hasPendingAudio
+                ? 'running'
+                : dubbedErrorCount > 0
+                    ? 'attention'
+                    : originalVideoPath
+                        ? 'ready'
+                        : 'idle',
+        activeStepKey,
+        headline: !originalVideoPath
+            ? '等待导入源视频'
+            : mergedVideoPath
+                ? '主流程已完成，结果可复核或导出'
+                : hasPendingAudio || loading || dubbingLoading
+                    ? '工作流正在推进中'
+                    : '工作流已进入可继续处理状态',
+        recommendation: !originalVideoPath
+            ? '先选择视频，再决定是手动分步处理，还是直接启动一键流程。'
+            : mergedVideoPath
+                ? '可以复核合成结果、导出字幕，或调整参数后重新生成部分环节。'
+                : segments.length === 0
+                    ? '优先完成原字幕识别或导入原字幕，这是后续翻译和配音的基础数据。'
+                    : translatedSegments.length === 0
+                        ? '原字幕已就绪，下一步建议先生成或导入翻译字幕，再进入配音阶段。'
+                        : dubbedReadyCount === 0
+                            ? '翻译字幕已齐备，建议先生成全部配音，再根据失败片段执行局部重试。'
+                            : dubbedErrorCount > 0
+                                ? '已有部分配音可用，建议先重试失败片段，再执行最终合成。'
+                                : '当前已经具备合成条件，可直接导出最终视频。',
+        sourceCount: segments.length,
+        translatedCount: translatedSegments.length,
+        dubbedReadyCount,
+        dubbedErrorCount,
+        blockers,
+        insights: [
+            { label: '当前阶段', value: steps.find(step => step.key === activeStepKey)?.label || '视频准备', tone: mergedVideoPath ? 'success' : dubbedErrorCount > 0 ? 'danger' : loading || dubbingLoading ? 'info' : 'neutral' },
+            { label: '恢复策略', value: dubbedErrorCount > 0 ? '优先重试失败片段' : dubbedReadyCount > 0 ? '可直接进入合成' : '等待上游完成', tone: dubbedErrorCount > 0 ? 'warning' : dubbedReadyCount > 0 ? 'success' : 'neutral' },
+            { label: '处理进度', value: `${segments.length}/${translatedSegments.length}/${dubbedReadyCount}`, tone: translatedSegments.length === 0 ? 'warning' : dubbedErrorCount > 0 ? 'warning' : 'info' }
+        ],
+        latestIssue: latestIssue ? {
+            title: latestIssue.title,
+            traceId: latestIssue.traceId,
+            category: latestIssue.category
+        } : undefined,
+        steps
     };
 
     return {
@@ -398,6 +542,7 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
         depsPackageName, setDepsPackageName,
         consoleEntries,
         rawLogLines,
+        workflowOverview,
         clearExecutionConsole,
 
         handleASR,

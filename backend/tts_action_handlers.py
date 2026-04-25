@@ -3,7 +3,16 @@ import os
 import shutil
 import traceback
 import time
+import builtins
+import logging
+from app_logging import get_logger, log_business, log_debug, log_error, redirect_print
+from error_model import emit_error_issue, error_result, exception_result, make_error
 from event_protocol import emit_issue, emit_progress, emit_stage
+from runtime_config import build_batch_tts_request_config, build_single_tts_request_config
+
+logger = get_logger("tts.handlers")
+_stdout_print = builtins.print
+print = redirect_print(logger, default_level=logging.DEBUG)
 
 
 def _build_retry_tts_kwargs(base_kwargs, *, tts_service_name, attempt, use_fallback_reference=False):
@@ -78,7 +87,7 @@ def _extract_reference_audio(
     total_started_at = time.perf_counter()
 
     if ref_audio_override and os.path.exists(ref_audio_override):
-        print(f"Using explicit reference audio: {ref_audio_override}")
+        log_business(logger, logging.INFO, "Using explicit reference audio", event="reference_audio_selected", stage="prepare_reference", detail=ref_audio_override)
         print(
             f"[RefTiming] mode=explicit_reuse extract=0ms trim=0ms total=0ms "
             f"start={start_time:.2f}s dur={duration:.2f}s path={ref_audio_override}"
@@ -554,7 +563,7 @@ def _finalize_batch_tts_results(
                             f"第 {display_task_position}/{progress_total or total_task_count or total_segments} 条重试中",
                             detail="切换共享兜底参考音频"
                         )
-                        print(f"{log_prefix} Segment {final_idx} switching to shared fallback reference audio...")
+                        log_business(logger, logging.WARNING, "Switching to shared fallback reference audio", event="tts_retry_fallback", stage="tts_generate", detail=f"segment={final_idx}")
                         fallback_kwargs = _build_retry_tts_kwargs(
                             tts_kwargs,
                             tts_service_name=tts_service_name,
@@ -733,7 +742,7 @@ def _finalize_batch_tts_results(
                             f"第 {display_task_position}/{progress_total or total_task_count or total_segments} 条重试中",
                             detail="缺失片段切换共享兜底参考音频"
                         )
-                        print(f"{log_prefix} Missing segment {final_idx} switching to shared fallback reference audio...")
+                        log_business(logger, logging.WARNING, "Missing segment switched to shared fallback reference audio", event="tts_retry_fallback", stage="tts_generate", detail=f"segment={final_idx}")
                         fallback_kwargs = _build_retry_tts_kwargs(
                             tts_kwargs,
                             tts_service_name=tts_service_name,
@@ -827,112 +836,104 @@ def generate_batch_tts_results(
     )
     run_tts_func, run_batch_tts_func = get_tts_runner(tts_service_name)
     if not run_batch_tts_func:
-        emit_issue(
-            "generate_batch_tts",
-            "tts_generate",
-            "error",
+        backend_error = make_error(
             "TTS_INIT_FAILED",
-            f"初始化批量 TTS 失败: {tts_service_name}"
+            f"初始化批量 TTS 失败: {tts_service_name}",
+            category="tts",
+            stage="tts_generate",
+            retryable=True,
+            suggestion="请检查 TTS 模型依赖或切换引擎后重试"
         )
-        return {"success": False, "error": f"Failed to init Batch TTS: {tts_service_name}"}
+        emit_error_issue("generate_batch_tts", backend_error)
+        return error_result(backend_error)
 
     shared_ref_path = None
     shared_ref_should_clean = False
     shared_ref_meta = None
     voice_mode = str(tts_kwargs.get("voice_mode") or "clone").strip().lower()
 
-    try:
-        if not (args_ref_audio and os.path.exists(args_ref_audio)):
-            try:
-                shared_ref_path, shared_ref_should_clean, shared_ref_meta = prepare_global_reference_audio(
-                    video_path=video_path,
-                    work_dir=work_dir,
-                    segments=segments,
-                    ref_audio_override=args_ref_audio,
-                    ffmpeg=ffmpeg,
-                    librosa=librosa,
-                    sf=sf
-                )
-            except Exception as shared_ref_error:
-                print(f"{log_prefix} Failed to prepare shared fallback reference audio: {shared_ref_error}")
-                emit_issue(
-                    "generate_batch_tts",
-                    "prepare_reference",
-                    "warn",
+    if not (args_ref_audio and os.path.exists(args_ref_audio)):
+        try:
+            shared_ref_path, shared_ref_should_clean, shared_ref_meta = prepare_global_reference_audio(
+                video_path=video_path,
+                work_dir=work_dir,
+                segments=segments,
+                ref_audio_override=args_ref_audio,
+                ffmpeg=ffmpeg,
+                librosa=librosa,
+                sf=sf
+            )
+        except Exception as shared_ref_error:
+            print(f"{log_prefix} Failed to prepare shared fallback reference audio: {shared_ref_error}")
+            emit_error_issue(
+                "generate_batch_tts",
+                make_error(
                     "REFERENCE_PREPARE_FAILED",
                     "共享兜底参考音频准备失败",
+                    category="reference_audio",
+                    stage="prepare_reference",
+                    retryable=True,
                     detail=str(shared_ref_error),
                     suggestion="系统将继续执行，但部分片段重试能力可能下降"
-                )
-                shared_ref_path = None
-                shared_ref_should_clean = False
+                ),
+                level="warn"
+            )
+            shared_ref_path = None
+            shared_ref_should_clean = False
 
-        tasks = _build_batch_tts_tasks(
-            video_path=video_path,
-            segments=segments,
-            work_dir=work_dir,
-            args_ref_audio=args_ref_audio,
-            voice_mode=voice_mode,
-            explicit_qwen_ref_text=explicit_qwen_ref_text,
-            shared_ref_path=shared_ref_path,
-            shared_ref_meta=shared_ref_meta,
-            ffmpeg=ffmpeg,
-            librosa=librosa,
-            sf=sf,
-            get_audio_duration=get_audio_duration,
-            log_prefix=log_prefix
-        )
+    tasks = _build_batch_tts_tasks(
+        video_path=video_path,
+        segments=segments,
+        work_dir=work_dir,
+        args_ref_audio=args_ref_audio,
+        voice_mode=voice_mode,
+        explicit_qwen_ref_text=explicit_qwen_ref_text,
+        shared_ref_path=shared_ref_path,
+        shared_ref_meta=shared_ref_meta,
+        ffmpeg=ffmpeg,
+        librosa=librosa,
+        sf=sf,
+        get_audio_duration=get_audio_duration,
+        log_prefix=log_prefix
+    )
 
-        print(f"\n[Stage 2] Running TTS for {len(tasks)} tasks (skipped {len(segments) - len(tasks)} invalid items)...")
-        progress_completed_offset = max(int(progress_completed_offset or 0), 0)
-        progress_total_override = max(int(progress_total_override or 0), 0)
+    print(f"\n[Stage 2] Running TTS for {len(tasks)} tasks (skipped {len(segments) - len(tasks)} invalid items)...")
+    progress_completed_offset = max(int(progress_completed_offset or 0), 0)
+    progress_total_override = max(int(progress_total_override or 0), 0)
 
-        emit_stage(
-            "generate_batch_tts",
-            "tts_generate",
-            f"正在为 {max(progress_total_override, progress_completed_offset + len(tasks), len(tasks))} 条任务生成配音",
-            stage_label="正在生成配音"
-        )
+    emit_stage(
+        "generate_batch_tts",
+        "tts_generate",
+        f"正在为 {max(progress_total_override, progress_completed_offset + len(tasks), len(tasks))} 条任务生成配音",
+        stage_label="正在生成配音"
+    )
 
-        if not tasks:
-            print("No valid tasks available.")
-            return {"success": True, "results": []}
+    if not tasks:
+        log_business(logger, logging.WARNING, "No valid batch TTS tasks available", event="tts_batch_empty", stage="tts_generate")
+        return {"success": True, "results": []}
 
-        batch_runtime_kwargs = dict(tts_kwargs)
-        batch_runtime_kwargs["batch_size"] = int(batch_runtime_kwargs.get("batch_size") or 1)
-        batch_runtime_kwargs["progress_completed_offset"] = progress_completed_offset
-        batch_runtime_kwargs["progress_total_override"] = progress_total_override
-        batch_results = list(run_batch_tts_func(tasks, language=target_lang, **batch_runtime_kwargs))
+    batch_runtime_kwargs = dict(tts_kwargs)
+    batch_runtime_kwargs["batch_size"] = int(batch_runtime_kwargs.get("batch_size") or 1)
+    batch_runtime_kwargs["progress_completed_offset"] = progress_completed_offset
+    batch_runtime_kwargs["progress_total_override"] = progress_total_override
+    batch_results = list(run_batch_tts_func(tasks, language=target_lang, **batch_runtime_kwargs))
 
-        final_output_list = _finalize_batch_tts_results(
-            segments=segments,
-            tasks=tasks,
-            batch_results=batch_results,
-            run_tts_func=run_tts_func,
-            tts_kwargs=tts_kwargs,
-            tts_service_name=tts_service_name,
-            target_lang=target_lang,
-            max_retry_attempts=max_retry_attempts,
-            get_audio_duration=get_audio_duration,
-            log_prefix=log_prefix,
-            progress_completed_offset=progress_completed_offset,
-            progress_total_override=progress_total_override
-        )
+    final_output_list = _finalize_batch_tts_results(
+        segments=segments,
+        tasks=tasks,
+        batch_results=batch_results,
+        run_tts_func=run_tts_func,
+        tts_kwargs=tts_kwargs,
+        tts_service_name=tts_service_name,
+        target_lang=target_lang,
+        max_retry_attempts=max_retry_attempts,
+        get_audio_duration=get_audio_duration,
+        log_prefix=log_prefix,
+        progress_completed_offset=progress_completed_offset,
+        progress_total_override=progress_total_override
+    )
 
-        return {"success": True, "results": final_output_list}
-    finally:
-        try:
-            cache_dir_to_remove = os.path.join(work_dir, ".cache")
-            if os.path.exists(cache_dir_to_remove):
-                shutil.rmtree(cache_dir_to_remove)
-        except Exception:
-            pass
-
-        try:
-            if shared_ref_should_clean and shared_ref_path and os.path.exists(shared_ref_path):
-                os.remove(shared_ref_path)
-        except Exception:
-            pass
+    return {"success": True, "results": final_output_list}
 
 
 def _select_reference_candidate(segments):
@@ -1014,14 +1015,31 @@ def handle_prepare_reference_audio(
     sf
 ):
     if not (args.input and args.ref and args.output):
-        return {"success": False, "error": "Usage: --action prepare_reference_audio --input video.mp4 --ref segments.json --output work_dir"}, False
+        return error_result(
+            make_error(
+                "PREPARE_REFERENCE_INVALID_ARGS",
+                "prepare_reference_audio 参数不完整",
+                category="input",
+                stage="prepare_reference",
+                retryable=False,
+                detail="Usage: --action prepare_reference_audio --input video.mp4 --ref segments.json --output work_dir"
+            )
+        ), False
 
     try:
         with open(args.ref, "r", encoding="utf-8") as f:
             segments = json.load(f)
 
         if not isinstance(segments, list) or not segments:
-            return {"success": False, "error": "No valid segments provided for global reference selection"}, False
+            return error_result(
+                make_error(
+                    "PREPARE_REFERENCE_NO_SEGMENTS",
+                    "没有可用于生成全局参考音频的有效片段",
+                    category="input",
+                    stage="prepare_reference",
+                    retryable=True
+                )
+            ), False
 
         os.makedirs(args.output, exist_ok=True)
         ref_path, _, meta = prepare_global_reference_audio(
@@ -1034,7 +1052,15 @@ def handle_prepare_reference_audio(
             sf=sf
         )
         if not ref_path:
-            return {"success": False, "error": "Failed to prepare global fallback reference audio"}, False
+            return error_result(
+                make_error(
+                    "PREPARE_REFERENCE_FAILED",
+                    "全局兜底参考音频生成失败",
+                    category="reference_audio",
+                    stage="prepare_reference",
+                    retryable=True
+                )
+            ), False
 
         return {
             "success": True,
@@ -1042,7 +1068,14 @@ def handle_prepare_reference_audio(
             "meta": meta or {}
         }, False
     except Exception as e:
-        return {"success": False, "error": str(e)}, False
+        return exception_result(
+            "PREPARE_REFERENCE_EXCEPTION",
+            "全局参考音频准备失败",
+            e,
+            category="reference_audio",
+            stage="prepare_reference",
+            retryable=True
+        ), False
 
 
 def handle_generate_single_tts(
@@ -1056,46 +1089,64 @@ def handle_generate_single_tts(
     librosa,
     sf
 ):
-    tts_service_name = getattr(args, "tts_service", "indextts")
+    request = build_single_tts_request_config(args, tts_kwargs)
+    runtime_tts_kwargs = request.tts.to_runner_kwargs()
+    tts_service_name = request.tts_service_name
     run_tts_func, _ = get_tts_runner(tts_service_name)
     if not run_tts_func:
-        result_data = {"success": False, "error": f"Failed to init TTS: {tts_service_name}"}
+        result_data = error_result(
+            make_error(
+                "TTS_INIT_FAILED",
+                f"初始化 TTS 失败: {tts_service_name}",
+                category="tts",
+                stage="tts_generate",
+                retryable=True
+            )
+        )
         if not args.json:
-            print(result_data)
+            _stdout_print(result_data)
         return result_data, False
 
-    if args.input == "dummy":
+    if request.video_path == "dummy":
         if args.json:
-            print(json.dumps({"success": True, "message": "Service initialized"}))
+            _stdout_print(json.dumps({"success": True, "message": "Service initialized"}))
         return None, True
 
-    if not (args.input and args.output):
-        print("Usage: --action generate_single_tts --input video.mp4 --output segment.wav --text 'Hello' --start 0.5 --duration 2.5 --lang English")
+    if not (request.video_path and request.output_audio):
+        _stdout_print("Usage: --action generate_single_tts --input video.mp4 --output segment.wav --text 'Hello' --start 0.5 --duration 2.5 --lang English")
         return None, False
 
     try:
-        video_path = args.input
-        output_audio = args.output
-        text = getattr(args, "text", None)
-        start_time = getattr(args, "start", 0.0)
-        duration = args.duration if args.duration else 3.0
-        target_lang = args.lang if args.lang else "English"
-        voice_mode = str(tts_kwargs.get("voice_mode") or "clone").strip().lower()
+        video_path = request.video_path
+        output_audio = request.output_audio
+        text = request.text
+        start_time = request.start_time
+        duration = request.duration
+        target_lang = request.target_lang
+        voice_mode = str(request.tts.voice_mode or "clone").strip().lower()
         is_narration_mode = voice_mode == "narration"
 
         if not text:
-            return {"success": False, "error": "Missing --text argument"}, False
+            return error_result(
+                make_error(
+                    "TTS_TEXT_MISSING",
+                    "缺少待合成文本",
+                    category="input",
+                    stage="tts_generate",
+                    retryable=False
+                )
+            ), False
 
         try:
-            if voice_mode == "narration" and getattr(args, "fallback_ref_audio", None) and os.path.exists(args.fallback_ref_audio):
-                ref_clip_path = args.fallback_ref_audio
+            if voice_mode == "narration" and request.fallback_ref_audio and os.path.exists(request.fallback_ref_audio):
+                ref_clip_path = request.fallback_ref_audio
                 should_delete_ref = False
                 ref_meta = {"mode": "shared_fallback", "too_short": False}
                 print("[SingleTTS] Narration mode: using shared fallback reference audio.")
             else:
                 ref_clip_path, should_delete_ref, ref_meta = _extract_reference_audio(
                     video_path=video_path,
-                    ref_audio_override=args.ref_audio,
+                    ref_audio_override=request.ref_audio,
                     output_audio=output_audio,
                     start_time=start_time,
                     duration=duration,
@@ -1104,33 +1155,48 @@ def handle_generate_single_tts(
                     sf=sf
                 )
         except Exception as e:
-            result_data = {"success": False, "error": f"Failed to extract ref audio: {str(e)}"}
+            result_data = exception_result(
+                "REFERENCE_EXTRACT_FAILED",
+                "参考音频提取失败",
+                e,
+                category="reference_audio",
+                stage="prepare_reference",
+                retryable=True
+            )
             if args.json:
-                print(json.dumps(result_data))
+                _stdout_print(json.dumps(result_data))
             return result_data, True
 
         translated_text = text
         if not translated_text:
-            return {"success": False, "error": "No text provided"}, False
+            return error_result(
+                make_error(
+                    "TTS_TEXT_EMPTY",
+                    "没有可用于合成的文本",
+                    category="input",
+                    stage="tts_generate",
+                    retryable=False
+                )
+            ), False
 
-        if tts_service_name == "qwen" and not tts_kwargs.get("qwen_ref_text"):
-            tts_kwargs = dict(tts_kwargs)
-            tts_kwargs["qwen_ref_text"] = getattr(args, "qwen_ref_text", "") or ""
+        if tts_service_name == "qwen" and not request.tts.qwen_ref_text:
+            runtime_tts_kwargs = dict(runtime_tts_kwargs)
+            runtime_tts_kwargs["qwen_ref_text"] = request.qwen_ref_text
 
-        fallback_ref_audio = getattr(args, "fallback_ref_audio", None)
-        fallback_ref_text = getattr(args, "fallback_ref_text", "") or ""
-        nearby_ref_audios = _parse_nearby_ref_audios(getattr(args, "nearby_ref_audios", None))
+        fallback_ref_audio = request.fallback_ref_audio
+        fallback_ref_text = request.fallback_ref_text
+        nearby_ref_audios = _parse_nearby_ref_audios(request.nearby_ref_audios)
         if is_narration_mode:
             nearby_ref_audios = []
-        max_retry_attempts = int(getattr(args, "dub_retry_attempts", 3) or 3)
+        max_retry_attempts = request.dub_retry_attempts
         success = False
         last_error = None
         use_segment_reference = not bool(ref_meta and ref_meta.get("too_short"))
-        effective_segment_ref_text = getattr(args, "qwen_ref_text", "") or ""
+        effective_segment_ref_text = request.qwen_ref_text
 
         if tts_service_name == "qwen" and is_narration_mode:
-            if getattr(args, "ref_audio", None) and os.path.exists(getattr(args, "ref_audio", None) or ""):
-                effective_segment_ref_text = str(tts_kwargs.get("qwen_ref_text") or "")
+            if request.ref_audio and os.path.exists(request.ref_audio):
+                effective_segment_ref_text = str(request.tts.qwen_ref_text or "")
             elif fallback_ref_audio and os.path.exists(fallback_ref_audio):
                 effective_segment_ref_text = str(fallback_ref_text or "")
             else:
@@ -1144,7 +1210,7 @@ def handle_generate_single_tts(
                 try:
                     print(f"[SingleTTS] Attempt {attempt}/{max_retry_attempts} with segment reference...")
                     attempt_kwargs = _build_retry_tts_kwargs(
-                        tts_kwargs,
+                        runtime_tts_kwargs,
                         tts_service_name=tts_service_name,
                         attempt=attempt,
                         use_fallback_reference=False
@@ -1170,7 +1236,7 @@ def handle_generate_single_tts(
                 try:
                     print(f"[SingleTTS] Trying nearby successful reference {nearby_idx}/{len(nearby_ref_audios)}...")
                     nearby_kwargs = _build_retry_tts_kwargs(
-                        tts_kwargs,
+                        runtime_tts_kwargs,
                         tts_service_name=tts_service_name,
                         attempt=max_retry_attempts + nearby_idx,
                         use_fallback_reference=True
@@ -1200,7 +1266,7 @@ def handle_generate_single_tts(
             try:
                 print("[SingleTTS] Switching to shared fallback reference audio...")
                 fallback_kwargs = _build_retry_tts_kwargs(
-                    tts_kwargs,
+                    runtime_tts_kwargs,
                     tts_service_name=tts_service_name,
                     attempt=max_retry_attempts + 1,
                     use_fallback_reference=True
@@ -1231,7 +1297,7 @@ def handle_generate_single_tts(
                 try:
                     current_dur = get_audio_duration(output_audio)
                     if current_dur and current_dur > duration + 0.1:
-                        strategy = getattr(args, "strategy", "auto_speedup")
+                        strategy = request.strategy
                         if strategy in ["frame_blend", "freeze_frame", "rife"]:
                             print(f"[SingleTTS] Duration {current_dur:.2f}s > {duration:.2f}s. Strategy {strategy}, skipping alignment.")
                         else:
@@ -1252,9 +1318,26 @@ def handle_generate_single_tts(
                 pass
             return {"success": True, "audio_path": output_audio, "text": translated_text, "duration": final_duration}, False
 
-        return {"success": False, "error": last_error or "TTS generation failed"}, False
+        return error_result(
+            make_error(
+                "TTS_GENERATE_FAILED",
+                "单段配音生成失败",
+                category="tts",
+                stage="tts_generate",
+                retryable=True,
+                detail=last_error or "TTS generation failed",
+                suggestion="请更换参考音频、切换引擎或稍后重试"
+            )
+        ), False
     except Exception as e:
-        return {"success": False, "error": str(e)}, False
+        return exception_result(
+            "TTS_SINGLE_EXCEPTION",
+            "单段配音执行异常",
+            e,
+            category="tts",
+            stage="tts_generate",
+            retryable=True
+        ), False
 
 
 def handle_generate_batch_tts(
@@ -1267,24 +1350,25 @@ def handle_generate_batch_tts(
     librosa,
     sf
 ):
-    tts_service_name = getattr(args, "tts_service", "indextts")
-    if not (args.input and args.ref):
-        print("Usage: --action generate_batch_tts --input video.mp4 --ref segments.json")
+    request = build_batch_tts_request_config(args, tts_kwargs)
+    tts_service_name = request.tts_service_name
+    if not (request.video_path and request.json_path):
+        _stdout_print("Usage: --action generate_batch_tts --input video.mp4 --ref segments.json")
         return None
 
     try:
-        video_path = args.input
-        json_path = args.ref
+        video_path = request.video_path
+        json_path = request.json_path
 
         with open(json_path, "r", encoding="utf-8") as f:
             segments = json.load(f)
 
-        work_dir = os.path.dirname(json_path)
+        work_dir = request.work_dir
         print(f"Using {tts_service_name} to generate {len(segments)} segments in batch...")
         print(f"\n[Stage 1] Extracting reference audio to {os.path.join(work_dir, '.cache', 'raw')} ...")
-        target_lang = args.lang if args.lang else "English"
-        batch_runtime_kwargs = dict(tts_kwargs)
-        batch_runtime_kwargs["batch_size"] = int(batch_runtime_kwargs.get("batch_size") or args.batch_size or 1)
+        target_lang = request.target_lang
+        batch_runtime_kwargs = request.tts.to_runner_kwargs()
+        batch_runtime_kwargs["batch_size"] = max(1, int(batch_runtime_kwargs.get("batch_size") or 1))
         return generate_batch_tts_results(
             video_path=video_path,
             segments=segments,
@@ -1292,19 +1376,26 @@ def handle_generate_batch_tts(
             target_lang=target_lang,
             tts_service_name=tts_service_name,
             tts_kwargs=batch_runtime_kwargs,
-            args_ref_audio=args.ref_audio,
-            explicit_qwen_ref_text=getattr(args, "qwen_ref_text", "") or "",
-            max_retry_attempts=int(getattr(args, "dub_retry_attempts", 3) or 3),
+            args_ref_audio=request.args_ref_audio,
+            explicit_qwen_ref_text=request.explicit_qwen_ref_text,
+            max_retry_attempts=request.max_retry_attempts,
             get_tts_runner=get_tts_runner,
             get_audio_duration=get_audio_duration,
             ffmpeg=ffmpeg,
             librosa=librosa,
             sf=sf,
-            progress_completed_offset=int(getattr(args, "resume_completed", 0) or 0),
-            progress_total_override=int(getattr(args, "resume_total", 0) or 0),
+            progress_completed_offset=request.progress_completed_offset,
+            progress_total_override=request.progress_total_override,
             log_prefix="[BatchTTS]"
         )
     except Exception as e:
-        print(f"Batch TTS Error: {e}")
+        log_error(logger, "Batch TTS execution exception", event="tts_batch_exception", stage="tts_generate", detail=str(e), code="TTS_BATCH_EXCEPTION")
         traceback.print_exc()
-        return {"success": False, "error": str(e)}
+        return exception_result(
+            "TTS_BATCH_EXCEPTION",
+            "批量配音执行异常",
+            e,
+            category="tts",
+            stage="tts_generate",
+            retryable=True
+        )

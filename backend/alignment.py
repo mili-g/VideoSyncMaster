@@ -1,13 +1,18 @@
 import ffmpeg
 import os
 import tempfile
+import logging
 
+from app_logging import get_logger, redirect_print
 from ffmpeg_utils import ensure_portable_ffmpeg_in_path
 from source_separation import prepare_background_stem
 
 TARGET_SAMPLE_RATE = 44100
 
 ensure_portable_ffmpeg_in_path()
+
+logger = get_logger("media.alignment")
+print = redirect_print(logger, default_level=logging.DEBUG)
 
 def get_audio_duration(file_path):
     try:

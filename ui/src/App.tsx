@@ -18,6 +18,7 @@ import ConsoleDrawer from './components/ConsoleDrawer';
 import { useVideoProject } from './hooks/useVideoProject';
 import { useBatchQueue } from './hooks/useBatchQueue';
 import { segmentsToSRT } from './utils/srt';
+import { logUiError, logUiWarn } from './utils/frontendLogger';
 
 
 function App() {
@@ -39,7 +40,11 @@ function App() {
         }
       })
       .catch((error) => {
-        console.error('Failed to load default output dir:', error);
+        logUiError('加载默认输出目录失败', {
+          domain: 'ui.settings',
+          action: 'getPaths',
+          detail: error instanceof Error ? error.message : String(error)
+        });
       });
 
     return () => {
@@ -74,6 +79,7 @@ function App() {
     depsPackageName, setDepsPackageName,
     consoleEntries,
     rawLogLines,
+    workflowOverview,
     clearExecutionConsole,
     handleASR,
     handleTranslate,
@@ -184,17 +190,29 @@ function App() {
           if (result.status === 'missing_python') {
             setStatus("未检测到 Python 环境 (根目录下无 python 文件夹)，请手动下载或放置便携版 Python。");
           } else {
-            console.error("Env Check Failed:", result.error);
+            logUiError('环境检查失败', {
+              domain: 'ui.environment',
+              action: 'checkPythonEnv',
+              detail: String(result.error || '未知错误')
+            });
           }
         } else if (result && result.success && result.missing) {
           setMissingDeps(result.missing);
           if (result.missing.length > 0) {
-            console.log("Missing dependencies:", result.missing);
+            logUiWarn('检测到缺失依赖', {
+              domain: 'ui.environment',
+              action: 'checkPythonEnv',
+              detail: result.missing.join(', ')
+            });
             setStatus(`检测到运行环境缺失依赖，请点击左下角【修复运行环境】工具图标进行修复。`);
           }
         }
       } catch (e) {
-        console.error("Failed to check env:", e);
+        logUiError('环境检查执行异常', {
+          domain: 'ui.environment',
+          action: 'checkPythonEnv',
+          detail: e instanceof Error ? e.message : String(e)
+        });
       }
     };
     checkEnv();
@@ -204,12 +222,6 @@ function App() {
   useEffect(() => { localStorage.setItem('leftWidth', leftWidth.toString()); }, [leftWidth]);
   useEffect(() => { localStorage.setItem('timelineWidth', timelineWidth.toString()); }, [timelineWidth]);
   useEffect(() => { localStorage.setItem('currentView', currentView); }, [currentView]);
-
-  // Workflow step calculation
-  const currentStep = !originalVideoPath ? 0 :
-    (segments.length === 0 ? 1 :
-      (translatedSegments.length === 0 ? 2 :
-        (translatedSegments.some(s => s.audioStatus !== 'ready') ? 3 : 4)));
 
   useEffect(() => {
     const validateLayout = () => {
@@ -285,7 +297,11 @@ function App() {
           setMergedVideoSrc(`${fileUrl}?v=${Date.now()}`);
         }
       } catch (error) {
-        console.error('Failed to load merged video preview:', error);
+        logUiError('加载合成视频预览失败', {
+          domain: 'ui.preview',
+          action: 'loadMergedVideo',
+          detail: error instanceof Error ? error.message : String(error)
+        });
         if (active) setMergedVideoSrc('');
       }
     };
@@ -409,14 +425,22 @@ function App() {
       const url = await window.api.getFileUrl(audioPath);
       audioEl.src = `${url}?t=${Date.now()}`;
       audioEl.play().catch(e => {
-        console.error("Audio play failed", e);
+        logUiError('音频片段播放失败', {
+          domain: 'ui.audio',
+          action: 'playSegmentAudio',
+          detail: e instanceof Error ? e.message : String(e)
+        });
         setPlayingAudioIndex(null);
         setStatus("播放失败: " + (e.message || "未知错误"));
       });
 
       setPlayingAudioIndex(index);
     } catch (err: any) {
-      console.error("Failed to get audio URL", err);
+      logUiError('获取音频地址失败', {
+        domain: 'ui.audio',
+        action: 'playSegmentAudio',
+        detail: err instanceof Error ? err.message : String(err)
+      });
       setStatus("加载音频失败: " + err.message);
     }
   };
@@ -427,7 +451,11 @@ function App() {
     if (index !== undefined && playingVideoIndex === index) {
       if (videoRef.current) {
         if (videoRef.current.paused) {
-          videoRef.current.play().catch(e => console.error(e));
+          videoRef.current.play().catch((e) => logUiWarn('继续播放视频失败', {
+            domain: 'ui.video',
+            action: 'resumePlayback',
+            detail: e instanceof Error ? e.message : String(e)
+          }));
         } else {
           videoRef.current.pause();
           setPlayingVideoIndex(null);
@@ -466,7 +494,11 @@ function App() {
         setStatus(`无法打开日志: ${result.error}`);
       }
     } catch (e: any) {
-      console.error(e);
+      logUiError('打开日志失败', {
+        domain: 'ui.console',
+        action: 'openBackendLog',
+        detail: e instanceof Error ? e.message : String(e)
+      });
       setStatus(`打开日志失败: ${e.message}`);
     }
   };
@@ -487,7 +519,11 @@ function App() {
         setStatus(`字幕已成功导出至: ${result.filePath}`);
       }
     } catch (e) {
-      console.error('Export failed:', e);
+      logUiError('导出原始字幕失败', {
+        domain: 'ui.export',
+        action: 'exportSourceSubtitle',
+        detail: String(e)
+      });
       setStatus('导出失败: ' + String(e));
     }
   };
@@ -508,7 +544,11 @@ function App() {
         setStatus(`翻译字幕已成功导出至: ${result.filePath}`);
       }
     } catch (e) {
-      console.error('Export failed:', e);
+      logUiError('导出翻译字幕失败', {
+        domain: 'ui.export',
+        action: 'exportTranslatedSubtitle',
+        detail: String(e)
+      });
       setStatus('导出失败: ' + String(e));
     }
   };
@@ -525,7 +565,11 @@ function App() {
         setStatus(`输出目录已更新为: ${result.filePaths[0]}`);
       }
     } catch (e: any) {
-      console.error('Choose output dir failed:', e);
+      logUiError('选择输出目录失败', {
+        domain: 'ui.settings',
+        action: 'chooseOutputDir',
+        detail: e instanceof Error ? e.message : String(e)
+      });
       setStatus(`选择输出目录失败: ${e.message || String(e)}`);
     }
   };
@@ -568,7 +612,11 @@ function App() {
       }
     } catch (e: any) {
       setStatus(`修复请求异常: ${e.message}`);
-      console.error(e);
+      logUiError('修复运行环境请求异常', {
+        domain: 'ui.environment',
+        action: 'fixPythonEnv',
+        detail: e instanceof Error ? e.message : String(e)
+      });
     } finally {
       setLoading(false);
       setInstallingDeps(false);
@@ -684,7 +732,33 @@ function App() {
             </button>
           </div>
 
-          <StepBar currentStep={currentStep} themeMode={'dark'} />
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px', minWidth: 0, flex: 1, padding: '0 220px 0 180px' }}>
+            <StepBar
+              steps={workflowOverview.steps}
+              activeStepKey={workflowOverview.activeStepKey}
+              themeMode={'dark'}
+              compact
+              minimal
+            />
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '10px',
+              minWidth: 0,
+              color: 'rgba(255,255,255,0.72)',
+              fontSize: '0.8em',
+              whiteSpace: 'nowrap'
+            }}>
+              <span style={{ color: '#fff', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis' }}>{workflowOverview.headline}</span>
+              <span style={{ color: 'rgba(255,255,255,0.38)' }}>•</span>
+              <span>原字幕 {workflowOverview.sourceCount}</span>
+              <span>翻译 {workflowOverview.translatedCount}</span>
+              <span>可用音频 {workflowOverview.dubbedReadyCount}</span>
+              {workflowOverview.dubbedErrorCount > 0 && <span style={{ color: '#fca5a5' }}>失败 {workflowOverview.dubbedErrorCount}</span>}
+              {workflowOverview.latestIssue && <span style={{ color: '#fca5a5', overflow: 'hidden', textOverflow: 'ellipsis' }}>异常: {workflowOverview.latestIssue.title}</span>}
+            </div>
+          </div>
 
           <div style={{ position: 'absolute', right: 0, top: '50%', transform: 'translateY(-50%)' }}>
             <div className="top-engine-chip">
@@ -726,7 +800,7 @@ function App() {
           </div>
         </div>
 
-        <div className="output-dir-toolbar">
+        <div className="output-dir-toolbar" style={{ padding: '8px 12px', marginBottom: '8px', minHeight: '40px' }}>
           <div className="output-dir-toolbar__path" title={outputDirOverride || defaultOutputDir || '默认目录（用户目录）'}>
             <span className="output-dir-toolbar__label">输出目录</span>
             <span className="output-dir-toolbar__value">{outputDirOverride || defaultOutputDir || '默认目录（用户目录）'}</span>
@@ -755,7 +829,11 @@ function App() {
           style={{ display: 'none' }}
           onEnded={() => setPlayingAudioIndex(null)}
           onError={(e) => {
-            console.error("Audio playback error", e);
+            logUiError('音频播放器发生错误', {
+              domain: 'ui.audio',
+              action: 'audioElementError',
+              detail: String(e.type)
+            });
             setPlayingAudioIndex(null);
             setStatus("播放失败: 无法加载音频文件");
           }}
@@ -763,27 +841,28 @@ function App() {
 
         <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
           {currentView === 'home' && (
-            <div className="workbench-layout">
-              {/* Left Column: Video & Upload */}
-              <div className="workbench-column" style={{ width: leftWidth, overflowY: 'auto', paddingRight: '10px' }}>
-                <VideoUpload
-                  onFileSelected={(path) => {
-                    setVideoPath(path);
-                    setOriginalVideoPath(path);
-                  }}
-                  currentPath={videoPath}
-                  onTimeUpdate={setCurrentTime}
-                  seekTime={seekTime}
-                  playUntilTime={playUntilTime}
-                  videoRef={videoRef}
-                  onVideoPause={() => setPlayingVideoIndex(null)}
-                  disabled={backendBusy}
-                  onUserSeek={() => setPlayUntilTime(null)}
-                />
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+              <div className="workbench-layout">
+                {/* Left Column: Video & Upload */}
+                <div className="workbench-column" style={{ width: leftWidth, overflowY: 'auto', paddingRight: '10px' }}>
+                  <VideoUpload
+                    onFileSelected={(path) => {
+                      setVideoPath(path);
+                      setOriginalVideoPath(path);
+                    }}
+                    currentPath={videoPath}
+                    onTimeUpdate={setCurrentTime}
+                    seekTime={seekTime}
+                    playUntilTime={playUntilTime}
+                    videoRef={videoRef}
+                    onVideoPause={() => setPlayingVideoIndex(null)}
+                    disabled={backendBusy}
+                    onUserSeek={() => setPlayUntilTime(null)}
+                  />
 
-                {/* Merged Video Display Section */}
-                <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column' }}>
-                  <h3 style={{ marginTop: 0, marginBottom: '10px', color: 'var(--text-primary)' }}>4. 合并后的视频</h3>
+                  {/* Merged Video Display Section */}
+                  <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column' }}>
+                    <h3 style={{ marginTop: 0, marginBottom: '10px', color: 'var(--text-primary)' }}>4. 合并后的视频</h3>
 
                   {/* Merged Video Player */}
                   {mergedVideoPath && mergedVideoSrc && (
@@ -854,74 +933,75 @@ function App() {
                   >
                     📂 打开文件所在文件夹
                   </button>
+                  </div>
                 </div>
-              </div>
 
-              <div className="resizer workbench-resizer" onMouseDown={(e) => startDrag(e, 'left')}>
-                <div style={{ width: '2px', height: '20px', background: 'rgba(255,255,255,0.2)' }} />
-              </div>
+                <div className="resizer workbench-resizer" onMouseDown={(e) => startDrag(e, 'left')}>
+                  <div style={{ width: '2px', height: '20px', background: 'rgba(255,255,255,0.2)' }} />
+                </div>
 
-              {/* Center Column: Original Timeline */}
-              <div className="workbench-column" style={{ width: timelineWidth }}>
-                <Timeline
-                  segments={segments}
-                  currentTime={currentTime}
-                  onUpdateSegment={(idx, txt) => {
-                    const newSegs = [...segments];
-                    newSegs[idx].text = txt;
-                    setSegments(newSegs);
-                  }}
-                  onPlaySegment={(start, end) => handlePlaySegment(start, end, segments.findIndex(s => s.start === start))}
-                  domRef={timelineRef}
-                  onScroll={() => handleScroll('timeline')}
-                  onASR={handleASR}
-                  loading={loading || dubbingLoading}
-                  videoPath={videoPath}
-                  playingVideoIndex={playingVideoIndex}
-                  activeIndex={activeIndex}
-                  onEditStart={setEditingIndex}
-                  onEditEnd={() => setEditingIndex(null)}
-                  onUploadSubtitle={handleSRTUpload}
-                  onExport={handleExportSRT}
-                />
-              </div>
+                {/* Center Column: Original Timeline */}
+                <div className="workbench-column" style={{ width: timelineWidth }}>
+                  <Timeline
+                    segments={segments}
+                    currentTime={currentTime}
+                    onUpdateSegment={(idx, txt) => {
+                      const newSegs = [...segments];
+                      newSegs[idx].text = txt;
+                      setSegments(newSegs);
+                    }}
+                    onPlaySegment={(start, end) => handlePlaySegment(start, end, segments.findIndex(s => s.start === start))}
+                    domRef={timelineRef}
+                    onScroll={() => handleScroll('timeline')}
+                    onASR={handleASR}
+                    loading={loading || dubbingLoading}
+                    videoPath={videoPath}
+                    playingVideoIndex={playingVideoIndex}
+                    activeIndex={activeIndex}
+                    onEditStart={setEditingIndex}
+                    onEditEnd={() => setEditingIndex(null)}
+                    onUploadSubtitle={handleSRTUpload}
+                    onExport={handleExportSRT}
+                  />
+                </div>
 
-              <div className="resizer workbench-resizer" onMouseDown={(e) => startDrag(e, 'middle')}>
-                <div style={{ width: '2px', height: '20px', background: 'rgba(255,255,255,0.2)' }} />
-              </div>
+                <div className="resizer workbench-resizer" onMouseDown={(e) => startDrag(e, 'middle')}>
+                  <div style={{ width: '2px', height: '20px', background: 'rgba(255,255,255,0.2)' }} />
+                </div>
 
-              {/* Right Column: Translation Timeline */}
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: '300px' }}>
-                <TranslationPanel
-                  segments={segments}
-                  translatedSegments={translatedSegments}
-                  setTranslatedSegments={setTranslatedSegments}
-                  targetLang={targetLang}
-                  setTargetLang={setTargetLang}
-                  onTranslate={() => handleTranslate()}
-                  onTranslateAndDub={handleTranslateAndDub}
-                  onGenerateAll={() => handleGenerateAllDubbing()}
-                  onGenerateSingle={handleGenerateSingleDubbing}
-                  onPlayAudio={handlePlaySegmentAudio}
-                  generatingSegmentId={generatingSegmentId}
-                  retranslatingSegmentId={retranslatingSegmentId}
-                  domRef={translationRef}
-                  onScroll={() => handleScroll('translation')}
-                  onUploadSubtitle={handleTargetSRTUpload}
-                  hasVideo={!!originalVideoPath}
-                  currentTime={currentTime}
-                  dubbingLoading={dubbingLoading}
-                  onReTranslate={handleReTranslate}
-                  loading={loading}
-                  playingAudioIndex={playingAudioIndex}
-                  activeIndex={activeIndex}
-                  onEditStart={setEditingIndex}
-                  onEditEnd={() => setEditingIndex(null)}
-                  ttsService={ttsService}
-                  hasErrors={hasErrors}
-                  onRetryErrors={handleRetryErrors}
-                  onExport={handleExportTranslatedSRT}
-                />
+                {/* Right Column: Translation Timeline */}
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: '300px' }}>
+                  <TranslationPanel
+                    segments={segments}
+                    translatedSegments={translatedSegments}
+                    setTranslatedSegments={setTranslatedSegments}
+                    targetLang={targetLang}
+                    setTargetLang={setTargetLang}
+                    onTranslate={() => handleTranslate()}
+                    onTranslateAndDub={handleTranslateAndDub}
+                    onGenerateAll={() => handleGenerateAllDubbing()}
+                    onGenerateSingle={handleGenerateSingleDubbing}
+                    onPlayAudio={handlePlaySegmentAudio}
+                    generatingSegmentId={generatingSegmentId}
+                    retranslatingSegmentId={retranslatingSegmentId}
+                    domRef={translationRef}
+                    onScroll={() => handleScroll('translation')}
+                    onUploadSubtitle={handleTargetSRTUpload}
+                    hasVideo={!!originalVideoPath}
+                    currentTime={currentTime}
+                    dubbingLoading={dubbingLoading}
+                    onReTranslate={handleReTranslate}
+                    loading={loading}
+                    playingAudioIndex={playingAudioIndex}
+                    activeIndex={activeIndex}
+                    onEditStart={setEditingIndex}
+                    onEditEnd={() => setEditingIndex(null)}
+                    ttsService={ttsService}
+                    hasErrors={hasErrors}
+                    onRetryErrors={handleRetryErrors}
+                    onExport={handleExportTranslatedSRT}
+                  />
+                </div>
               </div>
             </div>
           )}
