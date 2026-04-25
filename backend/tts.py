@@ -882,15 +882,26 @@ def _get_indextts_instance(model_dir=None, config_path=None):
                 torch.cuda.empty_cache()
 
         print(f"Initializing IndexTTS2 from {resolved_model_dir}...")
-        _INDEXTTS_INSTANCE = IndexTTS2(
-            cfg_path=resolved_config_path,
-            model_dir=resolved_model_dir,
-            use_fp16=True,
-            use_cuda_kernel=False,
-            use_deepspeed=False
-        )
-        _INDEXTTS_INSTANCE_KEY = instance_key
-        return _INDEXTTS_INSTANCE
+        try:
+            _INDEXTTS_INSTANCE = IndexTTS2(
+                cfg_path=resolved_config_path,
+                model_dir=resolved_model_dir,
+                use_fp16=True,
+                use_cuda_kernel=False,
+                use_deepspeed=False
+            )
+            _INDEXTTS_INSTANCE_KEY = instance_key
+            return _INDEXTTS_INSTANCE
+        except Exception as init_error:
+            _INDEXTTS_INSTANCE = None
+            _INDEXTTS_INSTANCE_KEY = None
+            _handle_fatal_indextts_cuda_error(init_error, "model_init")
+            if _is_fatal_cuda_runtime_error(init_error):
+                raise RuntimeError(
+                    "IndexTTS CUDA context entered a fatal state during model initialization. "
+                    "The backend worker must be restarted before retrying."
+                ) from init_error
+            raise
 
 
 atexit.register(_cleanup_indextts_instance)

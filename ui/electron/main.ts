@@ -188,6 +188,32 @@ function dispatchBackendStructuredEvent(sender: Electron.WebContents, event: Bac
   return false
 }
 
+function isFatalCudaWorkerMessage(message: string) {
+  const normalized = String(message || '').toLowerCase()
+  return normalized.includes('device-side assert triggered')
+    || normalized.includes('cuda kernel errors might be asynchronously reported')
+    || normalized.includes('compile with `torch_use_cuda_dsa`')
+}
+
+function restartBackendWorkerAfterFatalCuda(lane: BackendLane, message: string) {
+  const workerState = getBackendWorkerState(lane)
+  const backendProcess = workerState.process
+  if (!backendProcess) {
+    return
+  }
+
+  const resetMessage = `[BackendReset] Fatal CUDA worker error detected. Restarting worker. ${message}`
+  if (workerState.activeRequest) {
+    workerState.activeRequest.errorData += `${resetMessage}\n`
+  }
+  console.error(resetMessage)
+
+  workerState.process = null
+  terminateProcessTree(backendProcess).catch((error) => {
+    console.error(`[BackendReset] Failed to restart backend worker [${lane}]:`, error)
+  })
+}
+
 function getPythonProcessEnv() {
   return { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' }
 }
@@ -224,6 +250,10 @@ function createBackendProcessLineHandler(lane: BackendLane, source: 'stdout' | '
     const workerState = getBackendWorkerState(lane)
     const normalizedLine = normalizeKnownProcessMessage(line)
     if (!normalizedLine) return
+
+    if (isFatalCudaWorkerMessage(normalizedLine)) {
+      restartBackendWorkerAfterFatalCuda(lane, normalizedLine)
+    }
 
     const workerResult = source === 'stdout' ? parseBackendWorkerResult(normalizedLine) : null
     if (workerResult) {
