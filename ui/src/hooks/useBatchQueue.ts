@@ -469,20 +469,28 @@ export function useBatchQueue(_options: UseBatchQueueOptions = {}) {
     };
 
     const retryFailed = () => {
-        setItems(prev => prev.map(item => {
-            if (item.status === 'error' || item.status === 'canceled') {
-                return {
-                    ...item,
-                    status: 'pending',
-                    ...createStage(BATCH_QUEUE_STAGE.retryWaiting, '等待重试'),
-                    error: undefined,
-                    startedAt: undefined,
-                    finishedAt: undefined,
-                    elapsedMs: undefined
-                };
+        setItems(prev => {
+            const retryItems: BatchQueueItem[] = [];
+            const remainingItems: BatchQueueItem[] = [];
+
+            for (const item of prev) {
+                if (item.status === 'error' || item.status === 'canceled') {
+                    retryItems.push({
+                        ...item,
+                        status: 'pending',
+                        ...createStage(BATCH_QUEUE_STAGE.retryWaiting, '等待重试'),
+                        error: undefined,
+                        startedAt: undefined,
+                        finishedAt: undefined,
+                        elapsedMs: undefined
+                    });
+                } else {
+                    remainingItems.push(item);
+                }
             }
-            return item;
-        }));
+
+            return [...remainingItems, ...retryItems];
+        });
     };
 
     const openOutput = async (item: BatchQueueItem) => {
@@ -538,8 +546,8 @@ export function useBatchQueue(_options: UseBatchQueueOptions = {}) {
     const startQueue = async (options: BatchQueueOptions) => {
         if (runLockRef.current) return;
 
-        const queue = itemsRef.current.filter(item => item.status === 'pending');
-        if (queue.length === 0 || isRunning) return;
+        const pendingCount = itemsRef.current.filter(item => item.status === 'pending').length;
+        if (pendingCount === 0 || isRunning) return;
 
         runLockRef.current = true;
 
@@ -549,7 +557,7 @@ export function useBatchQueue(_options: UseBatchQueueOptions = {}) {
         setQueueStartedAt(queueStartTime);
         setQueueFinishedElapsedMs(0);
         stopRequestedRef.current = false;
-        options.setStatus(`批量任务启动，共 ${queue.length} 个文件待处理`);
+        options.setStatus(`批量任务启动，共 ${pendingCount} 个文件待处理`);
 
         const startPreparation = async (item: BatchQueueItem) => {
             if (stopRequestedRef.current) return null;
@@ -595,9 +603,7 @@ export function useBatchQueue(_options: UseBatchQueueOptions = {}) {
         };
 
         const finalizePreparedItem = async (
-            preparedEntry: { item: BatchQueueItem; prepared: PreparedBatchQueueItem },
-            nextItem: BatchQueueItem | undefined,
-            onMergeStage: () => void
+            preparedEntry: { item: BatchQueueItem; prepared: PreparedBatchQueueItem }
         ) => {
             const { item, prepared } = preparedEntry;
 
@@ -624,12 +630,6 @@ export function useBatchQueue(_options: UseBatchQueueOptions = {}) {
                 const outputPath = await finalizeQueueItem(item, prepared, options, stage => {
                     updateItem(item.id, current => ({ ...current, stage }));
                     options.setStatus(`批量处理中：${item.fileName} - ${stage}`);
-                    if (
-                        nextItem &&
-                        (stage === '合成视频' || stage === '部分片段失败，继续合成')
-                    ) {
-                        onMergeStage();
-                    }
                 });
 
                 if (stopRequestedRef.current) {
@@ -670,27 +670,18 @@ export function useBatchQueue(_options: UseBatchQueueOptions = {}) {
         };
 
         try {
-            let preparedPromise: Promise<{ item: BatchQueueItem; prepared: PreparedBatchQueueItem } | null> | null = queue.length > 0
-                ? startPreparation(queue[0])
-                : null;
+            while (!stopRequestedRef.current) {
+                const nextPendingItem = itemsRef.current.find(item => item.status === 'pending');
+                if (!nextPendingItem) {
+                    break;
+                }
 
-            for (let index = 0; index < queue.length; index += 1) {
-                const preparedEntry = preparedPromise
-                    ? await preparedPromise
-                    : await startPreparation(queue[index]);
-                const nextItem = queue[index + 1];
-                preparedPromise = null;
-
+                const preparedEntry = await startPreparation(nextPendingItem);
                 if (!preparedEntry) {
                     continue;
                 }
 
-                await finalizePreparedItem(preparedEntry, nextItem, () => {
-                    if (preparedPromise || stopRequestedRef.current || !nextItem) {
-                        return;
-                    }
-                    preparedPromise = startPreparation(nextItem);
-                });
+                await finalizePreparedItem(preparedEntry);
             }
         } finally {
             const wasStopped = stopRequestedRef.current;
