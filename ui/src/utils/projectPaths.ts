@@ -19,6 +19,7 @@ export interface DesktopProjectPaths {
 export interface SingleProjectOutputPaths {
     baseName: string;
     sessionKey: string;
+    outputDir: string;
     finalDir: string;
     finalVideoPath: string;
     originalSubtitlePath: string;
@@ -52,6 +53,7 @@ export function buildSingleOutputPaths(
     return {
         baseName,
         sessionKey,
+        outputDir,
         finalDir,
         finalVideoPath: `${finalDir}\\${fileName}`,
         originalSubtitlePath: `${finalDir}\\${baseName}.en.srt`,
@@ -77,6 +79,7 @@ export function buildBatchOutputPaths(
     return {
         baseName,
         sessionKey,
+        outputDir,
         finalDir,
         finalVideoPath: `${finalDir}\\${fileName}`,
         originalSubtitlePath: `${finalDir}\\${baseName}.en.srt`,

@@ -16,6 +16,7 @@ export interface BatchQueueItem {
     id: string;
     sourcePath: string;
     fileName: string;
+    resolvedOutputDir?: string;
     sourceDurationSec?: number;
     originalSubtitlePath?: string;
     originalSubtitleContent?: string;
@@ -178,6 +179,10 @@ function readBootstrapState(): BatchQueueBootstrapState {
 
 interface UseBatchQueueOptions {
     outputDirOverride?: string;
+}
+
+function resolveItemOutputDir(item: Pick<BatchQueueItem, 'resolvedOutputDir'>, outputDirOverride?: string) {
+    return item.resolvedOutputDir?.trim() || outputDirOverride;
 }
 
 export function useBatchQueue(_options: UseBatchQueueOptions = {}) {
@@ -375,6 +380,7 @@ export function useBatchQueue(_options: UseBatchQueueOptions = {}) {
                     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
                     sourcePath: asset.path,
                     fileName: asset.name,
+                    resolvedOutputDir: _options.outputDirOverride?.trim() || undefined,
                     status: 'pending',
                     ...createStage(BATCH_QUEUE_STAGE.waiting, '等待处理')
                 };
@@ -480,9 +486,11 @@ export function useBatchQueue(_options: UseBatchQueueOptions = {}) {
     };
 
     const openOutput = async (item: BatchQueueItem) => {
-        if (!item.outputPath) return;
+        const outputRoot = resolveItemOutputDir(item, _options.outputDirOverride);
+        const targetPath = item.outputPath || outputRoot;
+        if (!targetPath) return;
         try {
-            await window.api.openFolder(item.outputPath);
+            await window.api.openFolder(targetPath);
         } catch (error) {
             console.error('Failed to open output folder:', error);
         }
@@ -750,7 +758,7 @@ export function useBatchQueue(_options: UseBatchQueueOptions = {}) {
                 );
 
                 try {
-                    const { subtitlePath, subtitleContent } = await generateSubtitleForItem(item, options);
+                    const { outputDir, subtitlePath, subtitleContent } = await generateSubtitleForItem(item, options);
                     if (stopRequestedRef.current) {
                         updateItem(item.id, current => ({
                             ...current,
@@ -770,6 +778,7 @@ export function useBatchQueue(_options: UseBatchQueueOptions = {}) {
                             isRerun ? BATCH_QUEUE_STAGE.sourceSubtitleRefreshed : BATCH_QUEUE_STAGE.sourceSubtitleReady,
                             isRerun ? '原字幕已刷新，可继续批量处理' : '原字幕已生成，可继续批量处理'
                         ),
+                        resolvedOutputDir: outputDir,
                         originalSubtitlePath: subtitlePath,
                         originalSubtitleContent: subtitleContent,
                         error: undefined,
@@ -877,7 +886,11 @@ export function useBatchQueue(_options: UseBatchQueueOptions = {}) {
                 );
 
                 try {
-                    const { projectPaths } = await prepareBatchProjectPaths(item.fileName, item.id, options.outputDirOverride);
+                    const { projectPaths } = await prepareBatchProjectPaths(
+                        item.fileName,
+                        item.id,
+                        resolveItemOutputDir(item, options.outputDirOverride)
+                    );
                     const sourceSegments = resolveSourceSegments(item);
                     if (sourceSegments.length === 0) {
                         throw new Error('缺少可翻译的原字幕内容');
@@ -906,6 +919,7 @@ export function useBatchQueue(_options: UseBatchQueueOptions = {}) {
                             isRerun ? BATCH_QUEUE_STAGE.translatedSubtitleRefreshed : BATCH_QUEUE_STAGE.translatedSubtitleReady,
                             isRerun ? '翻译字幕已刷新，可继续批量处理' : '翻译字幕已生成，可继续批量处理'
                         ),
+                        resolvedOutputDir: projectPaths.outputDir,
                         translatedSubtitlePath: projectPaths.translatedSubtitlePath,
                         translatedSubtitleContent,
                         error: undefined,
@@ -994,7 +1008,11 @@ async function generateSubtitleForItem(
     item: BatchQueueItem,
     options: BatchSubtitleGenerationOptions
 ) {
-    const { projectPaths } = await prepareBatchProjectPaths(item.fileName, item.id, options.outputDirOverride);
+    const { projectPaths } = await prepareBatchProjectPaths(
+        item.fileName,
+        item.id,
+        resolveItemOutputDir(item, options.outputDirOverride)
+    );
     const vad = getStoredWhisperVadSettings();
 
     const args = [
@@ -1019,6 +1037,7 @@ async function generateSubtitleForItem(
     const subtitleContent = segmentsToSRT(result);
     await window.api.saveFile(projectPaths.originalSubtitlePath, subtitleContent);
     return {
+        outputDir: projectPaths.outputDir,
         subtitlePath: projectPaths.originalSubtitlePath,
         subtitleContent
     };
@@ -1044,9 +1063,16 @@ async function prepareQueueItem(
     };
 
     applyStage(BATCH_QUEUE_STAGE.preparingOutput, '准备输出目录');
-    const { projectPaths } = await prepareBatchProjectPaths(item.fileName, item.id, options.outputDirOverride);
+    const { projectPaths } = await prepareBatchProjectPaths(
+        item.fileName,
+        item.id,
+        resolveItemOutputDir(item, options.outputDirOverride)
+    );
     const outputPath = projectPaths.finalVideoPath;
     const workDir = projectPaths.sessionTempDir;
+    onItemPatch({
+        resolvedOutputDir: projectPaths.outputDir
+    });
 
     try {
         let sourceSegments: SrtSegment[];

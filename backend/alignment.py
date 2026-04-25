@@ -331,6 +331,9 @@ def _write_audio_buffer(audio, sample_rate):
 
 
 def _mux_video_with_audio(video_source, audio_source, output_path):
+    output_dir = os.path.dirname(os.path.abspath(output_path))
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
     video_input = ffmpeg.input(video_source)
     audio_input = ffmpeg.input(audio_source)
     stream = ffmpeg.output(video_input["v"], audio_input["a"], output_path, vcodec="copy", acodec="aac", shortest=None)
