@@ -185,6 +185,12 @@ function resolveItemOutputDir(item: Pick<BatchQueueItem, 'resolvedOutputDir'>, o
     return item.resolvedOutputDir?.trim() || outputDirOverride;
 }
 
+function pickNextPendingQueueItem(items: BatchQueueItem[]) {
+    return items.find(item => (
+        item.status === 'pending' && item.stageKey === BATCH_QUEUE_STAGE.retryWaiting
+    )) || items.find(item => item.status === 'pending');
+}
+
 export function useBatchQueue(_options: UseBatchQueueOptions = {}) {
     const bootstrapRef = useRef<BatchQueueBootstrapState>(readBootstrapState());
     const persistedMetaRef = useRef<BatchQueuePersistedMeta>(bootstrapRef.current.meta);
@@ -671,7 +677,7 @@ export function useBatchQueue(_options: UseBatchQueueOptions = {}) {
 
         try {
             while (!stopRequestedRef.current) {
-                const nextPendingItem = itemsRef.current.find(item => item.status === 'pending');
+                const nextPendingItem = pickNextPendingQueueItem(itemsRef.current);
                 if (!nextPendingItem) {
                     break;
                 }
