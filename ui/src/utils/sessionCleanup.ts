@@ -6,6 +6,7 @@ interface SessionCleanupPaths {
     sessionCacheDir: string;
     sessionManifestPath?: string;
     sessionAudioDir?: string;
+    finalDir?: string;
 }
 
 type SessionCleanupMode = 'success' | 'failed' | 'interrupted';
@@ -16,9 +17,14 @@ export async function cleanupSessionArtifacts(
     extraPaths: string[] = []
 ) {
     const normalizedExtraPaths = extraPaths.filter((targetPath): targetPath is string => Boolean(targetPath));
+    const cleanupTargets = [...normalizedExtraPaths];
 
-    if (normalizedExtraPaths.length > 0) {
-        await cleanupOutputArtifacts('', normalizedExtraPaths);
+    if (mode === 'success' && paths?.finalDir) {
+        cleanupTargets.push(`${paths.finalDir}\\.cache`);
+    }
+
+    if (cleanupTargets.length > 0) {
+        await cleanupOutputArtifacts('', cleanupTargets);
     }
 
     if (!paths?.sessionCacheDir) {
