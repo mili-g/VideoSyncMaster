@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
+import { isSupportedAsrService, type AsrService } from '../utils/asrService';
 
 type FeedbackType = 'success' | 'error';
 
@@ -15,7 +16,10 @@ interface PersistentSettingsOptions {
 
 export function usePersistentSettings({ setFeedback }: PersistentSettingsOptions) {
     const [targetLang, setTargetLang] = useState(() => localStorage.getItem('targetLang') || 'English');
-    const [asrService, setAsrService] = useState(() => localStorage.getItem('asrService') || 'whisperx');
+    const [asrService, setAsrService] = useState<AsrService>(() => {
+        const saved = localStorage.getItem('asrService');
+        return isSupportedAsrService(saved) ? saved : 'bcut';
+    });
     const [asrOriLang, setAsrOriLang] = useState('Auto');
     const [ttsService, setTtsService] = useState<'indextts' | 'qwen'>(() => {
         const saved = localStorage.getItem('ttsService');
@@ -47,7 +51,7 @@ export function usePersistentSettings({ setFeedback }: PersistentSettingsOptions
         return { valid: true };
     };
 
-    const handleAsrServiceChange = (newService: string) => {
+    const handleAsrServiceChange = (newService: AsrService) => {
         const check = validateServiceIncompatibility(newService, ttsService, 'asr');
         if (!check.valid) {
             setFeedback({ title: "选择冲突", message: check.message!, type: 'error' });

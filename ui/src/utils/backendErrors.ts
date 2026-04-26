@@ -35,6 +35,28 @@ export function normalizeBackendError(
     };
 }
 
+function inferFriendlyBackendError(error?: StructuredErrorInfo) {
+    if (!error) return error;
+
+    const haystack = `${error.code || ''}\n${error.message || ''}\n${error.detail || ''}`.toLowerCase();
+
+    if (
+        error.code === 'JIANYING_SIGN_SERVICE_UNAVAILABLE'
+        || haystack.includes('asrtools-update.bkfeng.top/sign')
+        || (haystack.includes('sign api') && haystack.includes('500'))
+        || (haystack.includes('http request failed') && haystack.includes('500 server error'))
+    ) {
+        return {
+            ...error,
+            code: 'JIANYING_SIGN_SERVICE_UNAVAILABLE',
+            message: '剪映 API 当前不可用，签名服务异常',
+            suggestion: error.suggestion || '请稍后重试，或切换到必剪 API（云端）'
+        };
+    }
+
+    return error;
+}
+
 export function summarizeStructuredError(error?: StructuredErrorInfo) {
     if (!error) return '';
     const parts = [
@@ -48,10 +70,11 @@ export function summarizeStructuredError(error?: StructuredErrorInfo) {
 }
 
 export function buildUserFacingErrorMessage(error?: StructuredErrorInfo) {
-    if (!error) return '未知错误';
+    const friendlyError = inferFriendlyBackendError(error);
+    if (!friendlyError) return '未知错误';
     return [
-        error.code ? `[${error.code}]` : '',
-        error.message,
-        error.suggestion ? `建议: ${error.suggestion}` : ''
+        friendlyError.code ? `[${friendlyError.code}]` : '',
+        friendlyError.message,
+        friendlyError.suggestion ? `建议: ${friendlyError.suggestion}` : ''
     ].filter(Boolean).join(' ');
 }

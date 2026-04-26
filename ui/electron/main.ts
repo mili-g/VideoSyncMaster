@@ -597,6 +597,27 @@ function parseBackendWorkerResult(line: string) {
   }
 }
 
+function createBackendRequestError(workerResult: any) {
+  const message = workerResult?.error || workerResult?.error_info?.message || 'Backend worker request failed'
+  const error = new Error(message) as Error & {
+    code?: string
+    error?: string
+    error_info?: any
+  }
+
+  if (typeof workerResult?.error_info?.code === 'string') {
+    error.code = workerResult.error_info.code
+  }
+  if (typeof workerResult?.error === 'string') {
+    error.error = workerResult.error
+  }
+  if (workerResult?.error_info && typeof workerResult.error_info === 'object') {
+    error.error_info = workerResult.error_info
+  }
+
+  return error
+}
+
 function createBackendProcessLineHandler(lane: BackendLane, source: 'stdout' | 'stderr') {
   return (line: string) => {
     const workerState = getBackendWorkerState(lane)
@@ -622,7 +643,7 @@ function createBackendProcessLineHandler(lane: BackendLane, source: 'stdout' | '
         if (workerResult.success) {
           currentRequest.resolve(workerResult.result)
         } else {
-          currentRequest.reject(new Error(workerResult.error || 'Backend worker request failed'))
+          currentRequest.reject(createBackendRequestError(workerResult))
         }
       }
       return
@@ -1099,14 +1120,14 @@ function terminateProcessTree(proc: ChildProcess | null): Promise<boolean> {
 }
 
 
-function createWindow() {
-  logMainBusiness('创建主窗口', { domain: 'window.lifecycle', action: 'createWindow' })
-  // ... existing createWindow code ...
+  function createWindow() {
+    logMainBusiness('创建主窗口', { domain: 'window.lifecycle', action: 'createWindow' })
+    // ... existing createWindow code ...
   win = new BrowserWindow({
-    width: 1500,
-    height: 900,
-    minWidth: 1500,
-    minHeight: 750,
+    width: 1720,
+    height: 980,
+    minWidth: 1680,
+    minHeight: 900,
     icon: path.join(process.env.VITE_PUBLIC, 'icon.ico'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.mjs'),

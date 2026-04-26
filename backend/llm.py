@@ -114,14 +114,15 @@ class LLMTranslator:
         else:
             return self._translate_local(text, target_lang)
 
+    def _get_external_api_url(self):
+        url = (self.base_url or "").strip().rstrip("/")
+        if not url:
+            raise RuntimeError("External translation API URL is empty.")
+        return url
+
     def _translate_external(self, text, target_lang):
         try:
-            # Smart URL construction
-            base = self.base_url.rstrip('/')
-            if base.endswith('/chat/completions'):
-                url = base
-            else:
-                url = f"{base}/chat/completions"
+            url = self._get_external_api_url()
             
             prompt = f"Translate the following text into {target_lang}. Output ONLY the translated text. Do not output the original text. Do not explain context. Do not provide citations or references.\n\nText: {text}"
             
@@ -134,7 +135,6 @@ class LLMTranslator:
                 "temperature": 0.7
             }
             
-            # Fail-fast: Raise exception on error
             response = self.session.post(url, json=payload, timeout=60)
             
             if response.status_code != 200:
@@ -233,12 +233,7 @@ Input:
             }
             
             try:
-                # Smart URL construction
-                base = self.base_url.rstrip('/')
-                if base.endswith('/chat/completions'):
-                    url = base
-                else:
-                    url = f"{base}/chat/completions"
+                url = self._get_external_api_url()
 
                 response = self.session.post(url, json=payload, timeout=120)  # Increased timeout
 

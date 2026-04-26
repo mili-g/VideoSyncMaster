@@ -493,31 +493,70 @@ def _prepare_dub_workspace(config):
     return cache_dir, segments_dir
 
 
+def _build_asr_backend_error(service, error):
+    detail = str(error)
+    service_label = {
+        "jianying": "剪映 API",
+        "bcut": "必剪 API",
+        "qwen": "Qwen3 ASR",
+        "whisperx": "WhisperX",
+    }.get(service, "ASR 服务")
+
+    if service == "jianying" and (
+        "asrtools-update.bkfeng.top/sign" in detail
+        or "HTTP Request failed" in detail
+        or "500 Server Error" in detail
+    ):
+        return make_error(
+            "JIANYING_SIGN_SERVICE_UNAVAILABLE",
+            "剪映 API 当前不可用，签名服务异常",
+            category="asr",
+            stage="asr",
+            retryable=True,
+            detail=detail,
+            suggestion="请稍后重试，或切换到必剪 API（云端）"
+        )
+
+    return make_error(
+        "ASR_FAILED",
+        f"{service_label} 识别失败",
+        category="asr",
+        stage="asr",
+        retryable=True,
+        detail=detail,
+        suggestion="请检查网络连接、源语言设置，或切换其他 ASR 引擎后重试"
+    )
+
+
 def _run_dub_asr_stage(config, cache_dir):
     log_business(logger, logging.INFO, "Starting dub ASR stage", event="dub_step", stage="asr")
     emit_stage("dub_video", "asr", "正在识别字幕", stage_label="正在识别字幕")
 
-    segments = run_asr(
-        config.input_path,
-        service=config.asr_service,
-        output_dir=cache_dir,
-        vad_onset=config.vad_onset,
-        vad_offset=config.vad_offset,
-        language=config.ori_lang
-    )
-    if not segments:
-        emit_error_issue(
-            "dub_video",
-            make_error(
-                "ASR_NO_SEGMENTS",
-                "识别失败或未检测到有效语音",
-                category="asr",
-                stage="asr",
-                retryable=True,
-                suggestion="请调整源语言、VAD 阈值或更换 ASR 引擎后重试"
-            )
+    try:
+        segments = run_asr(
+            config.input_path,
+            service=config.asr_service,
+            output_dir=cache_dir,
+            vad_onset=config.vad_onset,
+            vad_offset=config.vad_offset,
+            language=config.ori_lang
         )
-        return None
+    except Exception as error:
+        backend_error = _build_asr_backend_error(config.asr_service, error)
+        emit_error_issue("dub_video", backend_error)
+        return error_result(backend_error)
+
+    if not segments:
+        backend_error = make_error(
+            "ASR_NO_SEGMENTS",
+            "识别失败或未检测到有效语音",
+            category="asr",
+            stage="asr",
+            retryable=True,
+            suggestion="请调整源语言、VAD 阈值或更换 ASR 引擎后重试"
+        )
+        emit_error_issue("dub_video", backend_error)
+        return error_result(backend_error)
     return segments
 
 
@@ -814,6 +853,8 @@ def dub_video(input_path, target_lang, output_path, asr_service="whisperx", vad_
 
     cache_dir, segments_dir = _prepare_dub_workspace(config)
     segments = _run_dub_asr_stage(config, cache_dir)
+    if isinstance(segments, dict) and segments.get("success") is False:
+        return segments
     if not segments:
         return error_result(
             make_error(

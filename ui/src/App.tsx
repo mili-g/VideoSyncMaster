@@ -18,6 +18,7 @@ import ConsoleDrawer from './components/ConsoleDrawer';
 import { useVideoProject } from './hooks/useVideoProject';
 import { useBatchQueue } from './hooks/useBatchQueue';
 import { segmentsToSRT } from './utils/srt';
+import { getAsrServiceLabel } from './utils/asrService';
 import { logUiError, logUiWarn } from './utils/frontendLogger';
 
 
@@ -766,7 +767,7 @@ function App() {
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <span title="识别引擎" style={{ opacity: 0.8 }}>🎙️</span>
                 <span style={{ color: 'rgba(255,255,255,0.7)' }}>
-                  ASR: <b style={{ color: '#fff' }}>{asrService === 'qwen' ? 'Qwen3' : (asrService === 'whisperx' ? 'WhisperX' : asrService.toUpperCase())}</b>
+                  ASR: <b style={{ color: '#fff' }}>{getAsrServiceLabel(asrService)}</b>
                 </span>
               </div>
 

@@ -10,6 +10,7 @@ import { isBackendCanceledError } from '../utils/backendCancellation';
 import { buildUserFacingErrorMessage, normalizeBackendError } from '../utils/backendErrors';
 import { logUiError } from '../utils/frontendLogger';
 import { getStoredWhisperVadSettings } from '../utils/runtimeSettings';
+import type { AsrService } from '../utils/asrService';
 import type { ExecutionConsoleEntry, RawBackendLogLine } from '../types/executionConsole';
 import type { WorkflowOverviewModel, WorkflowStepState } from '../types/workflow';
 
@@ -133,7 +134,7 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
         return { valid: true };
     };
 
-    const handleAsrServiceChange = (newService: string) => {
+    const handleAsrServiceChange = (newService: AsrService) => {
         const check = validateServiceIncompatibility(newService, ttsService, 'asr');
         if (!check.valid) {
             setFeedback({ title: '选择冲突', message: check.message!, type: 'error' });

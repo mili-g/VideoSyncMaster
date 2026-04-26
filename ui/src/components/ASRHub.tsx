@@ -1,14 +1,16 @@
 import React, { useState, useEffect } from 'react';
 import ConfirmDialog from './ConfirmDialog';
+import { ASR_SERVICE_META, SUPPORTED_ASR_SERVICES, type AsrService } from '../utils/asrService';
 
 interface ASRHubProps {
     themeMode?: 'light' | 'dark' | 'gradient';
     asrService: string;
-    onServiceChange: (service: string) => boolean;
+    onServiceChange: (service: AsrService) => boolean;
 }
 
 const ASRHub: React.FC<ASRHubProps> = ({ themeMode, asrService, onServiceChange }) => {
     const isLightMode = themeMode === 'gradient' || themeMode === 'light';
+    const currentService = (asrService in ASR_SERVICE_META ? asrService : 'jianying') as AsrService;
 
     // Whisper Settings
     const [vadOnset, setVadOnset] = useState<number>(0.700);
@@ -17,8 +19,6 @@ const ASRHub: React.FC<ASRHubProps> = ({ themeMode, asrService, onServiceChange 
     // Qwen Settings
     const [qwenModel, setQwenModel] = useState<string>('Qwen3-ASR-1.7B');
     const [qwenDevice, setQwenDevice] = useState<string>('cuda');
-
-    // BCut/Jianying Settings (Placeholder for now, but could be API keys etc.)
 
     const [showSaveConfirm, setShowSaveConfirm] = useState(false);
 
@@ -101,34 +101,32 @@ const ASRHub: React.FC<ASRHubProps> = ({ themeMode, asrService, onServiceChange 
                 <div className="glass-panel" style={{ padding: '20px', background: 'rgba(99, 102, 241, 0.1)', border: '1px solid rgba(99, 102, 241, 0.2)' }}>
                     <h3 style={{ marginTop: 0 }}>默认识别引擎</h3>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '15px' }}>
-                        {[
-                            { id: 'whisperx', name: 'WhisperX (本地实时)', desc: '高质量本地模型，支持音画同步对齐' },
-                            { id: 'qwen', name: 'Qwen3 ASR (本地)', desc: 'Qwen2-Audio (1.7B/0.6B) 强大的多语种识别' },
-                            { id: 'jianying', name: '剪刀 API (云端)', desc: '速度极快，适合中文长视频' },
-                            { id: 'bcut', name: '硬币 API (云端)', desc: '稳定性好' }
-                        ].map(engine => (
+                        {SUPPORTED_ASR_SERVICES.map((serviceId) => {
+                            const engine = ASR_SERVICE_META[serviceId];
+                            return (
                             <div
                                 key={engine.id}
                                 onClick={() => onServiceChange(engine.id)}
                                 style={{
                                     padding: '12px',
                                     borderRadius: '12px',
-                                    background: asrService === engine.id ? 'rgba(99, 102, 241, 0.2)' : 'rgba(255,255,255,0.05)',
-                                    border: `2px solid ${asrService === engine.id ? '#6366f1' : 'transparent'}`,
+                                    background: currentService === engine.id ? 'rgba(99, 102, 241, 0.2)' : 'rgba(255,255,255,0.05)',
+                                    border: `2px solid ${currentService === engine.id ? '#6366f1' : 'transparent'}`,
                                     cursor: 'pointer',
                                     transition: 'all 0.2s'
                                 }}
                             >
                                 <div style={{ fontWeight: 'bold' }}>{engine.name}</div>
-                                <div style={{ fontSize: '0.8em', opacity: 0.7 }}>{engine.desc}</div>
+                                <div style={{ fontSize: '0.8em', opacity: 0.7 }}>{engine.description}</div>
                             </div>
-                        ))}
+                            );
+                        })}
                     </div>
                 </div>
 
                 {/* Unified Settings Card */}
-                <div className="glass-panel" style={{ padding: '20px', border: (asrService === 'whisperx' || asrService === 'qwen') ? '1px solid rgba(99, 102, 241, 0.3)' : '1px solid transparent' }}>
-                    {asrService === 'qwen' ? (
+                <div className="glass-panel" style={{ padding: '20px', border: '1px solid rgba(99, 102, 241, 0.3)' }}>
+                    {currentService === 'qwen' ? (
                         <>
                             <h3 style={{ marginBottom: '15px' }}>模型参数 (Qwen3-ASR)</h3>
                             <SelectControl
@@ -152,12 +150,9 @@ const ASRHub: React.FC<ASRHubProps> = ({ themeMode, asrService, onServiceChange 
                                 desc="建议优先使用 CUDA 以获得最佳性能。"
                             />
                         </>
-                    ) : (
+                    ) : currentService === 'whisperx' ? (
                         <>
-                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '15px' }}>
-                                <h3 style={{ margin: 0 }}>VAD 配置 (WhisperX Only)</h3>
-                                {asrService !== 'whisperx' && <span style={{ fontSize: '0.7em', padding: '2px 8px', background: 'rgba(255,255,255,0.1)', borderRadius: '10px', color: '#aaa' }}>仅 WhisperX 引擎可用</span>}
-                            </div>
+                            <h3 style={{ margin: '0 0 15px 0' }}>VAD 配置 (WhisperX Only)</h3>
                             <SliderControl
                                 label="VAD Onset (开始阈值)"
                                 value={vadOnset}
@@ -166,7 +161,7 @@ const ASRHub: React.FC<ASRHubProps> = ({ themeMode, asrService, onServiceChange 
                                 max={1.0}
                                 step={0.001}
                                 desc="语音开始检测阈值。默认 0.700。"
-                                disabled={asrService !== 'whisperx'}
+                                disabled={currentService !== 'whisperx'}
                             />
                             <SliderControl
                                 label="VAD Offset (结束阈值)"
@@ -176,8 +171,26 @@ const ASRHub: React.FC<ASRHubProps> = ({ themeMode, asrService, onServiceChange 
                                 max={1.0}
                                 step={0.001}
                                 desc="语音结束检测阈值。默认 0.700。"
-                                disabled={asrService !== 'whisperx'}
+                                disabled={false}
                             />
+                        </>
+                    ) : (
+                        <>
+                            <h3 style={{ margin: '0 0 15px 0' }}>{ASR_SERVICE_META[currentService].detailTitle}</h3>
+                            <div
+                                style={{
+                                    borderRadius: '14px',
+                                    padding: '16px',
+                                    background: 'rgba(255,255,255,0.04)',
+                                    border: '1px solid rgba(255,255,255,0.08)',
+                                    lineHeight: '1.7'
+                                }}
+                            >
+                                <div style={{ fontWeight: 700, marginBottom: '8px' }}>{ASR_SERVICE_META[currentService].name}</div>
+                                <div style={{ color: isLightMode ? '#555' : '#d1d5db', fontSize: '0.95em' }}>
+                                    {ASR_SERVICE_META[currentService].detailBody}
+                                </div>
+                            </div>
                         </>
                     )}
                 </div>
@@ -186,13 +199,13 @@ const ASRHub: React.FC<ASRHubProps> = ({ themeMode, asrService, onServiceChange 
                 <div className="glass-panel" style={{ padding: '20px', background: 'rgba(255,255,255,0.05)' }}>
                     <h3 style={{ marginTop: 0 }}>引擎说明</h3>
                     <ul style={{ paddingLeft: '20px', fontSize: '0.9em', lineHeight: '1.6' }}>
-                        <li><b>WhisperX</b>: 本地运行，支持强制对齐，带 VAD。</li>
-                        <li><b>Qwen3 ASR</b>: 阿里开源的端到端语音大模型，准确率高。</li>
-                        <li><b>剪映 API</b>: 速度最快，智能分段效果好。</li>
-                        <li><b>BCut API</b>: 稳定可靠，适合各种视频类型。</li>
+                        <li><b>剪映 API</b>: 云端识别，速度快，适合中文长视频与快速出稿。</li>
+                        <li><b>必剪 API</b>: 云端识别，稳定性更好，适合通用视频类型。</li>
+                        <li><b>WhisperX</b>: 本地运行，支持强制对齐与 VAD 微调。</li>
+                        <li><b>Qwen3 ASR</b>: 本地端到端语音模型，适合多语种内容。</li>
                     </ul>
                     <p style={{ fontSize: '0.85em', color: '#aaa', marginTop: '10px' }}>
-                        所有云端引擎均已内置接口，无需配置 API Key。
+                        默认推荐云端接口；本地引擎更适合需要精细控制模型与时间轴的场景。
                     </p>
                 </div>
 

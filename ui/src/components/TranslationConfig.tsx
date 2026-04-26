@@ -13,7 +13,7 @@ const TranslationConfig: React.FC = () => {
 
     useEffect(() => {
         // Load settings
-        setBaseUrl(localStorage.getItem('trans_api_base_url') || 'https://api.openai.com/v1');
+        setBaseUrl(localStorage.getItem('trans_api_base_url') || 'https://api.openai.com/v1/chat/completions');
         setApiKey(localStorage.getItem('trans_api_key') || '');
         setModel(localStorage.getItem('trans_api_model') || 'gpt-3.5-turbo');
 
@@ -42,7 +42,7 @@ const TranslationConfig: React.FC = () => {
         localStorage.removeItem('trans_api_base_url');
         localStorage.removeItem('trans_api_key');
         localStorage.removeItem('trans_api_model');
-        setBaseUrl('https://api.openai.com/v1');
+        setBaseUrl('https://api.openai.com/v1/chat/completions');
         setApiKey('');
         setModel('gpt-3.5-turbo');
         setShowClearConfirm(false);
@@ -91,11 +91,12 @@ const TranslationConfig: React.FC = () => {
                     marginBottom: '30px'
                 }}>
                     <p style={{ margin: 0, fontSize: '0.95em', lineHeight: '1.6', color: 'var(--text-primary)' }}>
-                        配置外部 LLM API (如 OpenAI, DeepSeek, Claude) 用于翻译。<br />
+                        配置 OpenAI 兼容翻译接口用于翻译。请填写完整请求地址。<br />
                         <strong>注意：</strong><br />
                         1. 填写 API Key 后，系统将优先使用此 API。<br />
                         2. 遇到 API 错误时将直接报错，不会回退到本地模型。<br />
-                        3. 如需使用本地 Qwen 模型，请清空配置。
+                        3. 这里不会自动拼接路径，请直接填写完整端点，如 <code>/chat/completions</code>。<br />
+                        4. 如需使用本地 Qwen 模型，请清空配置。
                     </p>
                 </div>
 
@@ -110,11 +111,11 @@ const TranslationConfig: React.FC = () => {
                             type="text"
                             value={baseUrl}
                             onChange={(e) => setBaseUrl(e.target.value)}
-                            placeholder="e.g. https://api.openai.com/v1"
+                            placeholder="e.g. https://api.openai.com/v1/chat/completions"
                             style={inputStyle}
                         />
                         <div style={{ fontSize: '0.85em', color: 'var(--text-secondary)', marginTop: '8px', marginLeft: '5px' }}>
-                            常见示例: <code>https://api.openai.com/v1</code> 或 <code>https://api.deepseek.com</code>
+                            常见示例: <code>https://api.openai.com/v1/chat/completions</code> 或 <code>https://api.deepseek.com/chat/completions</code>
                         </div>
                     </div>
 

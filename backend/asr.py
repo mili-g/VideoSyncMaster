@@ -374,7 +374,6 @@ def run_asr(audio_path, model_path=None, service="whisperx", output_dir=None, va
         print(f"Running JianYing ASR on {audio_path}")
         asr = JianYingASR(audio_path, need_word_time_stamp=False)
         asr_data = asr.run()
-        # Convert ASRData to standard format
         segments = []
         for seg in asr_data.segments:
             segments.append({
@@ -389,7 +388,6 @@ def run_asr(audio_path, model_path=None, service="whisperx", output_dir=None, va
         print(f"Running Bcut ASR on {audio_path}")
         asr = BcutASR(audio_path, need_word_time_stamp=False)
         asr_data = asr.run()
-        # Convert ASRData to standard format
         segments = []
         for seg in asr_data.segments:
             segments.append({

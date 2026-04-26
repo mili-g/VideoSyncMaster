@@ -2,6 +2,45 @@ import json
 import os
 from typing import Any, Callable
 
+from error_model import error_result, exception_result, make_error
+
+
+def _build_asr_failure_result(service: str, error: Exception):
+    detail = str(error)
+    service_label = {
+        "jianying": "剪映 API",
+        "bcut": "必剪 API",
+        "qwen": "Qwen3 ASR",
+        "whisperx": "WhisperX",
+    }.get(service, "ASR 服务")
+
+    if service == "jianying" and (
+        "asrtools-update.bkfeng.top/sign" in detail
+        or "HTTP Request failed" in detail
+        or "500 Server Error" in detail
+    ):
+        return error_result(
+            make_error(
+                "JIANYING_SIGN_SERVICE_UNAVAILABLE",
+                "剪映 API 当前不可用，签名服务异常",
+                category="asr",
+                stage="asr",
+                retryable=True,
+                detail=detail,
+                suggestion="请稍后重试，或切换到必剪 API（云端）"
+            )
+        )
+
+    return exception_result(
+        "ASR_FAILED",
+        f"{service_label} 识别失败",
+        error,
+        category="asr",
+        stage="asr",
+        retryable=True,
+        suggestion="请检查网络连接、源语言设置，或切换其他 ASR 引擎后重试"
+    )
+
 
 def dispatch_basic_action(
     args,
@@ -22,14 +61,17 @@ def dispatch_basic_action(
         if args.input:
             if not args.json:
                 print(f"Testing ASR on {args.input} using {args.asr} (Original Language: {args.ori_lang})", flush=True)
-            segments = run_asr(
-                args.input,
-                service=args.asr,
-                output_dir=args.output_dir,
-                vad_onset=args.vad_onset,
-                vad_offset=args.vad_offset,
-                language=args.ori_lang
-            )
+            try:
+                segments = run_asr(
+                    args.input,
+                    service=args.asr,
+                    output_dir=args.output_dir,
+                    vad_onset=args.vad_onset,
+                    vad_offset=args.vad_offset,
+                    language=args.ori_lang
+                )
+            except Exception as error:
+                return True, _build_asr_failure_result(args.asr, error)
             if args.json:
                 return True, segments
             for seg in segments:

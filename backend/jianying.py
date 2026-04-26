@@ -147,14 +147,9 @@ class JianYingASR(BaseASR):
         return f"{self.__class__.__name__}-{self.crc32_hex}-{self.need_word_time_stamp}"
 
     def _get_tid(self):
-        import random
         i = str(datetime.datetime.now().year)[3]
         fr = 390 + int(i)
-        if int(i) % 2 != 0:
-            ed = "3278516897751"
-        else:
-            # Generate random 13 digit string
-            ed = f"{random.randint(1000000000000, 9999999999999)}"
+        ed = "3278516897751" if int(i) % 2 != 0 else f"{uuid.getnode():013d}"
         return f"{fr}{ed}"
 
     def _generate_sign_parameters(
@@ -188,9 +183,9 @@ class JianYingASR(BaseASR):
             print(f"Sign API Error: {e}")
             if hasattr(e, 'response') and e.response is not None:
                 print(f"Response Content: {e.response.text}")
-            raise SystemExit(f"HTTP Request failed: {e}")
+            raise RuntimeError(f"HTTP Request failed: {e}") from e
         except ValueError as ve:
-            raise SystemExit(f"Invalid response: {ve}")
+            raise RuntimeError(f"Invalid response: {ve}") from ve
         return sign.lower(), current_time
 
     def _build_headers(self, device_time: str, sign: str) -> Dict[str, str]:
