@@ -169,7 +169,6 @@ class BatchTtsRequestConfig:
 
 def build_translation_runtime_config(args) -> TranslationRuntimeConfig:
     payload = {
-        "model_dir": getattr(args, "model_dir", None),
         "api_key": getattr(args, "api_key", None),
         "base_url": getattr(args, "base_url", None),
         "model": getattr(args, "model", None)
@@ -215,7 +214,9 @@ def build_dub_video_runtime_config(
     kwargs: dict[str, Any] | None = None
 ) -> DubVideoRuntimeConfig:
     kwargs = kwargs or {}
-    translation = TranslationRuntimeConfig.from_sources(kwargs)
+    translation_kwargs = dict(kwargs)
+    translation_kwargs.pop("model_dir", None)
+    translation = TranslationRuntimeConfig.from_sources(translation_kwargs)
     tts = TtsRuntimeConfig.from_sources(kwargs)
     work_dir = str(kwargs.get("work_dir") or "")
     if not work_dir:

@@ -528,11 +528,13 @@ def _run_dub_translation_stage(translator, segments, target_lang):
     source_texts = [seg.get("text", "") for seg in segments]
     translated_texts = translator.translate_batch(source_texts, target_lang)
     if len(translated_texts) != len(source_texts):
-        print(f"[DubVideo] Translation batch length mismatch. Expected {len(source_texts)}, got {len(translated_texts)}")
-        if len(translated_texts) < len(source_texts):
-            translated_texts.extend(source_texts[len(translated_texts):])
-        else:
-            translated_texts = translated_texts[:len(source_texts)]
+        raise RuntimeError(
+            f"Translation batch length mismatch. Expected {len(source_texts)}, got {len(translated_texts)}"
+        )
+
+    for idx, translated_text in enumerate(translated_texts):
+        if not isinstance(translated_text, str) or not translated_text.strip():
+            raise RuntimeError(f"Translation failed for segment {idx + 1}: empty translated text")
     return translated_texts
 
 
@@ -702,13 +704,18 @@ def translate_text(input_text_or_json, target_lang, **kwargs):
                 
                 # Perform Batch Translation
                 translated_texts = translator.translate_batch(texts_to_translate, target_lang)
+                if len(translated_texts) != len(texts_to_translate):
+                    raise RuntimeError(
+                        f"Batch translation length mismatch. Expected {len(texts_to_translate)}, got {len(translated_texts)}"
+                    )
                 
                 # Reassemble
                 translated_segments = []
                 for i, item in enumerate(data):
                     new_item = item.copy()
-                    # Safety check for length mismatch (handled in llm.py but good to be safe)
-                    trans_text = translated_texts[i] if i < len(translated_texts) else item.get('text', '')
+                    trans_text = translated_texts[i]
+                    if not isinstance(trans_text, str) or not trans_text.strip():
+                        raise RuntimeError(f"Batch translation failed for segment {i + 1}: empty translated text")
                     new_item['text'] = trans_text
                     translated_segments.append(new_item)
                     
@@ -745,16 +752,18 @@ def translate_text(input_text_or_json, target_lang, **kwargs):
                     item_total=len(data)
                 )
                 trans = translator.translate(original, target_lang)
+                if not isinstance(trans, str) or not trans.strip():
+                    raise RuntimeError(f"Translation failed for segment {idx + 1}: empty translated text")
                 
                 # Stream partial result
                 partial_data = {
                     "index": idx,
-                    "text": trans if trans else original
+                    "text": trans
                 }
                 emit_partial_result(action_name, partial_data)
                 
                 new_item = item.copy()
-                new_item['text'] = trans if trans else original
+                new_item['text'] = trans
                 translated_segments.append(new_item)
             
             translator.cleanup()
@@ -762,6 +771,8 @@ def translate_text(input_text_or_json, target_lang, **kwargs):
         else:
             # Simple string
             trans = translator.translate(input_text_or_json, target_lang)
+            if not isinstance(trans, str) or not trans.strip():
+                raise RuntimeError("Translation failed: empty translated text")
             translator.cleanup()
             return {"success": True, "text": trans}
             
@@ -769,6 +780,8 @@ def translate_text(input_text_or_json, target_lang, **kwargs):
         # Not JSON, treat as raw text
         # Not JSON, treat as raw text
         trans = translator.translate(input_text_or_json, target_lang)
+        if not isinstance(trans, str) or not trans.strip():
+            raise RuntimeError("Translation failed: empty translated text")
         translator.cleanup()
         return {"success": True, "text": trans}
     except Exception as e:

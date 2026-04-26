@@ -30,22 +30,7 @@ class LLMTranslator:
     def _init_local_model(self, model_dir=None):
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
-        if model_dir is None:
-            # Path Logic
-            base_dir = os.path.dirname(os.path.abspath(__file__))
-            
-            # Candidates
-            # 1. Dev: ../models/Qwen2.5-7B-Instruct
-            path_dev = os.path.join(base_dir, "..", "models", "Qwen2.5-7B-Instruct")
-            # 2. Prod: ../../models/Qwen2.5-7B-Instruct (resources/backend -> resources -> root)
-            path_prod = os.path.join(base_dir, "..", "..", "models", "Qwen2.5-7B-Instruct")
-            
-            if os.path.exists(path_prod):
-                self.model_dir = path_prod
-            else:
-                self.model_dir = path_dev
-        else:
-            self.model_dir = model_dir
+        self.model_dir = self._resolve_local_model_dir(model_dir)
 
         print(f"Initializing Local LLM from {self.model_dir}...")
         
@@ -94,6 +79,34 @@ class LLMTranslator:
             except Exception as e2:
                 print(f"Failed to load Local LLM: {e2}")
                 self.model = None
+
+    def _resolve_local_model_dir(self, model_dir=None):
+        # Path Logic
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+
+        # Candidates
+        # 1. Dev: ../models/Qwen2.5-7B-Instruct
+        path_dev = os.path.join(base_dir, "..", "models", "Qwen2.5-7B-Instruct")
+        # 2. Prod: ../../models/Qwen2.5-7B-Instruct (resources/backend -> resources -> root)
+        path_prod = os.path.join(base_dir, "..", "..", "models", "Qwen2.5-7B-Instruct")
+
+        default_dir = path_prod if os.path.exists(path_prod) else path_dev
+
+        if not model_dir:
+            return default_dir
+
+        candidate_dir = os.path.abspath(model_dir)
+        candidate_config = os.path.join(candidate_dir, "config.json")
+        candidate_tokenizer = os.path.join(candidate_dir, "tokenizer_config.json")
+
+        if os.path.exists(candidate_config) or os.path.exists(candidate_tokenizer):
+            return candidate_dir
+
+        print(
+            f"[LLMTranslator] Provided model_dir does not look like a local text model: {candidate_dir}. "
+            f"Falling back to {default_dir}"
+        )
+        return default_dir
 
     def translate(self, text, target_lang="English"):
         if self.use_external:
@@ -230,9 +243,7 @@ Input:
                 response = self.session.post(url, json=payload, timeout=120)  # Increased timeout
 
                 if response.status_code != 200:
-                    print(f"[BatchTranslation] Error {response.status_code}: {response.text}")
-                    results.extend(chunk) 
-                    continue
+                    raise RuntimeError(f"Batch translation API error {response.status_code}: {response.text}")
                 
                 data = response.json()
                 if "choices" in data and len(data["choices"]) > 0:
@@ -266,24 +277,21 @@ Input:
                     
                     if isinstance(batch_results, list):
                         if len(batch_results) != len(chunk):
-                            print(f"[BatchTranslation] Warning: Length mismatch. Expected {len(chunk)}, got {len(batch_results)}.")
-                            if len(batch_results) < len(chunk):
-                                batch_results.extend(chunk[len(batch_results):])
-                            else:
-                                batch_results = batch_results[:len(chunk)]
+                            raise RuntimeError(
+                                f"Batch translation length mismatch. Expected {len(chunk)}, got {len(batch_results)}."
+                            )
                         
                         # 4. Final clean of items (just in case)
                         cleaned_results = [str(txt).strip() for txt in batch_results]
                         results.extend(cleaned_results)
                     else:
-                        print(f"[BatchTranslation] Failed to parse: {raw_content[:50]}...")
-                        results.extend(chunk)
+                        raise RuntimeError(f"Batch translation response parse failed: {raw_content[:200]}")
                 else:
-                    results.extend(chunk)
+                    raise RuntimeError("Batch translation response missing choices.")
 
             except Exception as e:
                 print(f"[BatchTranslation] Exception: {e}")
-                results.extend(chunk)
+                raise
                 
         return results
 
