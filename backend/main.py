@@ -811,25 +811,7 @@ def dub_video(input_path, target_lang, output_path, asr_service="whisperx", vad_
     )
     cache_dir = None
     segments_dir = None
-    
-    # 0. Get TTS Runner (This will switch deps if needed)
-    run_tts_func, run_batch_tts_func = get_tts_runner(config.tts_service)
-    if not run_tts_func:
-        backend_error = make_error(
-            "TTS_INIT_FAILED",
-            f"初始化 TTS 服务失败: {config.tts_service}",
-            category="tts",
-            stage="bootstrap",
-            retryable=True,
-            suggestion="请检查模型依赖、显卡环境或切换 TTS 引擎"
-        )
-        emit_error_issue("dub_video", backend_error)
-        return error_result(backend_error)
 
-    # 1. Initialize LLM
-    LLMTranslator = get_llm_translator_class()
-    translator = LLMTranslator(**config.translation.to_translator_kwargs())
-    
     cache_dir, segments_dir = _prepare_dub_workspace(config)
     segments = _run_dub_asr_stage(config, cache_dir)
     if not segments:
@@ -848,13 +830,31 @@ def dub_video(input_path, target_lang, output_path, asr_service="whisperx", vad_
     print(f"DEBUG: Segments Dir: {segments_dir}")
     print(f"DEBUG: Input Path: {config.input_path}")
 
-    translated_texts = _run_dub_translation_stage(translator, segments, config.target_lang)
-    tts_tasks = _build_dub_tts_tasks(segments, translated_texts)
-        
-    print("Translation done. Releasing LLM VRAM...", flush=True)
-    translator.cleanup()
-    del translator
-    
+    emit_stage("dub_video", "translate_prepare", "正在加载翻译模型", stage_label="正在准备翻译")
+    LLMTranslator = get_llm_translator_class()
+    translator = LLMTranslator(**config.translation.to_translator_kwargs())
+    try:
+        translated_texts = _run_dub_translation_stage(translator, segments, config.target_lang)
+        tts_tasks = _build_dub_tts_tasks(segments, translated_texts)
+    finally:
+        print("Translation done. Releasing LLM VRAM...", flush=True)
+        translator.cleanup()
+        del translator
+
+    emit_stage("dub_video", "tts_prepare", f"正在初始化 {config.tts_service} 配音引擎", stage_label="正在准备配音")
+    run_tts_func, run_batch_tts_func = get_tts_runner(config.tts_service)
+    if not run_tts_func:
+        backend_error = make_error(
+            "TTS_INIT_FAILED",
+            f"初始化 TTS 服务失败: {config.tts_service}",
+            category="tts",
+            stage="tts_prepare",
+            retryable=True,
+            suggestion="请检查模型依赖、显卡环境或切换 TTS 引擎"
+        )
+        emit_error_issue("dub_video", backend_error)
+        return error_result(backend_error)
+
     log_business(logger, logging.INFO, "Starting dub TTS stage", event="dub_step", stage="tts_generate", detail=f"segments={len(tts_tasks)} service={config.tts_service}")
     emit_stage("dub_video", "tts_generate", f"正在生成 {len(tts_tasks)} 条配音", stage_label="正在生成配音")
 

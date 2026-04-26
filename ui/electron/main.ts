@@ -284,9 +284,35 @@ function shouldMirrorBackendLine(source: 'stdout' | 'stderr', line: string) {
 
   return normalized.includes('traceback')
     || normalized.includes('error')
+    || normalized.includes('failed')
     || normalized.includes('exception')
     || normalized.includes('fatal')
     || normalized.includes('cuda')
+}
+
+function inferMirroredBackendLineLevel(
+  source: 'stdout' | 'stderr',
+  line: string
+): 'info' | 'warn' | 'error' {
+  const normalized = String(line || '').toLowerCase()
+  const hasWarning = /\bwarning\b|\bwarn\b/i.test(normalized)
+  const hasHardError = /\btraceback\b|\bexception\b|\bfatal\b|\bcuda\b/i.test(normalized)
+  const hasExplicitFailure = /\berror\b|\bfailed\b|\bfailure\b/i.test(normalized)
+
+  if (source === 'stdout') {
+    if (hasWarning) return 'warn'
+    return hasExplicitFailure || hasHardError ? 'error' : 'info'
+  }
+
+  if (hasHardError) return 'error'
+  if (hasWarning) return 'warn'
+  if (/^\s*(error|failed|failure)[:\s[]/i.test(line) || /^\[[^\]]+\]\s*(error|failed|failure)\b/i.test(line)) {
+    return 'error'
+  }
+
+  // Many third-party libraries write normal configuration chatter to stderr.
+  // Keep mirroring it for troubleshooting, but don't surface it as an issue by default.
+  return 'info'
 }
 
 function parseBackendStructuredLogLine(line: string): BackendStructuredLogLine | null {
@@ -713,7 +739,7 @@ function createBackendProcessLineHandler(lane: BackendLane, source: 'stdout' | '
           dispatchBackendLogLine(workerState.activeRequest.sender, {
             lane,
             source: 'stdout',
-            level: /warning|warn/i.test(normalizedLine) ? 'warn' : /failed|error/i.test(normalizedLine) ? 'error' : 'info',
+            level: inferMirroredBackendLineLevel('stdout', normalizedLine),
             text: normalizedLine,
             timestamp: Date.now()
           })
@@ -728,20 +754,35 @@ function createBackendProcessLineHandler(lane: BackendLane, source: 'stdout' | '
     }
 
     if (shouldMirrorBackendLine('stderr', normalizedLine)) {
+      const mirroredLevel = inferMirroredBackendLineLevel('stderr', normalizedLine)
       if (workerState.activeRequest) {
         dispatchBackendLogLine(workerState.activeRequest.sender, {
           lane,
           source: 'stderr',
-          level: /warning|warn/i.test(normalizedLine) ? 'warn' : 'error',
+          level: mirroredLevel,
           text: normalizedLine,
           timestamp: Date.now()
         })
       }
-      logMainError('镜像后端标准错误输出', {
-        domain: 'backend.stream',
-        action: 'mirrorStderr',
-        detail: `[${lane}] ${normalizedLine}`
-      })
+      if (mirroredLevel === 'error') {
+        logMainError('镜像后端标准错误输出', {
+          domain: 'backend.stream',
+          action: 'mirrorStderr',
+          detail: `[${lane}] ${normalizedLine}`
+        })
+      } else if (mirroredLevel === 'warn') {
+        logMainWarn('镜像后端标准错误输出告警', {
+          domain: 'backend.stream',
+          action: 'mirrorStderr',
+          detail: `[${lane}] ${normalizedLine}`
+        })
+      } else {
+        logMainDebug('镜像后端标准错误输出', {
+          domain: 'backend.stream',
+          action: 'mirrorStderr',
+          detail: `[${lane}] ${normalizedLine}`
+        })
+      }
     }
   }
 }

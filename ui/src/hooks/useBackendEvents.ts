@@ -72,6 +72,22 @@ export function useBackendEvents({
     const lastProgressEntryRef = useRef('');
 
     useEffect(() => {
+        const shouldPromoteRawLineToIssue = (line: RawBackendLogLine) => {
+            if (line.level === 'error') {
+                return true;
+            }
+
+            if (line.level !== 'warn') {
+                return false;
+            }
+
+            if (line.logType === 'error' || line.logType === 'security') {
+                return true;
+            }
+
+            return Boolean(line.code || typeof line.retryable === 'boolean');
+        };
+
         const extractTtsTotal = (text: string) => {
             const match = text.match(/(\d+)\s*条/);
             return match ? Number(match[1]) : null;
@@ -303,7 +319,7 @@ export function useBackendEvents({
 
         const handleLogLine = (line: RawBackendLogLine) => {
             pushRawLogLine(line);
-            if (line.level === 'warn' || line.level === 'error') {
+            if (shouldPromoteRawLineToIssue(line)) {
                 pushConsoleEntry({
                     level: line.level,
                     origin: 'raw',
