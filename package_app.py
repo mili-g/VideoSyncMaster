@@ -11,9 +11,11 @@ import shutil
 import subprocess
 import zipfile
 import json
-import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+
+from services.media_pipeline.bootstrap.path_layout import resolve_env_cache_dir
 
 # 彩色输出支持
 try:
@@ -26,6 +28,94 @@ except ImportError:
         GREEN = YELLOW = RED = CYAN = ""
     class Style:
         RESET_ALL = BRIGHT = ""
+
+
+def resolve_first_existing(*candidates: Path) -> Path:
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+@dataclass(frozen=True)
+class ProjectLayout:
+    root_dir: Path
+    ui_dir: Path
+    backend_dir: Path
+    python_dir: Path
+    models_dir: Path
+    env_cache_dir: Path
+    qwen_asr_dir: Path
+    vc_redist_path: Path
+    installer_script_path: Path
+
+    @property
+    def ui_release_dir(self) -> Path:
+        return self.ui_dir / "release"
+
+
+def get_ui_dir(root_dir: Path) -> Path:
+    return resolve_first_existing(
+        root_dir / "apps" / "desktop" / "ui",
+        root_dir / "ui"
+    )
+
+
+def get_backend_dir(root_dir: Path) -> Path:
+    return resolve_first_existing(
+        root_dir / "services" / "media_pipeline",
+        root_dir / "backend"
+    )
+
+
+def get_python_dir(root_dir: Path) -> Path:
+    return resolve_first_existing(
+        root_dir / "runtime" / "python",
+        root_dir / "python"
+    )
+
+
+def get_models_dir(root_dir: Path) -> Path:
+    return root_dir / "models"
+
+
+def get_env_cache_dir(root_dir: Path) -> Path:
+    return Path(resolve_env_cache_dir(str(root_dir)))
+
+
+def get_qwen_asr_dir(root_dir: Path) -> Path:
+    return resolve_first_existing(
+        root_dir / "models" / "asr" / "qwen3",
+        root_dir / "Qwen3-ASR"
+    )
+
+
+def get_vc_redist_path(root_dir: Path) -> Path:
+    return resolve_first_existing(
+        root_dir / "resources" / "packaging" / "runtime" / "VC_redist.x64.exe",
+        root_dir / "VC_redist.x64.exe"
+    )
+
+
+def get_installer_script_path(root_dir: Path) -> Path:
+    return resolve_first_existing(
+        root_dir / "resources" / "packaging" / "installer" / "patch_installer.iss",
+        root_dir / "patch_installer.iss"
+    )
+
+
+def build_project_layout(root_dir: Path) -> ProjectLayout:
+    return ProjectLayout(
+        root_dir=root_dir,
+        ui_dir=get_ui_dir(root_dir),
+        backend_dir=get_backend_dir(root_dir),
+        python_dir=get_python_dir(root_dir),
+        models_dir=get_models_dir(root_dir),
+        env_cache_dir=get_env_cache_dir(root_dir),
+        qwen_asr_dir=get_qwen_asr_dir(root_dir),
+        vc_redist_path=get_vc_redist_path(root_dir),
+        installer_script_path=get_installer_script_path(root_dir),
+    )
 
 
 def print_header(text: str):
@@ -129,8 +219,13 @@ def create_zip_with_progress(
     print_success(f"压缩完成！最终大小: {format_size(final_size)}")
 
 
-def run_npm_build(ui_dir: Path) -> bool:
-    """运行 npm build"""
+def run_npm_build(
+    ui_dir: Path,
+    *,
+    output_dir_name: str = "release-package",
+    dir_only: bool = True
+) -> Optional[Path]:
+    """运行前端/桌面端构建并返回 win-unpacked 目录"""
     print_info("正在编译 UI 界面与核心进程...")
     try:
         # 检查 node_modules
@@ -138,23 +233,45 @@ def run_npm_build(ui_dir: Path) -> bool:
             print_info("检测到未安装依赖，正在安装...")
             subprocess.run("npm install", cwd=ui_dir, shell=True, check=True)
 
+        output_dir = ui_dir / output_dir_name
+        if output_dir.exists():
+            print_info(f"清理旧构建目录: {output_dir}")
+            shutil.rmtree(output_dir, ignore_errors=True)
+
+        if dir_only:
+            build_cmd = (
+                f"npx tsc && "
+                f"npx vite build && "
+                f"npx electron-builder --dir --config.directories.output={output_dir_name}"
+            )
+        else:
+            build_cmd = "npm run build"
+
         result = subprocess.run(
-            "npm run build",
+            build_cmd,
             cwd=ui_dir,
             capture_output=True,
             text=True,
             encoding='utf-8',
+            errors='replace',
             shell=True
         )
         if result.returncode != 0:
             print_error("构建失败！")
-            print(result.stderr)
-            return False
+            if result.stdout.strip():
+                print(result.stdout)
+            if result.stderr.strip():
+                print(result.stderr)
+            return None
         print_success("构建完成")
-        return True
+        win_unpacked = output_dir / "win-unpacked" if dir_only else ui_dir / "release" / "win-unpacked"
+        if not win_unpacked.exists():
+            print_error(f"未找到构建输出目录: {win_unpacked}")
+            return None
+        return win_unpacked
     except Exception as e:
         print_error(f"构建失败: {e}")
-        return False
+        return None
 
 
 def ensure_file_copied(src: Path, dst: Path):
@@ -175,18 +292,17 @@ def copy_tree_with_progress(src: Path, dst: Path, label: str):
     shutil.copytree(src, dst)
 
 
-def prepare_common_runtime_files(root_dir: Path, portable_root: Path):
+def prepare_common_runtime_files(layout: ProjectLayout, portable_root: Path):
     """准备便携包公共运行文件"""
-    req_file = root_dir / "requirements.txt"
+    req_file = layout.root_dir / "requirements.txt"
     if req_file.exists():
         print_info("包含 requirements.txt")
         ensure_file_copied(req_file, portable_root / "requirements.txt")
-        ensure_file_copied(req_file, portable_root / "backend" / "requirements.txt")
+        ensure_file_copied(req_file, portable_root / "services" / "media_pipeline" / "requirements.txt")
 
-    vc_redist = root_dir / "VC_redist.x64.exe"
-    if vc_redist.exists():
+    if layout.vc_redist_path.exists():
         print_info("包含 VC++ Runtime 安装程序")
-        ensure_file_copied(vc_redist, portable_root / "VC_redist.x64.exe")
+        ensure_file_copied(layout.vc_redist_path, portable_root / "VC_redist.x64.exe")
 
 
 def write_portable_readme(portable_root: Path):
@@ -201,9 +317,9 @@ def write_portable_readme(portable_root: Path):
 目录说明:
 - python/: 内置 Python 运行环境
 - models/: 本地模型目录
-- backend/: 后端逻辑与 FFmpeg/TTS 依赖
-- Qwen3-ASR/: Qwen ASR 代码与资源
-- .env_cache/: 依赖版本切换缓存
+- services/media_pipeline/: 后端逻辑与运行桥接代码
+- models/asr/qwen3/: Qwen ASR 资源
+- storage/cache/env/: 依赖版本切换缓存
 
 注意事项:
 - 请将整个目录保存在本地磁盘，不要只拷贝 VideoSync.exe
@@ -237,36 +353,28 @@ VideoSync/
   VideoSync.exe
   python/
   models/
-  backend/
-  Qwen3-ASR/
+  services/
+    media_pipeline/
   ...
 
 说明：
-- backend/ 和 Qwen3-ASR/ 已包含在程序包内
+- services/media_pipeline/ 已包含在程序包内
 - ffmpeg 等后端资源已随程序提供
 - 若缺少 python/ 或 models/，相关功能将无法运行
 """
     readme_path.write_text(content, encoding="utf-8")
 
 
-def build_portable_layout(root_dir: Path, layout_root: Path, include_models: bool = True):
+def build_portable_layout(layout: ProjectLayout, layout_root: Path, include_models: bool = True):
     """构建完整便携目录"""
-    ui_dir = root_dir / "ui"
-    win_unpacked = ui_dir / "release" / "win-unpacked"
-    python_env = root_dir / "python"
-    models_dir = root_dir / "models"
-    env_cache = root_dir / ".env_cache"
-    qwen_asr_dir = root_dir / "Qwen3-ASR"
-
-    if not run_npm_build(ui_dir):
+    win_unpacked = run_npm_build(layout.ui_dir, output_dir_name="release-package", dir_only=True)
+    if not win_unpacked:
         return None
 
-    if not win_unpacked.exists():
-        raise FileNotFoundError(f"找不到构建输出目录: {win_unpacked}")
-    if not python_env.exists():
-        raise FileNotFoundError(f"找不到 Python 环境: {python_env}")
-    if include_models and not models_dir.exists():
-        raise FileNotFoundError(f"找不到模型目录: {models_dir}")
+    if not layout.python_dir.exists():
+        raise FileNotFoundError(f"找不到 Python 环境: {layout.python_dir}")
+    if include_models and not layout.models_dir.exists():
+        raise FileNotFoundError(f"找不到模型目录: {layout.models_dir}")
 
     if layout_root.exists():
         print_info(f"清理旧便携目录: {layout_root}")
@@ -276,18 +384,19 @@ def build_portable_layout(root_dir: Path, layout_root: Path, include_models: boo
 
     print_header("构建便携目录")
     copy_tree_with_progress(win_unpacked, layout_root, "程序主体")
-    copy_tree_with_progress(python_env, layout_root / "python", "Python 环境")
+    copy_tree_with_progress(layout.python_dir, layout_root / "python", "Python 环境")
 
     if include_models:
-        copy_tree_with_progress(models_dir, layout_root / "models", "模型目录")
+        copy_tree_with_progress(layout.models_dir, layout_root / "models", "模型目录")
 
-    if qwen_asr_dir.exists() and not (layout_root / "Qwen3-ASR").exists():
-        copy_tree_with_progress(qwen_asr_dir, layout_root / "Qwen3-ASR", "Qwen3-ASR 资源")
+    qwen_target_dir = layout_root / "models" / "asr" / "qwen3"
+    if layout.qwen_asr_dir.exists() and not qwen_target_dir.exists():
+        copy_tree_with_progress(layout.qwen_asr_dir, qwen_target_dir, "Qwen3-ASR 资源")
 
-    if env_cache.exists() and any(env_cache.iterdir()):
-        copy_tree_with_progress(env_cache, layout_root / ".env_cache", "依赖版本缓存")
+    if layout.env_cache_dir.exists() and any(layout.env_cache_dir.iterdir()):
+        copy_tree_with_progress(layout.env_cache_dir, layout_root / "storage" / "cache" / "env", "依赖版本缓存")
 
-    prepare_common_runtime_files(root_dir, layout_root)
+    prepare_common_runtime_files(layout, layout_root)
     write_portable_readme(layout_root)
     return layout_root
 
@@ -304,14 +413,15 @@ def get_version(ui_dir: Path) -> str:
 
 def build_full_portable(root_dir: Path):
     """构建全量便携包"""
-    version = get_version(root_dir / "ui")
+    layout = build_project_layout(root_dir)
+    version = get_version(layout.ui_dir)
     print_header(f"构建全量便携包 v{version}")
     
-    portable_dir = root_dir / "ui" / "release" / f"VideoSync_v{version}_Portable"
+    portable_dir = layout.ui_release_dir / f"VideoSync_v{version}_Portable"
     output_file = root_dir / f"VideoSync_v{version}_Full_Portable.zip"
 
     try:
-        built_layout = build_portable_layout(root_dir, portable_dir, include_models=True)
+        built_layout = build_portable_layout(layout, portable_dir, include_models=True)
     except Exception as e:
         print_error(f"构建便携目录失败: {e}")
         return
@@ -344,14 +454,15 @@ def build_full_portable(root_dir: Path):
 
 def build_portable_runtime_only(root_dir: Path):
     """构建无模型便携包"""
-    version = get_version(root_dir / "ui")
+    layout = build_project_layout(root_dir)
+    version = get_version(layout.ui_dir)
     print_header(f"构建无模型便携包 v{version}")
 
-    portable_dir = root_dir / "ui" / "release" / f"VideoSync_v{version}_Portable_NoModels"
+    portable_dir = layout.ui_release_dir / f"VideoSync_v{version}_Portable_NoModels"
     output_file = root_dir / f"VideoSync_v{version}_Portable_NoModels.zip"
 
     try:
-        built_layout = build_portable_layout(root_dir, portable_dir, include_models=False)
+        built_layout = build_portable_layout(layout, portable_dir, include_models=False)
     except Exception as e:
         print_error(f"构建便携目录失败: {e}")
         return
@@ -380,15 +491,15 @@ def build_portable_runtime_only(root_dir: Path):
 
 def build_program_only(root_dir: Path):
     """构建纯程序包（不含 python 和 models）"""
-    version = get_version(root_dir / "ui")
+    layout = build_project_layout(root_dir)
+    version = get_version(layout.ui_dir)
     print_header(f"构建纯程序包 v{version}")
 
-    ui_dir = root_dir / "ui"
-    win_unpacked = ui_dir / "release" / "win-unpacked"
-    portable_dir = ui_dir / "release" / f"VideoSync_v{version}_ProgramOnly"
+    portable_dir = layout.ui_release_dir / f"VideoSync_v{version}_ProgramOnly"
     output_file = root_dir / f"VideoSync_v{version}_ProgramOnly.zip"
 
-    if not run_npm_build(ui_dir):
+    win_unpacked = run_npm_build(layout.ui_dir)
+    if not win_unpacked:
         return
 
     if not win_unpacked.exists():
@@ -427,20 +538,16 @@ def build_program_only(root_dir: Path):
 
 def build_update_patch(root_dir: Path):
     """构建轻量更新补丁"""
-    version = get_version(root_dir / "ui")
+    layout = build_project_layout(root_dir)
+    version = get_version(layout.ui_dir)
     print_header(f"构建轻量更新补丁 v{version}")
     
-    ui_dir = root_dir / "ui"
-    win_unpacked = ui_dir / "release" / "win-unpacked"
+    ui_dir = layout.ui_dir
     output_file = root_dir / f"VideoSync_v{version}_Update_Patch.zip"
     
     # 1. 构建
-    if not run_npm_build(ui_dir):
-        return
-    
-    # 2. 检查目录
-    if not win_unpacked.exists():
-        print_error(f"找不到构建输出目录: {win_unpacked}")
+    win_unpacked = run_npm_build(ui_dir, output_dir_name="release-patch", dir_only=True)
+    if not win_unpacked:
         return
     
     # 3. 清理旧文件
@@ -454,10 +561,9 @@ def build_update_patch(root_dir: Path):
         print_info("正在包含 requirements.txt...")
         shutil.copy2(req_file, win_unpacked / "requirements.txt")
     
-    vc_redist = root_dir / "VC_redist.x64.exe"
-    if vc_redist.exists():
+    if layout.vc_redist_path.exists():
         print_info("正在包含 VC++ Runtime 安装程序...")
-        shutil.copy2(vc_redist, win_unpacked / "VC_redist.x64.exe")
+        shutil.copy2(layout.vc_redist_path, win_unpacked / "VC_redist.x64.exe")
 
     
     # 5. 打包
@@ -477,14 +583,14 @@ def build_installer(root_dir: Path):
     """构建傻瓜式更新包"""
     print_header("构建傻瓜式一键更新包")
     
-    ui_dir = root_dir / "ui"
+    layout = build_project_layout(root_dir)
     
     # 1. 构建
-    if not run_npm_build(ui_dir):
+    win_unpacked = run_npm_build(layout.ui_dir, output_dir_name="release", dir_only=False)
+    if not win_unpacked:
         return
     
     # 2. 准备辅助文件
-    win_unpacked = ui_dir / "release" / "win-unpacked"
     req_file = root_dir / "requirements.txt"
     if req_file.exists() and win_unpacked.exists():
         print_info("正在包含 requirements.txt...")
@@ -513,15 +619,14 @@ def build_installer(root_dir: Path):
         print_info("请确保已安装 Inno Setup 6。如果已安装，请尝试将安装目录添加到系统环境变量 PATH 中。")
         return
     
-    iss_file = root_dir / "patch_installer.iss"
-    if not iss_file.exists():
-        print_error(f"未找到安装脚本: {iss_file}")
+    if not layout.installer_script_path.exists():
+        print_error(f"未找到安装脚本: {layout.installer_script_path}")
         return
     
     print_info("正在调用 Inno Setup...")
     try:
         result = subprocess.run(
-            [str(iscc_path), str(iss_file)],
+            [str(iscc_path), str(layout.installer_script_path)],
             cwd=root_dir,
             capture_output=True,
             text=True
@@ -531,7 +636,7 @@ def build_installer(root_dir: Path):
             print(result.stdout)
             print(result.stderr)
             return
-        print_success(f"一键更新包已生成，请查看 ui/release/ 目录")
+        print_success(f"一键更新包已生成，请查看 {layout.ui_release_dir} 目录")
     except Exception as e:
         print_error(f"编译失败: {e}")
 
@@ -540,14 +645,15 @@ def clean_build_artifacts(root_dir: Path):
     """清理构建产物"""
     print_header("清理构建产物")
     
-    ui_dir = root_dir / "ui"
-    backend_dir = root_dir / "backend"
+    layout = build_project_layout(root_dir)
     
     # 清理 UI 构建产物
     dirs_to_clean = [
-        ui_dir / "dist",
-        ui_dir / "dist-electron",
-        ui_dir / "release"
+        layout.ui_dir / "dist",
+        layout.ui_dir / "dist-electron",
+        layout.ui_dir / "release",
+        layout.ui_dir / "release-package",
+        layout.ui_dir / "release-patch",
     ]
     
     for dir_path in dirs_to_clean:
@@ -562,10 +668,10 @@ def clean_build_artifacts(root_dir: Path):
     
     # 清理 Python 缓存
     print_info("清理 Python 缓存...")
-    for pycache in backend_dir.rglob("__pycache__"):
+    for pycache in layout.backend_dir.rglob("__pycache__"):
         shutil.rmtree(pycache)
     
-    for pyc in backend_dir.rglob("*.pyc"):
+    for pyc in layout.backend_dir.rglob("*.pyc"):
         pyc.unlink()
     
     print_success("清理完成！")
@@ -576,15 +682,15 @@ def main():
     cwd_root = Path(os.getcwd()).resolve()
     script_root = Path(__file__).resolve().parent
 
-    if (cwd_root / "ui").exists() and (cwd_root / "backend").exists():
+    if get_ui_dir(cwd_root).exists() and get_backend_dir(cwd_root).exists():
         root_dir = cwd_root
-    elif (script_root / "ui").exists() and (script_root / "backend").exists():
+    elif get_ui_dir(script_root).exists() and get_backend_dir(script_root).exists():
         root_dir = script_root
         if cwd_root != script_root:
             print_info(f"检测到当前工作目录无效，已自动切换到脚本目录: {script_root}")
     else:
         print_error(f"当前目录 {cwd_root} 不是有效的 VideoSync 项目根目录！")
-        print_info("请在项目根目录下运行此脚本（包含 ui/ 和 backend/ 文件夹的目录）")
+        print_info("请在项目根目录下运行此脚本（包含桌面端 UI 与后端服务源码的目录）")
         input("\n按回车键退出...")
         return
     

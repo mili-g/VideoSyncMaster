@@ -1,0 +1,95 @@
+{
+  "name": "videosync",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build && electron-builder",
+    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.64",
+    "@types/react-dom": "^18.2.21",
+    "@typescript-eslint/eslint-plugin": "^7.1.1",
+    "@typescript-eslint/parser": "^7.1.1",
+    "@vitejs/plugin-react": "^4.2.1",
+    "electron": "^30.0.1",
+    "electron-builder": "^24.13.3",
+    "eslint": "^8.57.0",
+    "eslint-plugin-react-hooks": "^4.6.0",
+    "eslint-plugin-react-refresh": "^0.4.5",
+    "javascript-obfuscator": "^5.1.0",
+    "rollup-plugin-javascript-obfuscator": "^1.0.4",
+    "typescript": "^5.2.2",
+    "vite": "^5.1.6",
+    "vite-plugin-electron": "^0.28.6",
+    "vite-plugin-electron-renderer": "^0.14.5"
+  },
+  "main": "dist-electron/main.js",
+  "build": {
+    "productName": "VideoSync",
+    "appId": "com.videosync.app",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": "7z",
+      "icon": "dist/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "dist/icon.ico",
+      "uninstallerIcon": "dist/icon.ico",
+      "deleteAppDataOnUninstall": true
+    },
+    "extraFiles": [
+      {
+        "from": "../../../resources/media_tools",
+        "to": "resources/media_tools",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "../../../resources/packaging/runtime/VC_redist.x64.exe",
+        "to": "VC_redist.x64.exe"
+      },
+      {
+        "from": "../../../services/media_pipeline",
+        "to": "services/media_pipeline",
+        "filter": [
+          "**/*",
+          "!**/__pycache__/**",
+          "!**/*.pyc",
+          "!**/*.pyd",
+          "!**/*.so"
+        ]
+      },
+      {
+        "from": "../../../models/asr/qwen3",
+        "to": "models/asr/qwen3",
+        "filter": [
+          "**/*",
+          "!**/__pycache__/**",
+          "!**/*.pyc"
+        ]
+      },
+      {
+        "from": "../../../requirements.txt",
+        "to": "requirements.txt"
+      },
+      {
+        "from": "../../../requirements.txt",
+        "to": "services/media_pipeline/requirements.txt"
+      }
+    ]
+  }
+}

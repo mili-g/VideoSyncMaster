@@ -1,6 +1,7 @@
 # --- Python ---
 __pycache__/
 *.py[cod]
+*.pyc
 *$py.class
 *.so
 .Python
@@ -28,13 +29,12 @@ venv/
 env/
 ENV/
 python/
+runtime/python/
 python.zip
-backend/ffmpeg/
 
 # --- Models & Large Files (CRITICAL) ---
 models/
-!backend/indextts/utils/maskgct/models/
-backend/models/
+!services/media_pipeline/indextts/utils/maskgct/models/
 *.pth
 *.pt
 *.bin
@@ -46,16 +46,25 @@ backend/models/
 # --- Logs & Debug ---
 *.log
 logs/
+storage/logs/
 backend_debug.log
 _debug_raw.json
 _debug_final.json
+*.raw_asr.json
+*_raw.json
+*_raw.srt
+*_debug_repaired.json
+*_debug_final.json
 
 # --- Output & Cache ---
 output/
+cache/
+storage/output/
+storage/cache/
+storage/temp/
 .cache/
 .env_cache/
 backend/.cache/
-ui/.cache/
 
 # --- Video & Audio Data ---
 *.mp4
@@ -68,10 +77,13 @@ ui/.cache/
 
 # --- Electron / Node.js ---
 node_modules/
-ui/node_modules/
-ui/dist/
-ui/dist-electron/
-ui/release/
+apps/desktop/ui/node_modules/
+apps/desktop/ui/dist/
+apps/desktop/ui/dist-electron/
+apps/desktop/ui/release/
+apps/desktop/ui/release-package/
+apps/desktop/ui/release-patch/
+*.tsbuildinfo
 npm-debug.log
 yarn-error.log
 pnpm-debug.log
@@ -102,13 +114,14 @@ setup_script.iss
 
 # --- Private Build Scripts ---
 package.py
-
-voice-pro/
-
-VideoCaptioner/
-
-
 node-v22.16.0-x64.msi
-package_app.py
 patch_installer.iss
-ui copy
+
+# --- Notebook / Local Cache ---
+.ipynb_checkpoints/
+.vite/
+
+# --- Large Runtime DLLs not tracked in git ---
+resources/media_tools/faster_whisper/Faster-Whisper-XXL/_xxl_data/onnxruntime/capi/onnxruntime_providers_cuda.dll
+resources/media_tools/faster_whisper/Faster-Whisper-XXL/_xxl_data/llvmlite/binding/llvmlite.dll
+resources/media_tools/faster_whisper/Faster-Whisper-XXL/_xxl_data/ctranslate2/ctranslate2.dll

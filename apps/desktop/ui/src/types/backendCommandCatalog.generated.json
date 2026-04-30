@@ -1,0 +1,323 @@
+{
+  "version": 1,
+  "generated_from": "services/media_pipeline/vsm/app/contracts/command_catalog.py",
+  "commands": [
+    {
+      "name": "test_asr",
+      "description": "Run ASR on input media and return subtitle segments.",
+      "category": "recognition",
+      "json_supported": true,
+      "args": [
+        {
+          "name": "input",
+          "required": true,
+          "description": "Source media path"
+        },
+        {
+          "name": "asr",
+          "required": false,
+          "description": "ASR engine name"
+        },
+        {
+          "name": "ori_lang",
+          "required": false,
+          "description": "Original language hint"
+        },
+        {
+          "name": "output_dir",
+          "required": false,
+          "description": "Intermediate output directory"
+        }
+      ]
+    },
+    {
+      "name": "translate_text",
+      "description": "Translate plain text or subtitle JSON into target language.",
+      "category": "translation",
+      "json_supported": true,
+      "args": [
+        {
+          "name": "input",
+          "required": true,
+          "description": "Source text or subtitle JSON"
+        },
+        {
+          "name": "lang",
+          "required": true,
+          "description": "Target language"
+        }
+      ]
+    },
+    {
+      "name": "test_tts",
+      "description": "Synthesize a preview TTS audio clip.",
+      "category": "tts",
+      "json_supported": true,
+      "args": [
+        {
+          "name": "input",
+          "required": true,
+          "description": "Text to synthesize"
+        },
+        {
+          "name": "output",
+          "required": true,
+          "description": "Output audio path"
+        },
+        {
+          "name": "tts_service",
+          "required": false,
+          "description": "TTS engine name"
+        },
+        {
+          "name": "lang",
+          "required": false,
+          "description": "Target language"
+        }
+      ]
+    },
+    {
+      "name": "test_align",
+      "description": "Align a single audio clip to a target duration.",
+      "category": "audio",
+      "json_supported": true,
+      "args": [
+        {
+          "name": "input",
+          "required": true,
+          "description": "Source audio path"
+        },
+        {
+          "name": "output",
+          "required": true,
+          "description": "Aligned audio output path"
+        },
+        {
+          "name": "duration",
+          "required": true,
+          "description": "Target duration in seconds"
+        }
+      ]
+    },
+    {
+      "name": "merge_video",
+      "description": "Merge generated dubbing audio segments back into the source video.",
+      "category": "render",
+      "json_supported": true,
+      "args": [
+        {
+          "name": "input",
+          "required": true,
+          "description": "Source video path"
+        },
+        {
+          "name": "ref",
+          "required": true,
+          "description": "Segment JSON path"
+        },
+        {
+          "name": "output",
+          "required": true,
+          "description": "Rendered video output path"
+        },
+        {
+          "name": "strategy",
+          "required": false,
+          "description": "Video sync strategy"
+        },
+        {
+          "name": "audio_mix_mode",
+          "required": false,
+          "description": "Audio mix policy"
+        }
+      ]
+    },
+    {
+      "name": "analyze_video",
+      "description": "Inspect source media metadata for preview and diagnostics.",
+      "category": "media",
+      "json_supported": true,
+      "args": [
+        {
+          "name": "input",
+          "required": true,
+          "description": "Source media path"
+        }
+      ]
+    },
+    {
+      "name": "transcode_video",
+      "description": "Transcode media into a preview-compatible format.",
+      "category": "media",
+      "json_supported": true,
+      "args": [
+        {
+          "name": "input",
+          "required": true,
+          "description": "Source media path"
+        },
+        {
+          "name": "output",
+          "required": true,
+          "description": "Transcoded media output path"
+        }
+      ]
+    },
+    {
+      "name": "dub_video",
+      "description": "Run end-to-end dubbing workflow in a single backend command.",
+      "category": "workflow",
+      "json_supported": true,
+      "args": [
+        {
+          "name": "input",
+          "required": true,
+          "description": "Source video path"
+        },
+        {
+          "name": "output",
+          "required": true,
+          "description": "Dubbed video output path"
+        },
+        {
+          "name": "lang",
+          "required": false,
+          "description": "Target language"
+        }
+      ]
+    },
+    {
+      "name": "check_audio_files",
+      "description": "Validate generated audio artifacts and return detected durations.",
+      "category": "diagnostics",
+      "json_supported": true,
+      "args": [
+        {
+          "name": "input",
+          "required": true,
+          "description": "Audio path or JSON list"
+        }
+      ]
+    },
+    {
+      "name": "generate_single_tts",
+      "description": "Generate dubbing audio for a single subtitle segment.",
+      "category": "tts",
+      "json_supported": true,
+      "args": [
+        {
+          "name": "input",
+          "required": true,
+          "description": "Source media path"
+        },
+        {
+          "name": "output",
+          "required": true,
+          "description": "Generated audio output path"
+        },
+        {
+          "name": "text",
+          "required": true,
+          "description": "Subtitle text"
+        },
+        {
+          "name": "duration",
+          "required": true,
+          "description": "Duration budget in seconds"
+        }
+      ]
+    },
+    {
+      "name": "generate_batch_tts",
+      "description": "Generate dubbing audio for a subtitle segment batch.",
+      "category": "tts",
+      "json_supported": true,
+      "args": [
+        {
+          "name": "input",
+          "required": true,
+          "description": "Source media path"
+        },
+        {
+          "name": "output",
+          "required": true,
+          "description": "Audio output directory"
+        },
+        {
+          "name": "ref",
+          "required": true,
+          "description": "Subtitle segment JSON path"
+        },
+        {
+          "name": "lang",
+          "required": false,
+          "description": "Target language"
+        }
+      ]
+    },
+    {
+      "name": "prepare_reference_audio",
+      "description": "Prepare or extract a stable reference audio sample for narration flows.",
+      "category": "tts",
+      "json_supported": true,
+      "args": [
+        {
+          "name": "input",
+          "required": true,
+          "description": "Source media path"
+        },
+        {
+          "name": "ref",
+          "required": true,
+          "description": "Reference subtitle JSON path"
+        },
+        {
+          "name": "output",
+          "required": true,
+          "description": "Working directory"
+        }
+      ]
+    },
+    {
+      "name": "warmup_tts_runtime",
+      "description": "Warm up or switch the active TTS runtime and model profile.",
+      "category": "runtime",
+      "json_supported": true,
+      "args": [
+        {
+          "name": "tts_service",
+          "required": true,
+          "description": "TTS engine name"
+        },
+        {
+          "name": "tts_model_profile",
+          "required": false,
+          "description": "Model profile identifier"
+        }
+      ]
+    },
+    {
+      "name": "switch_runtime_profile",
+      "description": "Switch backend dependency/runtime profile before model execution.",
+      "category": "runtime",
+      "json_supported": true,
+      "args": [
+        {
+          "name": "runtime_profile",
+          "required": false,
+          "description": "Runtime profile: auto, current, qwen3, indextts"
+        },
+        {
+          "name": "tts_service",
+          "required": false,
+          "description": "Optional TTS service hint"
+        },
+        {
+          "name": "asr",
+          "required": false,
+          "description": "Optional ASR service hint"
+        }
+      ]
+    }
+  ]
+}

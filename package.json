@@ -4,11 +4,22 @@
     "description": "Root package for VideoSync project management",
     "private": true,
     "scripts": {
-        "dev": "cd ui && npm run dev",
-        "build": "cd ui && npm run build",
-        "install:ui": "cd ui && npm install",
-        "lint": "cd ui && npm run lint",
-        "preview": "cd ui && npm run preview"
+        "dev": "npm --prefix apps/desktop/ui run dev",
+        "build": "npm --prefix apps/desktop/ui run build",
+        "clean": "python scripts/clean_workspace.py",
+        "clean:deep": "python scripts/clean_workspace.py --include-runtime-caches",
+        "install:ui": "npm --prefix apps/desktop/ui install",
+        "lint": "npm --prefix apps/desktop/ui run lint",
+        "lint:ui": "npm --prefix apps/desktop/ui run lint",
+        "preview": "npm --prefix apps/desktop/ui run preview",
+        "sync:backend-contracts": "python scripts/export_backend_command_catalog.py",
+        "check:backend-contracts": "python scripts/export_backend_command_catalog.py --check",
+        "check:frontend-backend-contracts": "python scripts/check_frontend_backend_contracts.py",
+        "test:backend": "python -m unittest discover -s tests/unit -p \"test_*.py\"",
+        "check:backend": "python -m compileall services/media_pipeline/bootstrap services/media_pipeline/vsm",
+        "check:runtime": "python scripts/run_runtime_diagnostics.py",
+        "check:asr": "python scripts/run_asr_diagnostics.py",
+        "validate": "npm run check:backend-contracts && npm run check:frontend-backend-contracts && npm run test:backend && npm run check:backend"
     },
     "keywords": [
         "videosync",
