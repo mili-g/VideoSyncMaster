@@ -225,9 +225,35 @@ def configure_models_environment(models_hub_dir: str) -> None:
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
 
+def _get_ffmpeg_search_roots(project_root: str) -> list[str]:
+    candidates = [
+        os.path.join(project_root, "resources", "media_tools", "ffmpeg", "bin"),
+        os.path.join(project_root, "resources", "media_tools", "ffmpeg"),
+        os.path.join(project_root, "resources", "media_tools", "faster_whisper", "Faster-Whisper-XXL"),
+        os.path.join(project_root, "resources", "media_tools", "faster_whisper"),
+    ]
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        absolute = os.path.abspath(candidate)
+        if absolute in seen:
+            continue
+        seen.add(absolute)
+        normalized.append(absolute)
+    return normalized
+
+
 def ensure_portable_ffmpeg(app_root: str, logger: logging.Logger) -> str:
+    ffmpeg_name = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
     ffmpeg_bin = get_media_tool_bin_dir(app_root, "ffmpeg")
-    ffmpeg_executable = os.path.join(ffmpeg_bin, "ffmpeg.exe" if os.name == "nt" else "ffmpeg")
+    ffmpeg_executable = os.path.join(ffmpeg_bin, ffmpeg_name)
+    if not os.path.exists(ffmpeg_executable):
+        for candidate in _get_ffmpeg_search_roots(app_root):
+            candidate_executable = os.path.join(candidate, ffmpeg_name)
+            if os.path.exists(candidate_executable):
+                ffmpeg_bin = candidate
+                ffmpeg_executable = candidate_executable
+                break
     if os.path.exists(ffmpeg_executable):
         log_business(
             logger,

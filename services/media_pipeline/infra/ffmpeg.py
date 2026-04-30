@@ -10,10 +10,35 @@ def _backend_root() -> str:
     return os.path.dirname(os.path.abspath(sys.executable)) if sys_frozen else os.path.dirname(os.path.abspath(__file__))
 
 
+def _get_ffmpeg_search_roots(project_root: str) -> list[str]:
+    candidates = [
+        os.path.join(project_root, "resources", "media_tools", "ffmpeg", "bin"),
+        os.path.join(project_root, "resources", "media_tools", "ffmpeg"),
+        os.path.join(project_root, "resources", "media_tools", "faster_whisper", "Faster-Whisper-XXL"),
+        os.path.join(project_root, "resources", "media_tools", "faster_whisper"),
+    ]
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        absolute = os.path.abspath(candidate)
+        if absolute in seen:
+            continue
+        seen.add(absolute)
+        normalized.append(absolute)
+    return normalized
+
+
 def get_ffmpeg_bin_dir() -> str:
     backend_root = _backend_root()
     project_root = get_project_root(backend_root)
-    return get_media_tool_bin_dir(project_root, "ffmpeg")
+    default_bin = get_media_tool_bin_dir(project_root, "ffmpeg")
+    executable_name = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
+    if os.path.exists(os.path.join(default_bin, executable_name)):
+        return default_bin
+    for candidate in _get_ffmpeg_search_roots(project_root):
+        if os.path.exists(os.path.join(candidate, executable_name)):
+            return candidate
+    return default_bin
 
 
 def resolve_ffmpeg_executable() -> str:
