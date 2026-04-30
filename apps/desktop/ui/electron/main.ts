@@ -2882,9 +2882,28 @@ def flatten_single_nested_dir(root_dir):
     shutil.rmtree(nested_path, ignore_errors=True)
 
 def stream_download(download_url, destination_path, label):
+    def cleanup_temp_file(file_path):
+        if not os.path.exists(file_path):
+            return
+        last_error = None
+        for delay_seconds in (0.2, 0.5, 1.0, 1.5, 2.0):
+            try:
+                os.remove(file_path)
+                return
+            except OSError as exc:
+                last_error = exc
+                time.sleep(delay_seconds)
+        parked_path = f"{file_path}.stale-{int(time.time() * 1000)}"
+        try:
+            os.replace(file_path, parked_path)
+            print(f"NOTE:{label}:已停放残留临时文件 {os.path.basename(parked_path)}", flush=True)
+            return
+        except OSError as exc:
+            raise RuntimeError(f"无法清理临时文件 {file_path}: {last_error or exc}") from exc
+
     temp_path = destination_path + ".part"
     if os.path.exists(temp_path):
-        os.remove(temp_path)
+        cleanup_temp_file(temp_path)
 
     max_attempts = 3
     chunk_size = 1024 * 1024
@@ -2915,10 +2934,7 @@ def stream_download(download_url, destination_path, label):
             return
         except Exception as exc:
             if os.path.exists(temp_path):
-                try:
-                    os.remove(temp_path)
-                except OSError:
-                    pass
+                cleanup_temp_file(temp_path)
             if attempt >= max_attempts:
                 raise RuntimeError(f"{label} 下载失败，已重试 {max_attempts} 次：{exc}") from exc
             print(f"RETRY:{attempt}:{label}:{exc}", flush=True)
@@ -3345,6 +3361,25 @@ try:
                 print(f"PROGRESS:{percent}:{summary}", flush=True)
                 progress_state['last_percent'] = percent
 
+        def cleanup_temp_file(file_path, current_file):
+            if not os.path.exists(file_path):
+                return
+            last_error = None
+            for delay_seconds in (0.2, 0.5, 1.0, 1.5, 2.0):
+                try:
+                    os.remove(file_path)
+                    return
+                except OSError as exc:
+                    last_error = exc
+                    time.sleep(delay_seconds)
+            parked_path = f"{file_path}.stale-{int(time.time() * 1000)}"
+            try:
+                os.replace(file_path, parked_path)
+                emit_progress(current_file, f"已停放残留临时文件 {os.path.basename(parked_path)}")
+                return
+            except OSError as exc:
+                raise RuntimeError(f'无法清理临时文件 {file_path}: {last_error or exc}') from exc
+
         headers = build_hf_headers()
         for index, item in enumerate(siblings, start=1):
             filename = item.rfilename
@@ -3360,7 +3395,7 @@ try:
 
             temp_path = final_path + '.part'
             if os.path.exists(temp_path):
-                os.remove(temp_path)
+                cleanup_temp_file(temp_path, filename)
 
             file_downloaded = 0
             emit_progress(filename, '准备下载')
@@ -3396,10 +3431,7 @@ try:
                     downloaded_bytes -= file_downloaded
                     file_downloaded = 0
                     if os.path.exists(temp_path):
-                        try:
-                            os.remove(temp_path)
-                        except OSError:
-                            pass
+                        cleanup_temp_file(temp_path, filename)
                     if attempt >= max_attempts:
                         raise RuntimeError(f'{filename} 下载失败，已重试 {max_attempts} 次：{download_error}') from download_error
                     emit_progress(filename, f'重试 {attempt}/{max_attempts}')
