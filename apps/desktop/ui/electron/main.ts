@@ -3341,11 +3341,12 @@ try:
             else:
                 percent = min(100, int(file_index * 100 / file_count))
                 summary = f"{current_file} | {status_text}"
-            if percent != progress_state['last_percent'] or status_text.startswith('准备') or status_text.startswith('完成') or status_text.startswith('跳过'):
+            if percent != progress_state['last_percent'] or status_text.startswith('准备') or status_text.startswith('完成') or status_text.startswith('跳过') or status_text.startswith('继续') or status_text.startswith('重试'):
                 print(f"PROGRESS:{percent}:{summary}", flush=True)
                 progress_state['last_percent'] = percent
 
         headers = build_hf_headers()
+        session = requests.Session()
         for index, item in enumerate(siblings, start=1):
             filename = item.rfilename
             file_size = int(getattr(item, 'size', 0) or 0)
@@ -3359,21 +3360,41 @@ try:
                 continue
 
             temp_path = final_path + '.part'
+            resume_bytes = 0
             if os.path.exists(temp_path):
-                os.remove(temp_path)
+                resume_bytes = os.path.getsize(temp_path)
+                if file_size > 0 and resume_bytes > file_size:
+                    os.remove(temp_path)
+                    resume_bytes = 0
 
-            file_downloaded = 0
-            emit_progress(filename, '准备下载')
+            file_downloaded = resume_bytes
+            if resume_bytes > 0:
+                downloaded_bytes += resume_bytes
+                resume_percent = int(file_downloaded * 100 / file_size) if file_size > 0 else 0
+                emit_progress(filename, f'继续下载 {max(resume_percent, 0)}%')
+            else:
+                emit_progress(filename, '准备下载')
             download_url = hf_hub_url(repo_id=repo_id, filename=filename)
-            last_file_percent = -1
+            last_file_percent = int(file_downloaded * 100 / file_size) if file_size > 0 else -1
             max_attempts = 3
             for attempt in range(1, max_attempts + 1):
+                attempt_start_bytes = file_downloaded
                 try:
-                    with requests.get(download_url, headers=headers, stream=True, timeout=(20, 120), allow_redirects=True) as response:
+                    request_headers = dict(headers)
+                    if file_downloaded > 0:
+                        request_headers['Range'] = f'bytes={file_downloaded}-'
+                    with session.get(download_url, headers=request_headers, stream=True, timeout=(30, 300), allow_redirects=True) as response:
                         response.raise_for_status()
-                        expected_size = int(response.headers.get('Content-Length', '0') or 0) or file_size
-                        file_downloaded = 0
-                        with open(temp_path, 'wb') as handle:
+                        if file_downloaded > 0 and response.status_code == 200:
+                            downloaded_bytes -= file_downloaded
+                            file_downloaded = 0
+                            attempt_start_bytes = 0
+                            if os.path.exists(temp_path):
+                                os.remove(temp_path)
+                            raise RuntimeError('server did not honor range request')
+                        expected_size = (int(response.headers.get('Content-Length', '0') or 0) + file_downloaded) or file_size
+                        open_mode = 'ab' if file_downloaded > 0 else 'wb'
+                        with open(temp_path, open_mode) as handle:
                             for chunk in response.iter_content(chunk_size=1024 * 1024):
                                 if not chunk:
                                     continue
@@ -3388,22 +3409,16 @@ try:
                         if expected_size > 0 and file_downloaded != expected_size:
                             raise RuntimeError(f'incomplete file: expected {expected_size} bytes, got {file_downloaded} bytes')
                     os.replace(temp_path, final_path)
-                    if file_size > 0 and file_downloaded != file_size:
-                        downloaded_bytes += max(file_size - file_downloaded, 0)
                     emit_progress(filename, '完成')
                     break
                 except Exception as download_error:
-                    downloaded_bytes -= file_downloaded
-                    file_downloaded = 0
-                    if os.path.exists(temp_path):
-                        try:
-                            os.remove(temp_path)
-                        except OSError:
-                            pass
+                    downloaded_bytes -= max(file_downloaded - attempt_start_bytes, 0)
+                    file_downloaded = attempt_start_bytes
                     if attempt >= max_attempts:
                         raise RuntimeError(f'{filename} 下载失败，已重试 {max_attempts} 次：{download_error}') from download_error
                     emit_progress(filename, f'重试 {attempt}/{max_attempts}')
                     time.sleep(min(5 * attempt, 10))
+        session.close()
     else:
         from modelscope.hub.snapshot_download import snapshot_download
         print("PROGRESS:0:准备连接 ModelScope", flush=True)

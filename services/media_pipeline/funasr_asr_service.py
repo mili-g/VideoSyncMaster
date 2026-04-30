@@ -149,7 +149,11 @@ def _download_hf_snapshot_if_needed(
         os.makedirs(parent_dir, exist_ok=True)
 
     print(f"[FunASR] Downloading {label} from Hugging Face: {repo_id}")
+    previous_hf_offline = os.environ.get("HF_HUB_OFFLINE")
+    previous_transformers_offline = os.environ.get("TRANSFORMERS_OFFLINE")
     try:
+        os.environ["HF_HUB_OFFLINE"] = "0"
+        os.environ["TRANSFORMERS_OFFLINE"] = "0"
         from huggingface_hub import snapshot_download
 
         resolved_dir = snapshot_download(
@@ -162,6 +166,16 @@ def _download_hf_snapshot_if_needed(
         if os.path.isdir(target_dir):
             shutil.rmtree(target_dir, ignore_errors=True)
         raise RuntimeError(f"Failed to download {label} from Hugging Face ({repo_id}): {error}") from error
+    finally:
+        if previous_hf_offline is None:
+            os.environ.pop("HF_HUB_OFFLINE", None)
+        else:
+            os.environ["HF_HUB_OFFLINE"] = previous_hf_offline
+
+        if previous_transformers_offline is None:
+            os.environ.pop("TRANSFORMERS_OFFLINE", None)
+        else:
+            os.environ["TRANSFORMERS_OFFLINE"] = previous_transformers_offline
 
     return resolved_dir if os.path.isdir(resolved_dir) else target_dir
 

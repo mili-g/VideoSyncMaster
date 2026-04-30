@@ -109,7 +109,7 @@ const downloadSpecs: Record<string, DownloadSpec> = {
         localDir: 'resources/media_tools/faster_whisper',
         genericFile: true,
         baseDir: 'project',
-        downloadUrl: 'https://github.com/Purfview/whisper-standalone-win/releases/download/Faster-Whisper-XXL/Faster-Whisper-XXL_r245.2_windows.7z'
+        downloadUrl: 'https://github.com/Purfview/whisper-standalone-win/releases/download/Faster-Whisper-XXL/Faster-Whisper-XXL_r245.4_windows.7z'
     },
     funasr_standard: {
         modelId: 'iic/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch',

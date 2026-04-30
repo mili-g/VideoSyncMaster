@@ -110,11 +110,27 @@ def get_media_tool_root(project_root: str, tool_name: str) -> str:
         os.path.join(project_root, "resources", "media_tools", tool_name),
         os.path.join(project_root, "backend", tool_name),
     ]
+    if tool_name == "ffmpeg":
+        for candidate in candidates:
+            if not os.path.isdir(candidate):
+                continue
+            candidate_bin = os.path.join(candidate, "bin")
+            if os.path.exists(os.path.join(candidate_bin, "ffmpeg.exe")) or os.path.exists(os.path.join(candidate_bin, "ffprobe.exe")):
+                return candidate
+            if os.path.exists(os.path.join(candidate, "ffmpeg.exe")) or os.path.exists(os.path.join(candidate, "ffprobe.exe")):
+                return candidate
     return first_existing_path(candidates) or candidates[0]
 
 
 def get_media_tool_bin_dir(project_root: str, tool_name: str) -> str:
-    return os.path.join(get_media_tool_root(project_root, tool_name), "bin")
+    tool_root = get_media_tool_root(project_root, tool_name)
+    bin_dir = os.path.join(tool_root, "bin")
+    if tool_name == "ffmpeg":
+        if os.path.exists(os.path.join(bin_dir, "ffmpeg.exe")) or os.path.exists(os.path.join(bin_dir, "ffprobe.exe")):
+            return bin_dir
+        if os.path.exists(os.path.join(tool_root, "ffmpeg.exe")) or os.path.exists(os.path.join(tool_root, "ffprobe.exe")):
+            return tool_root
+    return bin_dir
 
 
 def get_faster_whisper_runtime_search_roots(

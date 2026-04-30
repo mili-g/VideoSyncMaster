@@ -12,8 +12,10 @@ if os.path.exists(site_packages) and site_packages not in sys.path:
 
 from bootstrap.runtime_env import setup_gpu_paths
 from bootstrap.path_layout import get_faster_whisper_runtime_search_roots
+from ffmpeg_utils import ensure_portable_ffmpeg_in_path, resolve_ffmpeg_executable, resolve_ffprobe_executable
 
 setup_gpu_paths(logging.getLogger("asr.runtime"))
+ensure_portable_ffmpeg_in_path()
 
 # Lazy Imports
 import re
@@ -722,6 +724,9 @@ def run_asr(
             print(f"Extracting audio to {cached_audio}...")
             try:
                 from pydub import AudioSegment
+                AudioSegment.converter = resolve_ffmpeg_executable()
+                AudioSegment.ffmpeg = resolve_ffmpeg_executable()
+                AudioSegment.ffprobe = resolve_ffprobe_executable()
                 AudioSegment.from_file(audio_path).export(cached_audio, format="mp3")
                 audio_path = cached_audio
             except Exception as e:
