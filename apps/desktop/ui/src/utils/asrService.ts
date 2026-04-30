@@ -52,14 +52,14 @@ export const ASR_SERVICE_META: Record<AsrService, AsrServiceMeta> = {
         id: 'funasr',
         name: 'FunASR (本地)',
         shortName: 'FunASR',
-        description: '按官方推荐链路组合的中文识别引擎',
+        description: '中文优先的本地识别引擎，附带多语言备选档位',
         detailTitle: 'FunASR 本地识别',
-        detailBody: '使用 paraformer-zh + fsmn-vad + ct-punc 的官方组合，适合中文字幕主流程。',
+        detailBody: '默认使用 paraformer-zh + fsmn-vad + ct-punc 的中文链路，也可切换到 SenseVoiceSmall 多语言档位。',
         availability: 'ready',
         supportsTimedSubtitles: true,
         supportsWorkflowSubtitlePipeline: true,
         sourceLanguageMode: 'explicit_or_auto',
-        sourceLanguageDetail: '建议使用 Auto 或中文。当前接入采用中文 FunASR 官方模型组合，非中文素材不建议走该通道。'
+        sourceLanguageDetail: '中文字幕主流程建议使用中文档位并将源语言设为 Auto 或 中文；多语种素材可切换到 SenseVoiceSmall。'
     },
     qwen: {
         id: 'qwen',

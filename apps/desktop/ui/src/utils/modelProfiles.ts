@@ -16,8 +16,8 @@ export const ASR_MODEL_PROFILES: Record<AsrService, ModelProfileOption[]> = {
         { id: 'default', label: '云端默认', description: '由服务端自动选择，无需本地模型。' }
     ],
     funasr: [
-        { id: 'standard', label: 'Standard / SenseVoiceSmall', description: '多语言档位，适合中英混合与英文素材。' },
-        { id: 'zh', label: 'Chinese / paraformer-zh', description: '中文优先档位，使用 paraformer-zh、fsmn-vad 和 ct-punc。' }
+        { id: 'zh', label: 'Chinese / paraformer-zh', description: '默认中文优先档位，使用 paraformer-zh、fsmn-vad 和 ct-punc。' },
+        { id: 'standard', label: 'Standard / SenseVoiceSmall', description: '多语言档位，适合中英混合与英文素材。' }
     ],
     'faster-whisper': [
         { id: 'quality', label: 'Quality / large-v3', description: '高质量档位，适用于正式字幕生产。' },

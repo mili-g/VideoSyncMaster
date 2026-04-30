@@ -16,7 +16,7 @@ export default function FunAsrPanel({
                 <div className="config-section__head">
                     <div>
                         <h3>FunASR 运行参数</h3>
-                        <p>{isMultilingual ? '默认使用 SenseVoiceSmall 多语言模型。' : '当前使用 paraformer-zh 中文模型组合。'}</p>
+                        <p>{isMultilingual ? '当前使用 SenseVoiceSmall 多语言模型。' : '默认使用 paraformer-zh 中文模型组合。'}</p>
                     </div>
                     <div className="status-inline">{isMultilingual ? '多语言' : '中文优先'}</div>
                 </div>
@@ -25,8 +25,8 @@ export default function FunAsrPanel({
                     value={profileId}
                     onChange={onProfileChange}
                     options={[
-                        { value: 'standard', label: 'Standard / SenseVoiceSmall' },
-                        { value: 'zh', label: 'Chinese / paraformer-zh' }
+                        { value: 'zh', label: 'Chinese / paraformer-zh' },
+                        { value: 'standard', label: 'Standard / SenseVoiceSmall' }
                     ]}
                     hint={profileDescription}
                 />

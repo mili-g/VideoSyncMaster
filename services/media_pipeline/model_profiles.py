@@ -9,7 +9,7 @@ USER_HOME = os.path.expanduser("~")
 
 DEFAULT_ASR_MODEL_PROFILES = {
     "faster-whisper": "quality",
-    "funasr": "standard",
+    "funasr": "zh",
     "qwen": "standard",
     "vibevoice-asr": "standard",
     "jianying": "default",
