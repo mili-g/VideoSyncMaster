@@ -113,7 +113,7 @@ export function useDubbingWorkflow({
         return true;
     };
 
-    const getTtsBlockingReason = async (): Promise<string | null> => {
+    const getTtsBlockingReason = async (options?: { allowTimeoutBypass?: boolean }): Promise<string | null> => {
         try {
             const result = await Promise.race([
                 window.api.checkModelStatus() as Promise<ModelStatusResponse>,
@@ -149,11 +149,16 @@ export function useDubbingWorkflow({
 
             return readDetail('qwen_17b_base', 'Qwen3-TTS 1.7B Base 未就绪。');
         } catch (error: unknown) {
+            const detail = error instanceof Error ? error.message : String(error);
             logUiError('检查 TTS 通道可执行性失败', {
                 domain: 'workflow.tts',
                 action: 'getTtsBlockingReason',
-                detail: error instanceof Error ? error.message : String(error)
+                detail
             });
+            if (options?.allowTimeoutBypass && detail.includes('超时')) {
+                setStatus('模型状态检查超时，已直接启动批量配音。');
+                return null;
+            }
             return '无法确认当前 TTS 通道状态，请先在环境诊断页执行检查。';
         }
     };
@@ -164,6 +169,7 @@ export function useDubbingWorkflow({
             requireSegmentIndex?: number;
             emptySegmentsMessage?: string;
             checkingStatusText?: string;
+            allowModelStatusTimeoutBypass?: boolean;
         }
     ) => {
         setFeedback(null);
@@ -191,7 +197,9 @@ export function useDubbingWorkflow({
                 return { ok: false as const };
             }
 
-            const blockingReason = await getTtsBlockingReason();
+            const blockingReason = await getTtsBlockingReason({
+                allowTimeoutBypass: options?.allowModelStatusTimeoutBypass
+            });
             if (blockingReason) {
                 showBlockingFeedback(
                     'TTS 通道不可执行',
@@ -337,7 +345,8 @@ export function useDubbingWorkflow({
         const segmentsToUse = overrideSegments || translatedSegments;
         const preflight = await runDubbingPreflight(segmentsToUse, {
             emptySegmentsMessage: '当前没有可生成配音的翻译字幕，请先完成翻译或导入目标字幕。',
-            checkingStatusText: '正在检查批量配音前置条件...'
+            checkingStatusText: '正在检查批量配音前置条件...',
+            allowModelStatusTimeoutBypass: true
         });
         if (!preflight.ok) {
             return null;
