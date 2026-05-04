@@ -94,11 +94,19 @@ export function useDubbingWorkflow({
     const ensureSubtitleLanguagesBeforeDubbing = (segmentsToUse: Segment[]) => {
         const sourceValidation = validateSegmentLanguageFit(sourceSegments, asrOriLang, 'source');
         if (!sourceValidation.ok) {
+            const canBypassEmptySourceValidation = (
+                sourceSegments.length > 0
+                && Boolean(sourceValidation.reason?.includes('字幕内容为空'))
+            );
+            if (canBypassEmptySourceValidation) {
+                setStatus('原字幕文本为空，已跳过原字幕语言校验并继续配音。');
+            } else {
             showBlockingFeedback(
                 '原字幕语言不匹配',
                 sourceValidation.reason || '原字幕语言与当前配置不匹配。'
             );
             return false;
+            }
         }
 
         const translatedValidation = validateSegmentLanguageFit(segmentsToUse, targetLang, 'target');
