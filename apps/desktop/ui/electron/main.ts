@@ -6,6 +6,17 @@ import { spawn, exec, execFile, ChildProcess } from 'child_process'
 import fs from 'fs'
 
 const activeDownloads = new Map<string, ChildProcess>();
+type DownloadProgressPhase = 'preparing' | 'downloading' | 'extracting' | 'installing' | 'completed' | 'failed' | 'canceled'
+
+interface DownloadTaskSnapshot {
+  key: string
+  active: boolean
+  percent?: number
+  phase?: DownloadProgressPhase
+  message?: string
+}
+
+const downloadTaskSnapshots = new Map<string, DownloadTaskSnapshot>()
 const VERBOSE_MAIN_LOGS = process.env.VSM_VERBOSE_MAIN === '1'
 
 type MainLogLevel = 'info' | 'warn' | 'error' | 'debug'
@@ -254,16 +265,33 @@ function emitModelDownloadProgress(
   key: string,
   progress: {
     percent?: number
-    phase?: 'preparing' | 'downloading' | 'extracting' | 'installing' | 'completed' | 'failed' | 'canceled'
+    phase?: DownloadProgressPhase
     message?: string
   }
 ) {
-  sender.send('model-download-progress', {
+  const snapshot: DownloadTaskSnapshot = {
     key,
+    active: progress.phase !== 'completed' && progress.phase !== 'failed' && progress.phase !== 'canceled',
     percent: progress.percent,
     phase: progress.phase,
     message: progress.message
+  }
+  downloadTaskSnapshots.set(key, snapshot)
+  sender.send('model-download-progress', snapshot)
+}
+
+function markDownloadTaskStarted(key: string, message: string, phase: DownloadProgressPhase = 'preparing') {
+  downloadTaskSnapshots.set(key, {
+    key,
+    active: true,
+    percent: 0,
+    phase,
+    message
   })
+}
+
+function getDownloadTaskSnapshots() {
+  return Array.from(downloadTaskSnapshots.values())
 }
 
 function findFileInRoots(searchRoots: string[], candidateNames: string[]) {
@@ -2782,6 +2810,12 @@ app.whenReady().then(async () => {
 
       proc.kill(); // Fallback/Standard kill
       activeDownloads.delete(trackingKey);
+      downloadTaskSnapshots.set(trackingKey, {
+        key: trackingKey,
+        active: false,
+        phase: 'canceled',
+        message: '下载已取消'
+      });
       return { success: true };
     }
     return { success: false, error: 'Download not found' };
@@ -2803,9 +2837,22 @@ app.whenReady().then(async () => {
       }
       proc.kill();
       activeDownloads.delete(key);
+      downloadTaskSnapshots.set(key, {
+        key,
+        active: false,
+        phase: 'canceled',
+        message: '下载已取消'
+      });
       return { success: true };
     }
     return { success: false, error: 'Not found' };
+  });
+
+  ipcMain.handle('get-download-task-snapshots', async () => {
+    return {
+      success: true,
+      tasks: getDownloadTaskSnapshots()
+    };
   });
 
   // IPC Handler for Generic File Download (e.g. RIFE ncnn)
@@ -2948,6 +2995,7 @@ except Exception as e:
         });
 
         if (key) activeDownloads.set(key, proc);
+        if (key) markDownloadTaskStarted(key, `${name} 准备下载`);
 
         let output = '';
         let errorOut = '';
@@ -2991,6 +3039,12 @@ except Exception as e:
           if (code === 0 && output.includes('SUCCESS')) {
             resolve({ success: true });
           } else {
+            if (key) {
+              emitModelDownloadProgress(_event.sender, key, {
+                phase: 'failed',
+                message: `${name} 下载失败`
+              });
+            }
             resolve({ success: false, error: `Failed (Code ${code})\n${errorOut}\n${output}` });
           }
         });
@@ -3086,6 +3140,7 @@ print("SUCCESS", flush=True)
         });
 
         activeDownloads.set(trackingKey, proc);
+        markDownloadTaskStarted(trackingKey, '准备安装共享 Transformers 5.x ASR Runtime', 'installing');
         emitModelDownloadProgress(_event.sender, trackingKey, {
           percent: 0,
           phase: 'installing',
@@ -3175,6 +3230,7 @@ print("SUCCESS", flush=True)
         });
 
         activeDownloads.set(trackingKey, proc);
+        markDownloadTaskStarted(trackingKey, '准备安装 FunASR Python Runtime', 'installing');
         emitModelDownloadProgress(_event.sender, trackingKey, {
           percent: 0,
           phase: 'installing',
@@ -3420,6 +3476,7 @@ except Exception as e:
         });
 
         activeDownloads.set(trackingKey, proc);
+        markDownloadTaskStarted(trackingKey, `${model} 准备下载`);
 
         let output = '';
         let errorOut = '';
@@ -3470,6 +3527,10 @@ except Exception as e:
             });
             resolve({ success: true });
           } else {
+            emitModelDownloadProgress(_event.sender, trackingKey, {
+              phase: 'failed',
+              message: `${model} 下载失败`
+            });
             resolve({ success: false, error: `Process failed (Code ${code}). \n${errorOut}\n${output}` });
           }
         });

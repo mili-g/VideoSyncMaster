@@ -101,6 +101,9 @@ contextBridge.exposeInMainWorld('api', {
   runAsrDiagnostics() {
     return ipcRenderer.invoke('run-asr-diagnostics')
   },
+  getDownloadTaskSnapshots() {
+    return ipcRenderer.invoke('get-download-task-snapshots')
+  },
   downloadModel(payload: { key: string; model: string; localDir: string }) {
     return ipcRenderer.invoke('download-model', payload)
   },

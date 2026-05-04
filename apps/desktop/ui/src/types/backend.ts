@@ -89,9 +89,14 @@ export interface ModelStatusResponse extends BackendResponseBase {
 
 export interface ModelDownloadProgressEvent {
     key: string;
+    active?: boolean;
     percent?: number;
     phase?: 'preparing' | 'downloading' | 'extracting' | 'installing' | 'completed' | 'failed' | 'canceled';
     message?: string;
+}
+
+export interface DownloadTaskSnapshotsResponse extends BackendResponseBase {
+    tasks?: ModelDownloadProgressEvent[];
 }
 
 export interface AsrDiagnosticsCheck {

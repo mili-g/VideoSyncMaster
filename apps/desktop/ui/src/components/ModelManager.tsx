@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import ConfirmDialog from './ConfirmDialog';
 import type { BackendResponseBase, ModelDownloadProgressEvent, ModelStatusResponse } from '../types/backend';
 
@@ -270,38 +270,56 @@ const ModelManager: React.FC<ModelManagerProps> = ({ onStatusChange, onFeedback 
         }
     };
 
+    const applyDownloadEvent = useCallback((event: ModelDownloadProgressEvent) => {
+        if (!event?.key) {
+            return;
+        }
+        const percent = typeof event.percent === 'number'
+            ? Math.max(0, Math.min(100, Math.round(event.percent)))
+            : undefined;
+        const suffix = typeof event.percent === 'number'
+            ? ` ${percent}%`
+            : '';
+        const message = (event.message || '').trim();
+        const progress = message ? `${message}${message.includes('%') ? '' : suffix}` : `下载中${suffix}`;
+        setDownloadTasks((prev) => ({
+            ...prev,
+            [event.key]: {
+                active: typeof event.active === 'boolean'
+                    ? event.active
+                    : event.phase !== 'completed' && event.phase !== 'failed' && event.phase !== 'canceled',
+                progress,
+                percent,
+                phase: event.phase
+            }
+        }));
+    }, []);
+
     useEffect(() => {
         void checkStatus();
     }, []);
 
     useEffect(() => {
-        const offProgress = window.api.onModelDownloadProgress((payload) => {
-            const event = payload as ModelDownloadProgressEvent;
-            if (!event?.key) {
-                return;
-            }
-            const percent = typeof event.percent === 'number'
-                ? Math.max(0, Math.min(100, Math.round(event.percent)))
-                : undefined;
-            const suffix = typeof event.percent === 'number'
-                ? ` ${percent}%`
-                : '';
-            const message = (event.message || '').trim();
-            const progress = message ? `${message}${message.includes('%') ? '' : suffix}` : `下载中${suffix}`;
-            setDownloadTasks((prev) => ({
-                ...prev,
-                [event.key]: {
-                    active: event.phase !== 'completed' && event.phase !== 'failed' && event.phase !== 'canceled',
-                    progress,
-                    percent,
-                    phase: event.phase
+        void window.api.getDownloadTaskSnapshots()
+            .then((result) => {
+                if (!result?.success || !Array.isArray(result.tasks)) {
+                    return;
                 }
-            }));
+                for (const task of result.tasks) {
+                    applyDownloadEvent(task);
+                }
+            })
+            .catch((error) => {
+                console.error('Failed to restore download task snapshots', error);
+            });
+
+        const offProgress = window.api.onModelDownloadProgress((payload) => {
+            applyDownloadEvent(payload as ModelDownloadProgressEvent);
         });
         return () => {
             offProgress();
         };
-    }, []);
+    }, [applyDownloadEvent]);
 
     const handleDownload = async (modelKey: string) => {
         if (downloadTasks[modelKey]?.active) return;
