@@ -1,4 +1,5 @@
 import React from 'react';
+import { SUBTITLE_FILE_ACCEPT } from '../utils/subtitleFormats';
 
 export interface Segment {
     start: number;
@@ -216,7 +217,7 @@ const Timeline: React.FC<TimelineProps> = ({ segments, onUpdateSegment, onUpdate
                                     <>
                                         <input
                                             type="file"
-                                            accept=".srt"
+                                            accept={SUBTITLE_FILE_ACCEPT}
                                             id="timeline-upload-input"
                                             style={{ display: 'none' }}
                                             onChange={(e) => {

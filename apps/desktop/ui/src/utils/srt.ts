@@ -1,4 +1,5 @@
 import { Segment } from '../components/Timeline';
+import { parseSubtitleContent } from './subtitleFormats';
 
 export interface SrtSegment {
     start: number;
@@ -26,27 +27,5 @@ export function segmentsToSRT(segments: Segment[]): string {
 }
 
 export function parseSRTContent(text: string): SrtSegment[] {
-    const normalizedText = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-    const regex = /(\d+)\s*\n\s*(\d{2}:\d{2}:\d{2}[,.]\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}[,.]\d{3})\s*\n([\s\S]*?)(?=\n\d+\s*\n\s*\d{2}:\d{2}[:.]|$)/g;
-    const segments: SrtSegment[] = [];
-    let match: RegExpExecArray | null;
-
-    const parseTime = (timestamp: string) => {
-        const cleanTimestamp = timestamp.replace(',', '.');
-        const [hours, minutes, seconds] = cleanTimestamp.split(':');
-        return parseFloat(hours) * 3600 + parseFloat(minutes) * 60 + parseFloat(seconds);
-    };
-
-    while ((match = regex.exec(normalizedText)) !== null) {
-        const content = match[4].trim();
-        if (!content) continue;
-
-        segments.push({
-            start: parseTime(match[2]),
-            end: parseTime(match[3]),
-            text: content
-        });
-    }
-
-    return segments;
+    return parseSubtitleContent(text);
 }

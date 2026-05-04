@@ -4,8 +4,7 @@ import { classifyBatchAsset, getSubtitleAssignmentHint, validateSubtitleLanguage
 import { summarizeStructuredError } from '../utils/backendErrors';
 import { TARGET_LANGUAGE_OPTIONS } from '../utils/languageTags';
 import { ASR_SOURCE_LANGUAGE_OPTIONS, getAsrSourceLanguageLabel, type AsrSourceLanguage } from '../utils/asrService';
-
-const suspiciousMojibakePattern = /[\uFFFD\u00C3\u00E2\u00D0\u00CF]/;
+import { decodeSubtitleFile, isSupportedSubtitleFileName, SUBTITLE_FILE_ACCEPT } from '../utils/subtitleFormats';
 
 interface BatchQueueSummary {
     total: number;
@@ -56,22 +55,6 @@ const statusColor: Record<BatchQueueItem['status'], string> = {
     error: '#f87171',
     canceled: '#fbbf24'
 };
-
-async function decodeSubtitleFile(file: File) {
-    const buffer = await file.arrayBuffer();
-
-    try {
-        const utf8Text = new TextDecoder('utf-8', { fatal: true }).decode(buffer);
-        if (!suspiciousMojibakePattern.test(utf8Text)) {
-            return utf8Text;
-        }
-    } catch (error) {
-        console.warn('UTF-8 subtitle decode failed, falling back to gb18030:', error);
-    }
-
-    const gb18030Text = new TextDecoder('gb18030').decode(buffer);
-    return gb18030Text || new TextDecoder('utf-8').decode(buffer);
-}
 
 export default function BatchQueuePanel({
     items,
@@ -129,7 +112,7 @@ export default function BatchQueuePanel({
             Array.from(fileList).map(async (file) => {
                 const path = (file as File & { path?: string }).path || '';
                 const name = file.name;
-                const textContent = name.toLowerCase().endsWith('.srt') ? await decodeSubtitleFile(file) : undefined;
+                const textContent = isSupportedSubtitleFileName(name) ? await decodeSubtitleFile(file) : undefined;
                 return { path, name, textContent, kindOverride };
             })
         );
@@ -239,7 +222,7 @@ export default function BatchQueuePanel({
                         <input
                             ref={inputRef}
                             type="file"
-                            accept="video/*,audio/*,.srt"
+                            accept={`video/*,audio/*,${SUBTITLE_FILE_ACCEPT}`}
                             multiple
                             style={{ display: 'none' }}
                             onChange={async (event) => {
@@ -250,7 +233,7 @@ export default function BatchQueuePanel({
                         <input
                             ref={originalSubtitleInputRef}
                             type="file"
-                            accept=".srt"
+                            accept={SUBTITLE_FILE_ACCEPT}
                             multiple
                             style={{ display: 'none' }}
                             onChange={async (event) => {
@@ -261,7 +244,7 @@ export default function BatchQueuePanel({
                         <input
                             ref={translatedSubtitleInputRef}
                             type="file"
-                            accept=".srt"
+                            accept={SUBTITLE_FILE_ACCEPT}
                             multiple
                             style={{ display: 'none' }}
                             onChange={async (event) => {

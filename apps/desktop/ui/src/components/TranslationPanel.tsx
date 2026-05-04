@@ -3,6 +3,7 @@ import { runBackendCommand } from '../utils/backendCommandClient';
 import { Segment } from './Timeline';
 import { buildCheckAudioFilesCommand } from '../utils/backendCommandBuilders';
 import { TARGET_LANGUAGE_OPTIONS } from '../utils/languageTags';
+import { isSupportedSubtitleFileName, SUBTITLE_FILE_ACCEPT } from '../utils/subtitleFormats';
 
 export interface TranslationPanelProps {
     segments: Segment[];
@@ -93,7 +94,7 @@ const TranslationPanel: React.FC<TranslationPanelProps> = ({
         e.stopPropagation();
         if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
             const file = e.dataTransfer.files[0];
-            if (file.name.endsWith('.srt')) {
+            if (isSupportedSubtitleFileName(file.name)) {
                 onUploadSubtitle?.(file);
             }
         }
@@ -165,7 +166,7 @@ const TranslationPanel: React.FC<TranslationPanelProps> = ({
                         <div style={{ display: 'grid', gridTemplateRows: `${primaryControlHeight}px ${secondaryControlHeight}px`, rowGap: '5px', alignContent: 'center', width: '100%', maxWidth: '436px' }}>
                         <input
                             type="file"
-                            accept=".srt"
+                            accept={SUBTITLE_FILE_ACCEPT}
                             ref={fileInputRef}
                             style={{ display: 'none' }}
                             onChange={(e) => {
@@ -254,7 +255,7 @@ const TranslationPanel: React.FC<TranslationPanelProps> = ({
                                 onDragOver={handleDragOver}
                                 className="btn"
                                 disabled={importDisabled}
-                                title={!hasVideo ? '请先导入视频' : '点击上传或拖拽 SRT 文件'}
+                                title={!hasVideo ? '请先导入视频' : '点击上传或拖拽字幕文件'}
                                 style={{
                                     ...secondaryButtonStyle,
                                     padding: '7px 8px',

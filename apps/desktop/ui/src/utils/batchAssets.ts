@@ -1,3 +1,5 @@
+import { isSupportedSubtitleFileName } from './subtitleFormats';
+
 export type BatchAssetKind = 'video' | 'subtitle-original' | 'subtitle-translated' | 'unknown';
 
 export interface BatchInputAsset {
@@ -57,6 +59,7 @@ const STRIP_MARKERS = [
     'caption',
     'captions',
     'srt',
+    'vtt',
     'original',
     'source',
     'translated',
@@ -90,7 +93,7 @@ export function classifyBatchAsset(asset: BatchInputAsset): BatchAssetKind {
         return 'video';
     }
 
-    if (/\.srt$/i.test(lower)) {
+    if (isSupportedSubtitleFileName(lower)) {
         if (isTranslatedSubtitleName(asset.name)) {
             return 'subtitle-translated';
         }
