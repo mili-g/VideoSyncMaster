@@ -11,7 +11,7 @@ if os.path.exists(site_packages) and site_packages not in sys.path:
     sys.path.insert(0, site_packages)
 
 from bootstrap.runtime_env import setup_gpu_paths
-from bootstrap.path_layout import get_faster_whisper_runtime_search_roots
+from bootstrap.path_layout import get_faster_whisper_runtime_search_roots, get_storage_cache_dir, get_project_root
 
 setup_gpu_paths(logging.getLogger("asr.runtime"))
 
@@ -697,8 +697,7 @@ def run_asr(
         if output_dir:
             cache_dir = output_dir
         else:
-            # Fallback to Project Root .cache (parent of backend)
-            cache_dir = os.path.join(BACKEND_DIR, "..", ".cache")
+            cache_dir = get_storage_cache_dir(get_project_root(BACKEND_DIR))
             
         os.makedirs(cache_dir, exist_ok=True)
         

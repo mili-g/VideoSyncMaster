@@ -31,7 +31,8 @@ import type { QueueResumeInfo } from '../types/workflow';
 
 export async function generateSubtitleForItem(
     item: BatchQueueItem,
-    options: BatchSubtitleGenerationOptions
+    options: BatchSubtitleGenerationOptions,
+    retainSessionCache = false
 ) {
     const { projectPaths } = await prepareBatchProjectPaths(
         item.fileName,
@@ -54,23 +55,36 @@ export async function generateSubtitleForItem(
     });
     appendStoredAsrArgs(command.args);
 
-    const result = await runBackendCommand(command, { lane: 'prep' });
-    if (!Array.isArray(result) || result.length === 0) {
-        throw new Error('语音识别未返回有效字幕片段。');
-    }
+    try {
+        const result = await runBackendCommand(command, { lane: 'prep' });
+        if (!Array.isArray(result) || result.length === 0) {
+            throw new Error('语音识别未返回有效字幕片段。');
+        }
 
-    const subtitleContent = segmentsToSRT(result);
-    await saveOriginalSubtitleArtifact(
-        projectPaths.finalDir,
-        item.fileName,
-        result,
-        resolveSubtitleArtifactLanguages(options.asrOriLang, options.targetLang)
-    );
-    return {
-        outputDir: projectPaths.outputDir,
-        subtitlePath: projectPaths.originalSubtitlePath,
-        subtitleContent
-    };
+        const subtitleContent = segmentsToSRT(result);
+        await saveOriginalSubtitleArtifact(
+            projectPaths.finalDir,
+            item.fileName,
+            result,
+            resolveSubtitleArtifactLanguages(options.asrOriLang, options.targetLang)
+        );
+        if (!retainSessionCache) {
+            await cleanupSessionArtifacts(projectPaths, 'success');
+        }
+        return {
+            outputDir: projectPaths.outputDir,
+            subtitlePath: projectPaths.originalSubtitlePath,
+            subtitleContent
+        };
+    } catch (error) {
+        if (!retainSessionCache) {
+            await cleanupSessionArtifacts({
+                sessionCacheDir: projectPaths.sessionCacheDir,
+                sessionAudioDir: projectPaths.sessionAudioDir
+            }, 'failed');
+        }
+        throw error;
+    }
 }
 
 export async function prepareQueueItem(
@@ -175,7 +189,7 @@ export async function prepareQueueItem(
                 asrService: options.asrService,
                 asrOriLang: options.asrOriLang,
                 setStatus: options.setStatus
-            });
+            }, true);
             sourceSubtitleContent = subtitleResult.subtitleContent;
             sourceSegments = parseSRTContent(subtitleResult.subtitleContent);
             onItemPatch({

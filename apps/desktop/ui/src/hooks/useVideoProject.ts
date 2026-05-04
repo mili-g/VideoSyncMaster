@@ -600,6 +600,8 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
         setIsIndeterminate(true);
         setProgress(0);
         setStatus('正在识别字幕...');
+        let sessionCacheDir: string | null = null;
+        let sessionAudioDir: string | null = null;
 
         try {
             const { fileName, projectPaths } = await prepareSingleProjectPaths(
@@ -607,6 +609,8 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
                 outputDirOverride,
                 resolveSubtitleArtifactLanguages(asrOriLang, targetLang)
             );
+            sessionCacheDir = projectPaths.sessionCacheDir;
+            sessionAudioDir = projectPaths.sessionAudioDir;
             const command = buildTestAsrCommand({
                 input: originalVideoPath,
                 asrService,
@@ -652,11 +656,21 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
                 result.map((segment: Segment) => ({ start: segment.start, end: segment.end, text: segment.text })),
                 resolveSubtitleArtifactLanguages(asrOriLang, targetLang)
             );
+            await cleanupSessionArtifacts({
+                sessionCacheDir: projectPaths.sessionCacheDir,
+                sessionAudioDir: projectPaths.sessionAudioDir
+            }, 'success');
 
             setStatus('识别完成，请检查并编辑字幕。');
             return result;
         } catch (e: unknown) {
             if (abortRef.current || isBackendCanceledError(e)) {
+                if (sessionCacheDir) {
+                    await cleanupSessionArtifacts({
+                        sessionCacheDir,
+                        sessionAudioDir: sessionAudioDir || undefined
+                    }, 'interrupted');
+                }
                 setStatus('任务已由用户停止');
                 return null;
             }
@@ -672,6 +686,12 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
                 message: buildUserFacingErrorMessage(errorInfo),
                 type: 'error'
             });
+            if (sessionCacheDir) {
+                await cleanupSessionArtifacts({
+                    sessionCacheDir,
+                    sessionAudioDir: sessionAudioDir || undefined
+                }, 'failed');
+            }
             return null;
         } finally {
             setBusyTask(null);
