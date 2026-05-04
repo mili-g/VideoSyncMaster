@@ -51,6 +51,8 @@ interface DubbingWorkflowOptions {
     setMergedVideoPath: Dispatch<SetStateAction<string>>;
 }
 
+const MODEL_STATUS_TIMEOUT_MS = 8000;
+
 export function useDubbingWorkflow({
     originalVideoPath,
     sourceSegments,
@@ -113,7 +115,12 @@ export function useDubbingWorkflow({
 
     const getTtsBlockingReason = async (): Promise<string | null> => {
         try {
-            const result = await window.api.checkModelStatus() as ModelStatusResponse;
+            const result = await Promise.race([
+                window.api.checkModelStatus() as Promise<ModelStatusResponse>,
+                new Promise<ModelStatusResponse>((_, reject) => {
+                    window.setTimeout(() => reject(new Error('模型状态检查超时')), MODEL_STATUS_TIMEOUT_MS);
+                })
+            ]);
             if (!result.success) {
                 return result.error || '无法获取模型状态，请先在环境诊断页检查运行环境。';
             }
@@ -151,6 +158,56 @@ export function useDubbingWorkflow({
         }
     };
 
+    const runDubbingPreflight = async (
+        segmentsToUse: Segment[],
+        options?: {
+            requireSegmentIndex?: number;
+            emptySegmentsMessage?: string;
+            checkingStatusText?: string;
+        }
+    ) => {
+        setFeedback(null);
+        setDubbingLoading(true);
+        setIsIndeterminate(true);
+        setStatus(options?.checkingStatusText || '正在检查配音前置条件...');
+
+        try {
+            if (!originalVideoPath) {
+                showBlockingFeedback('缺少视频', '请先上传或选择视频，再生成配音。');
+                return { ok: false as const };
+            }
+
+            if (options?.requireSegmentIndex !== undefined && !segmentsToUse[options.requireSegmentIndex]) {
+                showBlockingFeedback('片段不存在', '当前字幕片段不存在或已被删除，请刷新后重试。');
+                return { ok: false as const };
+            }
+
+            if (segmentsToUse.length === 0) {
+                showBlockingFeedback('缺少翻译字幕', options?.emptySegmentsMessage || '当前没有可生成配音的翻译字幕，请先完成翻译或导入目标字幕。');
+                return { ok: false as const };
+            }
+
+            if (!ensureSubtitleLanguagesBeforeDubbing(segmentsToUse)) {
+                return { ok: false as const };
+            }
+
+            const blockingReason = await getTtsBlockingReason();
+            if (blockingReason) {
+                showBlockingFeedback(
+                    'TTS 通道不可执行',
+                    `${blockingReason}\n\n系统不会自动切换到其他 TTS provider。请前往模型中心或环境诊断处理后再重试。`,
+                    `当前 TTS 通道不可执行: ${blockingReason}`
+                );
+                return { ok: false as const };
+            }
+
+            return { ok: true as const };
+        } finally {
+            setDubbingLoading(false);
+            setIsIndeterminate(false);
+        }
+    };
+
     const applyBatchResultToSegment = (segment: Segment, resultSegment: BatchTtsResultItem): Segment => {
         const hasPlayableAudio = Boolean(resultSegment.success && resultSegment.audio_path);
         return {
@@ -162,26 +219,15 @@ export function useDubbingWorkflow({
     };
 
     const handleGenerateSingleDubbing = async (index: number) => {
-        setFeedback(null);
-        setStatus('正在检查单段配音前置条件...');
-        if (!originalVideoPath) {
-            showBlockingFeedback('缺少视频', '请先上传或选择视频，再生成配音。');
+        const preflight = await runDubbingPreflight(translatedSegments, {
+            requireSegmentIndex: index,
+            checkingStatusText: '正在检查单段配音前置条件...'
+        });
+        if (!preflight.ok) {
             return;
         }
         const segment = translatedSegments[index];
         if (!segment) {
-            showBlockingFeedback('片段不存在', '当前字幕片段不存在或已被删除，请刷新后重试。');
-            return;
-        }
-        if (!ensureSubtitleLanguagesBeforeDubbing(translatedSegments)) return;
-
-        const blockingReason = await getTtsBlockingReason();
-        if (blockingReason) {
-            showBlockingFeedback(
-                'TTS 通道不可执行',
-                `${blockingReason}\n\n系统不会自动切换到其他 TTS provider。请前往模型中心或环境诊断处理后再重试。`,
-                `当前 TTS 通道不可执行: ${blockingReason}`
-            );
             return;
         }
 
@@ -289,25 +335,11 @@ export function useDubbingWorkflow({
 
     const handleGenerateAllDubbing = async (overrideSegments?: Segment[]): Promise<Segment[] | null> => {
         const segmentsToUse = overrideSegments || translatedSegments;
-        setFeedback(null);
-        setStatus('正在检查批量配音前置条件...');
-        if (!originalVideoPath) {
-            showBlockingFeedback('缺少视频', '请先上传或选择视频，再生成配音。');
-            return null;
-        }
-        if (segmentsToUse.length === 0) {
-            showBlockingFeedback('缺少翻译字幕', '当前没有可生成配音的翻译字幕，请先完成翻译或导入目标字幕。');
-            return null;
-        }
-        if (!ensureSubtitleLanguagesBeforeDubbing(segmentsToUse)) return null;
-
-        const blockingReason = await getTtsBlockingReason();
-        if (blockingReason) {
-            showBlockingFeedback(
-                'TTS 通道不可执行',
-                `${blockingReason}\n\n系统不会自动切换到其他 TTS provider。请前往模型中心或环境诊断处理后再重试。`,
-                `当前 TTS 通道不可执行: ${blockingReason}`
-            );
+        const preflight = await runDubbingPreflight(segmentsToUse, {
+            emptySegmentsMessage: '当前没有可生成配音的翻译字幕，请先完成翻译或导入目标字幕。',
+            checkingStatusText: '正在检查批量配音前置条件...'
+        });
+        if (!preflight.ok) {
             return null;
         }
 
@@ -503,15 +535,10 @@ export function useDubbingWorkflow({
             setStatus('没有找到需要重试的失败片段');
             return;
         }
-        if (!ensureSubtitleLanguagesBeforeDubbing(translatedSegments)) return;
-
-        const blockingReason = await getTtsBlockingReason();
-        if (blockingReason) {
-            showBlockingFeedback(
-                'TTS 通道不可执行',
-                `${blockingReason}\n\n系统不会自动切换到其他 TTS provider。请前往模型中心或环境诊断处理后再重试。`,
-                `当前 TTS 通道不可执行: ${blockingReason}`
-            );
+        const preflight = await runDubbingPreflight(translatedSegments, {
+            checkingStatusText: '正在检查失败片段重试条件...'
+        });
+        if (!preflight.ok) {
             return;
         }
 
