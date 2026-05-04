@@ -435,6 +435,19 @@ export function useDubbingWorkflow({
                 resumePlan?.preservedAudioSegments || [],
                 'audioPath'
             );
+            if (recoveredCount > 0) {
+                setTranslatedSegments(prev => prev.map((segment, index) => {
+                    const recoveredSegment = workingSegments[index];
+                    if (!recoveredSegment?.audioPath) {
+                        return segment;
+                    }
+                    return {
+                        ...segment,
+                        audioPath: recoveredSegment.audioPath,
+                        audioStatus: recoveredSegment.audioStatus || 'ready'
+                    };
+                }));
+            }
             advanceBatchDubbingStage('build_pending_segments', '正在整理待生成片段...');
             const pendingSegments = workingSegments
                 .map((segment, index) => ({

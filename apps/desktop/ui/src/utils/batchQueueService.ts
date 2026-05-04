@@ -390,7 +390,7 @@ export async function finalizeQueueItem(
             });
         }
 
-        const failedIndexes: number[] = [];
+        const failedIndexSet = new Set<number>();
         if (pendingSegments.length > 0) {
             const tempJsonPath = `${workDir}\\segments.json`;
             await window.api.saveFile(tempJsonPath, JSON.stringify(pendingSegments, null, 2));
@@ -409,19 +409,32 @@ export async function finalizeQueueItem(
             }
 
             const batchResults = 'results' in ttsResult && Array.isArray(ttsResult.results) ? ttsResult.results : [];
+            const expectedIndexes = new Set(
+                pendingSegments
+                    .map(segment => segment.original_index)
+                    .filter((idx): idx is number => typeof idx === 'number' && idx >= 0)
+            );
+            const returnedIndexes = new Set<number>();
             for (const result of batchResults) {
                 const idx = result.index;
                 if (typeof idx !== 'number' || !mergedSegments[idx]) continue;
+                returnedIndexes.add(idx);
                 if (result.success && result.audio_path) {
                     (mergedSegments[idx] as SrtSegment & { path?: string }).path = result.audio_path;
                 } else {
-                    failedIndexes.push(idx);
+                    failedIndexSet.add(idx);
+                }
+            }
+            for (const idx of expectedIndexes) {
+                if (!returnedIndexes.has(idx) || !(mergedSegments[idx] as SrtSegment & { path?: string }).path) {
+                    failedIndexSet.add(idx);
                 }
             }
 
             await cleanupOutputArtifacts(projectPaths.finalDir, [tempJsonPath]);
         }
 
+        const failedIndexes = Array.from(failedIndexSet).sort((left, right) => left - right);
         if (failedIndexes.length > 0) {
             applyStage(BATCH_QUEUE_STAGE.retryingFailedSegments, `重试失败片段 (${failedIndexes.length})`);
             await updateSessionManifest(projectPaths, {
@@ -441,18 +454,26 @@ export async function finalizeQueueItem(
             });
         }
 
+        const unresolvedFailedIndexes = failedIndexes.filter((idx) => {
+            const segment = mergedSegments[idx] as SrtSegment & { path?: string };
+            return !segment?.path;
+        });
+        if (unresolvedFailedIndexes.length > 0) {
+            throw new Error(`仍有 ${unresolvedFailedIndexes.length} 条配音片段生成失败，已停止后续合成。`);
+        }
+
         const readySegments = mergedSegments.filter((segment): segment is SrtSegment & { path: string } => Boolean((segment as SrtSegment & { path?: string }).path));
         if (readySegments.length === 0) {
             throw new Error('所有配音片段均失败，无法合成');
         }
 
         applyStage(
-            failedIndexes.length > 0 ? BATCH_QUEUE_STAGE.partialMerge : BATCH_QUEUE_STAGE.mergingVideo,
-            failedIndexes.length > 0 ? '部分片段失败，继续合成' : '合成视频'
+            BATCH_QUEUE_STAGE.mergingVideo,
+            '合成视频'
         );
         await updateSessionManifest(projectPaths, {
             phase: 'merging',
-            currentStage: failedIndexes.length > 0 ? '部分片段失败，继续合成' : '合成视频',
+            currentStage: '合成视频',
             resume: {
                 recoverable: true
             }
