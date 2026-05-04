@@ -439,6 +439,7 @@ export function useDubbingWorkflow({
             const pendingSegments = workingSegments
                 .map((segment, index) => ({
                     ...segment,
+                    original_index: index,
                     source_text: sourceSegments[index]?.text || ''
                 }))
                 .filter(segment => !segment.audioPath);
