@@ -38,29 +38,18 @@ function emitMainLog(level: MainLogLevel, logType: MainLogType, message: string,
     return
   }
 
-  const toConsoleSafeString = (value: string | undefined) => {
-    const text = String(value || '')
-    if (process.platform !== 'win32') {
-      return text
-    }
-    return text.replace(/[^\x20-\x7E]/g, (char) => {
-      const code = char.charCodeAt(0).toString(16).padStart(4, '0')
-      return `\\u${code}`
-    })
-  }
-
   const payload = {
     timestamp: new Date().toISOString(),
     level,
     logger: 'electron.main',
     domain: fields.domain,
     log_type: logType,
-    message: toConsoleSafeString(message),
+    message: String(message || ''),
     action: fields.action || '-',
-    event: toConsoleSafeString(fields.event),
-    stage: toConsoleSafeString(fields.stage),
-    code: toConsoleSafeString(fields.code),
-    detail: toConsoleSafeString(fields.detail)
+    event: String(fields.event || ''),
+    stage: String(fields.stage || ''),
+    code: String(fields.code || ''),
+    detail: String(fields.detail || '')
   }
 
   const line = `__MAIN_LOG__${JSON.stringify(payload)}`

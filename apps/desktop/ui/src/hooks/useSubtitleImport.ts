@@ -3,14 +3,6 @@ import type { Segment } from './useVideoProject';
 import { validateSubtitleLanguageFit } from '../utils/batchAssets';
 import { decodeSubtitleFile, parseSubtitleContent } from '../utils/subtitleFormats';
 
-type FeedbackType = 'success' | 'error';
-
-interface FeedbackPayload {
-    title: string;
-    message: string;
-    type: FeedbackType;
-}
-
 interface SubtitleImportOptions {
     originalVideoPath: string;
     asrOriLang: string;
@@ -18,7 +10,6 @@ interface SubtitleImportOptions {
     setSegments: Dispatch<SetStateAction<Segment[]>>;
     setTranslatedSegments: Dispatch<SetStateAction<Segment[]>>;
     setStatus: Dispatch<SetStateAction<string>>;
-    setFeedback: Dispatch<SetStateAction<FeedbackPayload | null>>;
     onSourceSubtitleImported?: (segments: Segment[]) => void | Promise<void>;
     onTranslatedSubtitleImported?: (segments: Segment[]) => void | Promise<void>;
 }
@@ -30,7 +21,6 @@ export function useSubtitleImport({
     setSegments,
     setTranslatedSegments,
     setStatus,
-    setFeedback,
     onSourceSubtitleImported,
     onTranslatedSubtitleImported
 }: SubtitleImportOptions) {
@@ -57,16 +47,7 @@ export function useSubtitleImport({
             .filter(Boolean)
             .join(' ');
         const validation = validateSubtitleLanguageFit(text, expectedLanguage, mode);
-        if (!validation.ok) {
-            setFeedback({
-                title: mode === 'source' ? '原字幕语言不匹配' : '翻译字幕语言不匹配',
-                message: validation.reason || '当前导入字幕与已配置语言不匹配。',
-                type: 'error'
-            });
-            setStatus(validation.reason || '字幕语言与当前配置不匹配。');
-            return false;
-        }
-        return true;
+        return validation;
     };
 
     const handleSRTUpload = async (file: File) => {
@@ -74,12 +55,15 @@ export function useSubtitleImport({
 
         const newSegments = await decodeImportedSubtitleFile(file);
         if (newSegments.length > 0) {
-            if (!validateImportedSegments(newSegments, asrOriLang, 'source')) {
-                return;
+            const validation = validateImportedSegments(newSegments, asrOriLang, 'source');
+            if (!validation.ok) {
+                setStatus(`已加载外部原字幕（${newSegments.length} 条），但语言校验未通过，请确认源语言设置。`);
             }
             setSegments(newSegments);
             await onSourceSubtitleImported?.(newSegments);
-            setStatus(`已加载外部原字幕（${newSegments.length} 条）`);
+            if (validation.ok) {
+                setStatus(`已加载外部原字幕（${newSegments.length} 条）`);
+            }
         } else {
             setStatus('字幕解析失败：未找到有效字幕片段');
         }
@@ -90,8 +74,9 @@ export function useSubtitleImport({
 
         const newSegments = await decodeImportedSubtitleFile(file);
         if (newSegments.length > 0) {
-            if (!validateImportedSegments(newSegments, targetLang, 'target')) {
-                return;
+            const validation = validateImportedSegments(newSegments, targetLang, 'target');
+            if (!validation.ok) {
+                setStatus(`已加载译文字幕（${newSegments.length} 条），但语言校验未通过，请确认目标语言设置。`);
             }
             const preparedSegments = newSegments.map(segment => ({
                 ...segment,
@@ -99,7 +84,9 @@ export function useSubtitleImport({
             }));
             setTranslatedSegments(preparedSegments);
             await onTranslatedSubtitleImported?.(preparedSegments);
-            setStatus(`已加载译文字幕（${newSegments.length} 条）`);
+            if (validation.ok) {
+                setStatus(`已加载译文字幕（${newSegments.length} 条）`);
+            }
         } else {
             setStatus('译文字幕解析失败：未找到有效字幕片段');
         }

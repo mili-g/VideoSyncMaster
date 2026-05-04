@@ -438,7 +438,6 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
         setSegments,
         setTranslatedSegments,
         setStatus,
-        setFeedback,
         onSourceSubtitleImported: async (importedSegments) => {
             segmentsRef.current = importedSegments;
             await persistSingleSubtitleSnapshot(importedSegments, translatedSegmentsRef.current);

@@ -215,17 +215,19 @@ function normalizeSubtitleValidationText(text: string) {
 }
 
 function isScriptFamilyCompatible(expectedFamily: string, counts: ReturnType<typeof countScriptUsage>) {
+    const nonLatinCount = counts.han + counts.kana + counts.hangul + counts.cyrillic;
+    const nonCyrillicCount = counts.han + counts.kana + counts.hangul + counts.latin;
     switch (expectedFamily) {
         case 'han':
-            return counts.han >= 12 && counts.han >= counts.latin && counts.han >= counts.hangul;
+            return counts.han >= 4 && counts.han >= counts.latin && counts.han >= counts.hangul && counts.han >= counts.cyrillic;
         case 'ja':
-            return counts.kana >= 8 || (counts.kana >= 4 && counts.han >= 8);
+            return counts.kana >= 3 || (counts.kana >= 2 && counts.han >= 4);
         case 'ko':
-            return counts.hangul >= 8 && counts.hangul >= counts.han && counts.hangul >= counts.latin;
+            return counts.hangul >= 4 && counts.hangul >= counts.han && counts.hangul >= counts.latin && counts.hangul >= counts.cyrillic;
         case 'latin':
-            return counts.latin >= 20 && counts.latin > (counts.han + counts.kana + counts.hangul + counts.cyrillic);
+            return counts.latin >= 6 && counts.latin >= nonLatinCount;
         case 'cyrillic':
-            return counts.cyrillic >= 12 && counts.cyrillic > (counts.han + counts.kana + counts.hangul + counts.latin);
+            return counts.cyrillic >= 6 && counts.cyrillic >= nonCyrillicCount;
         default:
             return true;
     }
