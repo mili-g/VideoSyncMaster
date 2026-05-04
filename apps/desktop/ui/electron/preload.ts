@@ -45,6 +45,9 @@ contextBridge.exposeInMainWorld('api', {
   checkFileExists(filePath: string) {
     return ipcRenderer.invoke('check-file-exists', filePath)
   },
+  listDirFiles(dirPath: string) {
+    return ipcRenderer.invoke('list-dir-files', dirPath)
+  },
   getPaths() {
     return ipcRenderer.invoke('get-paths')
   },

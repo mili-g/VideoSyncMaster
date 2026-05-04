@@ -206,7 +206,7 @@ def build_batch_tts_tasks(
             seg.get("audioPath")
             or seg.get("audio_path")
             or seg.get("output_path")
-            or os.path.join(work_dir, f"segment_{i}.wav")
+            or os.path.join(work_dir, f"segment_{final_idx}.wav")
         )
 
         if normalized_voice_mode == "narration" and shared_ref_path and os.path.exists(shared_ref_path):

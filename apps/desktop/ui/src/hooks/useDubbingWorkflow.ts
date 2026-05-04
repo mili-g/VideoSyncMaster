@@ -10,7 +10,7 @@ import { cleanupSessionArtifacts } from '../utils/sessionCleanup';
 import { getSessionResumePlan, initializeSessionManifest, readSessionManifest, updateSessionManifest } from '../utils/sessionManifest';
 import { buildMergeVideoCommand } from '../utils/backendCommandBuilders';
 import { buildBatchTtsArgs, buildSingleTtsArgs, buildTtsExtraArgs, collectNearbySuccessfulAudioRefs, prepareFallbackReferenceAudio, recoverExistingAudioSegments } from '../utils/dubbingWorkflowService';
-import { logUiError } from '../utils/frontendLogger';
+import { logUiBusiness, logUiError } from '../utils/frontendLogger';
 import type { SessionManifest } from '../utils/sessionManifest';
 import type { BatchTtsResultItem } from '../types/backend';
 import type { ModelStatusResponse } from '../types/backend';
@@ -92,20 +92,23 @@ export function useDubbingWorkflow({
     };
 
     const ensureSubtitleLanguagesBeforeDubbing = (segmentsToUse: Segment[]) => {
-        const sourceValidation = validateSegmentLanguageFit(sourceSegments, asrOriLang, 'source');
-        if (!sourceValidation.ok) {
-            const canBypassEmptySourceValidation = (
-                sourceSegments.length > 0
-                && Boolean(sourceValidation.reason?.includes('字幕内容为空'))
-            );
-            if (canBypassEmptySourceValidation) {
-                setStatus('原字幕文本为空，已跳过原字幕语言校验并继续配音。');
-            } else {
-            showBlockingFeedback(
-                '原字幕语言不匹配',
-                sourceValidation.reason || '原字幕语言与当前配置不匹配。'
-            );
-            return false;
+        if (sourceSegments.length > 0) {
+            const sourceValidation = validateSegmentLanguageFit(sourceSegments, asrOriLang, 'source');
+            if (!sourceValidation.ok) {
+                const canBypassEmptySourceValidation = Boolean(sourceValidation.reason?.includes('字幕内容为空'));
+                if (canBypassEmptySourceValidation) {
+                    logUiError('原字幕文本为空，已跳过原字幕语言校验', {
+                        domain: 'workflow.dubbing',
+                        action: 'ensureSubtitleLanguagesBeforeDubbing',
+                        detail: sourceValidation.reason || '字幕内容为空'
+                    });
+                } else {
+                    showBlockingFeedback(
+                        '原字幕语言不匹配',
+                        sourceValidation.reason || '原字幕语言与当前配置不匹配。'
+                    );
+                    return false;
+                }
             }
         }
 
@@ -178,6 +181,7 @@ export function useDubbingWorkflow({
             emptySegmentsMessage?: string;
             checkingStatusText?: string;
             allowModelStatusTimeoutBypass?: boolean;
+            skipModelStatusCheck?: boolean;
         }
     ) => {
         setFeedback(null);
@@ -186,38 +190,54 @@ export function useDubbingWorkflow({
         setStatus(options?.checkingStatusText || '正在检查配音前置条件...');
 
         try {
-            if (!originalVideoPath) {
-                showBlockingFeedback('缺少视频', '请先上传或选择视频，再生成配音。');
-                return { ok: false as const };
-            }
+            try {
+                if (!originalVideoPath) {
+                    showBlockingFeedback('缺少视频', '请先上传或选择视频，再生成配音。');
+                    return { ok: false as const };
+                }
 
-            if (options?.requireSegmentIndex !== undefined && !segmentsToUse[options.requireSegmentIndex]) {
-                showBlockingFeedback('片段不存在', '当前字幕片段不存在或已被删除，请刷新后重试。');
-                return { ok: false as const };
-            }
+                if (options?.requireSegmentIndex !== undefined && !segmentsToUse[options.requireSegmentIndex]) {
+                    showBlockingFeedback('片段不存在', '当前字幕片段不存在或已被删除，请刷新后重试。');
+                    return { ok: false as const };
+                }
 
-            if (segmentsToUse.length === 0) {
-                showBlockingFeedback('缺少翻译字幕', options?.emptySegmentsMessage || '当前没有可生成配音的翻译字幕，请先完成翻译或导入目标字幕。');
-                return { ok: false as const };
-            }
+                if (segmentsToUse.length === 0) {
+                    showBlockingFeedback('缺少翻译字幕', options?.emptySegmentsMessage || '当前没有可生成配音的翻译字幕，请先完成翻译或导入目标字幕。');
+                    return { ok: false as const };
+                }
 
-            if (!ensureSubtitleLanguagesBeforeDubbing(segmentsToUse)) {
-                return { ok: false as const };
-            }
+                if (!ensureSubtitleLanguagesBeforeDubbing(segmentsToUse)) {
+                    return { ok: false as const };
+                }
 
-            const blockingReason = await getTtsBlockingReason({
-                allowTimeoutBypass: options?.allowModelStatusTimeoutBypass
-            });
-            if (blockingReason) {
+                if (!options?.skipModelStatusCheck) {
+                    const blockingReason = await getTtsBlockingReason({
+                        allowTimeoutBypass: options?.allowModelStatusTimeoutBypass
+                    });
+                    if (blockingReason) {
+                        showBlockingFeedback(
+                            'TTS 通道不可执行',
+                            `${blockingReason}\n\n系统不会自动切换到其他 TTS provider。请前往模型中心或环境诊断处理后再重试。`,
+                            `当前 TTS 通道不可执行: ${blockingReason}`
+                        );
+                        return { ok: false as const };
+                    }
+                }
+
+                return { ok: true as const };
+            } catch (error) {
+                logUiError('配音前置检查异常', {
+                    domain: 'workflow.dubbing',
+                    action: 'runDubbingPreflight',
+                    detail: error instanceof Error ? error.message : String(error)
+                });
                 showBlockingFeedback(
-                    'TTS 通道不可执行',
-                    `${blockingReason}\n\n系统不会自动切换到其他 TTS provider。请前往模型中心或环境诊断处理后再重试。`,
-                    `当前 TTS 通道不可执行: ${blockingReason}`
+                    '配音前置检查失败',
+                    error instanceof Error ? error.message : String(error),
+                    `配音前置检查失败: ${error instanceof Error ? error.message : String(error)}`
                 );
                 return { ok: false as const };
             }
-
-            return { ok: true as const };
         } finally {
             setDubbingLoading(false);
             setIsIndeterminate(false);
@@ -232,6 +252,16 @@ export function useDubbingWorkflow({
             audioDuration: resultSegment.duration,
             audioStatus: hasPlayableAudio ? 'ready' : 'error'
         };
+    };
+
+    const advanceBatchDubbingStage = (stage: string, statusText: string) => {
+        logUiBusiness('批量配音阶段推进', {
+            domain: 'workflow.dubbing',
+            action: 'handleGenerateAllDubbing',
+            stage,
+            detail: statusText
+        });
+        setStatus(statusText);
     };
 
     const handleGenerateSingleDubbing = async (index: number) => {
@@ -350,11 +380,18 @@ export function useDubbingWorkflow({
     };
 
     const handleGenerateAllDubbing = async (overrideSegments?: Segment[]): Promise<Segment[] | null> => {
-        const segmentsToUse = overrideSegments || translatedSegments;
+        const segmentsToUse = Array.isArray(overrideSegments) ? overrideSegments : translatedSegments;
+        logUiBusiness('开始批量配音预检', {
+            domain: 'workflow.dubbing',
+            action: 'handleGenerateAllDubbing',
+            stage: 'preflight',
+            detail: `segments=${segmentsToUse.length}`
+        });
         const preflight = await runDubbingPreflight(segmentsToUse, {
             emptySegmentsMessage: '当前没有可生成配音的翻译字幕，请先完成翻译或导入目标字幕。',
             checkingStatusText: '正在检查批量配音前置条件...',
-            allowModelStatusTimeoutBypass: true
+            allowModelStatusTimeoutBypass: true,
+            skipModelStatusCheck: true
         });
         if (!preflight.ok) {
             return null;
@@ -362,7 +399,7 @@ export function useDubbingWorkflow({
 
         setDubbingLoading(true);
         abortRef.current = false;
-        setStatus('正在批量生成配音...');
+        advanceBatchDubbingStage('preflight_done', '正在准备配音任务...');
         setProgress(0);
         setIsIndeterminate(false);
         let sessionCacheDir: string | null = null;
@@ -370,6 +407,7 @@ export function useDubbingWorkflow({
         let tempJsonPath: string | null = null;
 
         try {
+            advanceBatchDubbingStage('prepare_project_paths', '正在准备输出目录...');
             const { projectPaths } = await prepareSingleProjectPaths(
                 originalVideoPath,
                 outputDirOverride,
@@ -378,6 +416,7 @@ export function useDubbingWorkflow({
             sessionCacheDir = projectPaths.sessionCacheDir;
             sessionAudioDir = projectPaths.sessionAudioDir;
             tempJsonPath = `${projectPaths.sessionTempDir}\\segments.json`;
+            advanceBatchDubbingStage('prepare_manifest', '正在初始化配音会话...');
             const resumePlan = await ensureSingleSessionManifest(projectPaths, originalVideoPath, sourceSegments, segmentsToUse);
             await updateSessionManifest(projectPaths, {
                 phase: 'dubbing',
@@ -389,12 +428,14 @@ export function useDubbingWorkflow({
             });
 
             const workingSegments = segmentsToUse.map(segment => ({ ...segment }));
+            advanceBatchDubbingStage('recover_existing_audio', '正在检查可复用配音...');
             const recoveredCount = await recoverExistingAudioSegments(
                 workingSegments,
                 projectPaths.sessionAudioDir,
                 resumePlan?.preservedAudioSegments || [],
                 'audioPath'
             );
+            advanceBatchDubbingStage('build_pending_segments', '正在整理待生成片段...');
             const pendingSegments = workingSegments
                 .map((segment, index) => ({
                     ...segment,
@@ -402,6 +443,7 @@ export function useDubbingWorkflow({
                 }))
                 .filter(segment => !segment.audioPath);
 
+            advanceBatchDubbingStage('write_pending_segments', '正在写入配音任务清单...');
             await window.api.saveFile(tempJsonPath, JSON.stringify(
                 pendingSegments
             ));
@@ -423,6 +465,7 @@ export function useDubbingWorkflow({
                 return workingSegments;
             }
 
+            advanceBatchDubbingStage('dispatch_backend_batch_tts', `正在提交 ${pendingSegments.length} 条配音任务...`);
             const result = await runBackendCommand(
                 buildBatchTtsArgs(
                     originalVideoPath,
@@ -445,6 +488,7 @@ export function useDubbingWorkflow({
             if (abortRef.current) return null;
 
             if (result && result.success) {
+                advanceBatchDubbingStage('apply_batch_result', '正在写回配音结果...');
                 return new Promise<Segment[]>((resolve) => {
                     setTranslatedSegments(prev => {
                         const next = [...prev];
@@ -553,7 +597,8 @@ export function useDubbingWorkflow({
             return;
         }
         const preflight = await runDubbingPreflight(translatedSegments, {
-            checkingStatusText: '正在检查失败片段重试条件...'
+            checkingStatusText: '正在检查失败片段重试条件...',
+            skipModelStatusCheck: true
         });
         if (!preflight.ok) {
             return;

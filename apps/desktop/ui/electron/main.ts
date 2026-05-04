@@ -815,17 +815,50 @@ function ensureElectronStoragePaths() {
   const projectRoot = getProjectRoot()
   const electronDataDir = path.join(getCacheRoot(projectRoot), 'electron')
   const userDataDir = path.join(electronDataDir, 'user-data')
+  const sessionDataDir = path.join(electronDataDir, 'session-data')
   const cacheDir = path.join(electronDataDir, 'cache')
   const gpuCacheDir = path.join(cacheDir, 'GPUCache')
 
-  for (const dir of [electronDataDir, userDataDir, cacheDir, gpuCacheDir]) {
+  for (const dir of [electronDataDir, userDataDir, sessionDataDir, cacheDir, gpuCacheDir]) {
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true })
     }
   }
 
+  const legacySessionEntries = fs.existsSync(cacheDir)
+    ? fs.readdirSync(cacheDir, { withFileTypes: true })
+    : []
+  const cacheOnlyNames = new Set([
+    'Cache',
+    'Code Cache',
+    'DawnGraphiteCache',
+    'DawnWebGPUCache',
+    'GPUCache',
+    'Shared Dictionary'
+  ])
+
+  for (const entry of legacySessionEntries) {
+    if (cacheOnlyNames.has(entry.name)) {
+      continue
+    }
+    const fromPath = path.join(cacheDir, entry.name)
+    const toPath = path.join(sessionDataDir, entry.name)
+    if (fs.existsSync(toPath)) {
+      continue
+    }
+    try {
+      fs.renameSync(fromPath, toPath)
+    } catch (error) {
+      logMainWarn('迁移旧版 Electron 会话数据失败', {
+        domain: 'bootstrap',
+        action: 'ensureElectronStoragePaths',
+        detail: `${fromPath} -> ${toPath}\n${error instanceof Error ? error.message : String(error)}`
+      })
+    }
+  }
+
   app.setPath('userData', userDataDir)
-  app.setPath('sessionData', cacheDir)
+  app.setPath('sessionData', sessionDataDir)
   app.setPath('cache', cacheDir)
   app.commandLine.appendSwitch('disk-cache-dir', cacheDir)
   app.commandLine.appendSwitch('user-data-dir', userDataDir)
@@ -836,6 +869,21 @@ function getDefaultOutputDir() {
 }
 
 ensureElectronStoragePaths()
+
+const singleInstanceLock = app.requestSingleInstanceLock()
+if (!singleInstanceLock) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    if (!win) {
+      return
+    }
+    if (win.isMinimized()) {
+      win.restore()
+    }
+    win.focus()
+  })
+}
 
 function getAppPaths() {
   const projectRoot = getProjectRoot()
@@ -2766,6 +2814,27 @@ app.whenReady().then(async () => {
         detail: e instanceof Error ? e.message : String(e)
       })
       return false;
+    }
+  });
+
+  ipcMain.handle('list-dir-files', async (_event, dirPath: string) => {
+    try {
+      if (!dirPath || !fs.existsSync(dirPath)) {
+        return [];
+      }
+      if (!fs.statSync(dirPath).isDirectory()) {
+        return [];
+      }
+      return fs.readdirSync(dirPath, { withFileTypes: true })
+        .filter((entry) => entry.isFile())
+        .map((entry) => entry.name);
+    } catch (e) {
+      logMainError('读取目录文件列表失败', {
+        domain: 'filesystem',
+        action: 'list-dir-files',
+        detail: e instanceof Error ? e.message : String(e)
+      })
+      return [];
     }
   });
 

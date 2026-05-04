@@ -202,40 +202,49 @@ function App() {
   ]);
 
   useEffect(() => {
-    const checkEnv = async () => {
-      try {
-        const result = await window.api.checkPythonEnv();
+    let active = true;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const result = await window.api.checkPythonEnv();
+          if (!active) return;
 
-        if (result && !result.success) {
-          if (result.status === 'missing_python') {
-            setStatus("未检测到 Python 环境 (根目录下无 python 文件夹)，请手动下载或放置便携版 Python。");
-          } else {
-            logUiError('环境检查失败', {
-              domain: 'ui.environment',
-              action: 'checkPythonEnv',
-              detail: String(result.error || '未知错误')
-            });
+          if (result && !result.success) {
+            if (result.status === 'missing_python') {
+              setStatus("未检测到 Python 环境 (根目录下无 python 文件夹)，请手动下载或放置便携版 Python。");
+            } else {
+              logUiError('环境检查失败', {
+                domain: 'ui.environment',
+                action: 'checkPythonEnv',
+                detail: String(result.error || '未知错误')
+              });
+            }
+          } else if (result && result.success && result.missing) {
+            setMissingDeps(result.missing);
+            if (result.missing.length > 0) {
+              logUiWarn('检测到缺失依赖', {
+                domain: 'ui.environment',
+                action: 'checkPythonEnv',
+                detail: result.missing.join(', ')
+              });
+              setStatus('检测到运行环境缺失依赖，请前往【环境诊断】查看阻塞项并执行修复。');
+            }
           }
-        } else if (result && result.success && result.missing) {
-          setMissingDeps(result.missing);
-          if (result.missing.length > 0) {
-            logUiWarn('检测到缺失依赖', {
-              domain: 'ui.environment',
-              action: 'checkPythonEnv',
-              detail: result.missing.join(', ')
-            });
-            setStatus('检测到运行环境缺失依赖，请前往【环境诊断】查看阻塞项并执行修复。');
-          }
+        } catch (e: unknown) {
+          if (!active) return;
+          logUiError('环境检查执行异常', {
+            domain: 'ui.environment',
+            action: 'checkPythonEnv',
+            detail: e instanceof Error ? e.message : String(e)
+          });
         }
-      } catch (e: unknown) {
-        logUiError('环境检查执行异常', {
-          domain: 'ui.environment',
-          action: 'checkPythonEnv',
-          detail: e instanceof Error ? e.message : String(e)
-        });
-      }
+      })();
+    }, 1200);
+
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
     };
-    checkEnv();
   }, [setStatus]);
 
   // Persistence for Settings

@@ -251,22 +251,8 @@ export async function updateSessionManifest(target: SessionManifestTarget, patch
 }
 
 export async function listResumeAudioSegments(sessionAudioDir: string) {
-    const results: string[] = [];
-    let index = 0;
-    while (index < 5000) {
-        const segmentPath = `${sessionAudioDir}\\segment_${index}.wav`;
-        const retryPath = `${sessionAudioDir}\\segment_retry_${index}.wav`;
-        const [segmentExists, retryExists] = await Promise.all([
-            window.api.checkFileExists(segmentPath),
-            window.api.checkFileExists(retryPath)
-        ]);
-
-        if (!segmentExists && !retryExists && index > 128) {
-            break;
-        }
-        if (segmentExists) results.push(segmentPath);
-        if (retryExists) results.push(retryPath);
-        index += 1;
-    }
-    return results;
+    const fileNames = await window.api.listDirFiles(sessionAudioDir);
+    return fileNames
+        .filter((fileName) => /^segment(?:_retry)?_\d+\.wav$/i.test(fileName))
+        .map((fileName) => `${sessionAudioDir}\\${fileName}`);
 }

@@ -362,11 +362,12 @@ def build_single_tts_request_config(args, tts_kwargs: dict[str, Any] | None = No
 def build_batch_tts_request_config(args, tts_kwargs: dict[str, Any] | None = None) -> BatchTtsRequestConfig:
     tts = TtsRuntimeConfig.from_sources(tts_kwargs, vars(args))
     json_path = str(getattr(args, "ref", "") or "")
+    output_dir = str(getattr(args, "output", "") or "")
     import os
     return BatchTtsRequestConfig(
         video_path=str(getattr(args, "input", "") or ""),
         json_path=json_path,
-        work_dir=os.path.dirname(json_path) if json_path else "",
+        work_dir=output_dir or (os.path.dirname(json_path) if json_path else ""),
         target_lang=str(getattr(args, "lang", "English") or "English"),
         tts_service_name=str(getattr(args, "tts_service", "indextts") or "indextts"),
         args_ref_audio=getattr(args, "ref_audio", None),

@@ -12,6 +12,7 @@ interface DesktopApi {
     deletePath(targetPath: string): Promise<boolean>;
     cleanupSessionCache(payload: { sessionCacheDir: string; mode: 'success' | 'failed' | 'interrupted' }): Promise<{ success: boolean; removed: boolean; preservedResumeFiles: number }>;
     checkFileExists(filePath: string): Promise<boolean>;
+    listDirFiles(dirPath: string): Promise<string[]>;
     getPaths(): Promise<{ projectRoot: string; outputDir: string; cacheDir: string; logsDir: string; backendLogPath: string }>;
     runBackend<T = import('./types/backend').BackendResponseBase>(args: string[], options?: { lane?: BackendLane }): Promise<T>;
     analyzeVideoMetadata(filePath: string): Promise<import('./types/backend').AnalyzeVideoMetadataResponse>;

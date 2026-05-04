@@ -232,7 +232,7 @@ const TranslationPanel: React.FC<TranslationPanelProps> = ({
                                 {translationBusy ? '翻译中' : '翻译'}
                             </button>
                             <button
-                                onClick={onGenerateAll}
+                                onClick={() => onGenerateAll?.()}
                                 disabled={generateDisabled}
                                 className="btn"
                                 style={{
