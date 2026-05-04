@@ -44,7 +44,7 @@ VideoSyncMaster 是一款面向多语言视频教程场景的 AI 配音桌面应
 ### 2.4 非功能目标
 
 - 稳定性：单步骤失败可定位、可恢复、可重试。
-- 可维护性：模块边界清晰，避免继续把逻辑堆到 `backend/main.py`。
+- 可维护性：模块边界清晰，避免继续把逻辑堆到 `services/media_pipeline/main.py`。
 - 可扩展性：支持新增 ASR/TTS/翻译引擎而不破坏主流程。
 - 可观测性：前后端事件、业务日志、错误分类一致。
 - 可交付性：支持可移植 Python、离线模型、Windows 桌面安装包。
@@ -65,11 +65,11 @@ VideoSyncMaster 是一款面向多语言视频教程场景的 AI 配音桌面应
 
 仓库已经具备三层雏形：
 
-1. `ui/`
+1. `apps/desktop/ui/`
    - 负责界面、工作台、批量任务、设置页、状态展示
-2. `backend/`
+2. `services/media_pipeline/`
    - 负责 AI 工作流、音视频处理、依赖检查、命令分发
-3. `backend/vsm/`
+3. `services/media_pipeline/vsm/`
    - 已出现应用层 / 领域层 / 基础设施层 / 接口层的分层尝试
 
 ### 3.3 当前主要优势
@@ -81,7 +81,7 @@ VideoSyncMaster 是一款面向多语言视频教程场景的 AI 配音桌面应
 
 ### 3.4 当前主要问题
 
-- `backend/main.py` 承担了过多职责：启动、环境准备、模型路由、业务编排、异常处理混杂在一起。
+- `services/media_pipeline/main.py` 承担了过多职责：启动、环境准备、模型路由、业务编排、异常处理混杂在一起。
 - 业务工作流仍偏“脚本式串行调用”，缺少清晰的用例服务层。
 - ASR、翻译、分句、TTS、混音、导出之间的领域边界还不够稳定。
 - 前端已形成页面与 Hook 分层，但状态流、任务状态机、错误口径仍可继续统一。
@@ -646,8 +646,8 @@ Electron Shell
 
 先落地方案 A：
 
-- `backend/main.py` 保留为主控 worker
-- `backend/runners/asr_runtime` 继续发展成标准 ASR runtime
+- `services/media_pipeline/main.py` 保留为主控 worker
+- `services/media_pipeline/runners/asr_runtime` 继续发展成标准 ASR runtime
 - 新增 `backend/runners/tts_runtime`
 - 后续视翻译模型复杂度决定是否增加 `translation_runtime`
 
@@ -707,7 +707,7 @@ VideoSyncMaster/
   requirements.txt
 ```
 
-当前 `backend/vsm/` 已经可以作为 `services/media_pipeline/` 的内核来源，建议后续逐步把 `backend/*.py` 的核心逻辑迁移进去。
+当前 `services/media_pipeline/vsm/` 已经可以作为 `services/media_pipeline/` 的内核来源，建议后续逐步把顶层 `services/media_pipeline/*.py` 的核心逻辑迁移进去。
 
 ---
 
@@ -724,7 +724,7 @@ VideoSyncMaster/
 - 模型：`models`、`Qwen3-ASR`
 - 资源：`resource`、`asset`
 - 运行产物：`logs`、`output`
-- 临时缓存：`.cache`、`.env_cache`、`__pycache__`
+- 临时缓存：`storage/cache/`、`__pycache__`
 - 打包脚本：`package_app.py`、`patch_installer.iss`、`start.bat`
 
 这会带来几个问题：
@@ -837,7 +837,7 @@ VideoSyncMaster/
 | `logs/` | `storage/logs/` | 运行产物 |
 | `output/` | `storage/output/` | 导出产物 |
 | `.cache/` | `storage/cache/` | 本地缓存 |
-| `.env_cache/` | `storage/cache/env/` | 环境缓存 |
+| `storage/cache/env/` | `storage/cache/env/` | 环境缓存 |
 | `package_app.py` | `scripts/release/package_app.py` | 发布脚本 |
 | `patch_installer.iss` | `resources/packaging/installer/patch_installer.iss` | 安装器资源 |
 | `start.bat` | `scripts/dev/start.bat` | 开发入口脚本 |
@@ -998,7 +998,7 @@ VideoSyncMaster/
 
 任务：
 
-- 把 `backend/main.py` 中工作流拆分到 `vsm/app/use_cases`
+- 把 `services/media_pipeline/main.py` 中工作流拆分到 `vsm/app/use_cases`
 - 统一 DTO 与错误模型
 - 为 TTS runtime 建立独立 runner
 - 建立 `storage/`、`resources/`、`runtime/` 的物理目录并完成低风险迁移
@@ -1048,7 +1048,7 @@ VideoSyncMaster/
 
 按商业价值和风险排序，建议优先做以下 8 项：
 
-1. 拆分 `backend/main.py`，建立明确用例服务层。
+1. 拆分 `services/media_pipeline/main.py`，建立明确用例服务层。
 2. 建立统一的 `Segment` / `Session` / `ErrorInfo` 数据模型。
 3. 将 ASR / TTS provider 彻底适配成统一接口。
 4. 把仓库顶层目录按源码、资源、运行时、模型、产物重新分组。

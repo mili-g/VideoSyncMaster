@@ -16,7 +16,6 @@ class RuntimeSearchPathTests(unittest.TestCase):
         roots = get_faster_whisper_runtime_search_roots(
             "C:/repo",
             backend_dir="C:/repo/services/media_pipeline",
-            legacy_project_root="C:/repo/services",
             extra_root="C:/custom/fw",
         )
 
@@ -24,7 +23,7 @@ class RuntimeSearchPathTests(unittest.TestCase):
         self.assertEqual("C:/custom/fw", normalized[0])
         self.assertEqual("C:/repo/models/faster_whisper_runtime", normalized[1])
         self.assertEqual("C:/repo/resources/media_tools/faster_whisper", normalized[2])
-        self.assertIn("C:/repo/services/resource/bin/Faster-Whisper-XXL", normalized)
+        self.assertIn("C:/repo/services/resources/media_tools/faster_whisper", normalized)
         self.assertEqual(len(normalized), len(set(normalized)))
 
 

@@ -7,7 +7,7 @@ import torch
 from app_logging import get_logger, redirect_print
 from bootstrap.runtime_env import setup_gpu_paths
 from dependency_manager import ensure_package_installed, ensure_transformers_version
-from model_profiles import PROJECT_ROOT, PROJECT_ROOT_PROD, resolve_existing_path
+from model_profiles import MODELS_ROOT, resolve_existing_path
 from subtitle_postprocess import clean_segment_text, normalize_output_segments
 
 
@@ -52,8 +52,7 @@ _HALLUCINATION_KEYWORDS = (
 
 def _aligner_candidates():
     return [
-        os.path.join(PROJECT_ROOT, "models", "Qwen3-ForcedAligner-0.6B"),
-        os.path.join(PROJECT_ROOT_PROD, "models", "Qwen3-ForcedAligner-0.6B"),
+        os.path.join(MODELS_ROOT, "Qwen3-ForcedAligner-0.6B"),
     ]
 
 
@@ -61,7 +60,7 @@ def _resolve_aligner_dir(model_name: str | None = None) -> str:
     if model_name and os.path.isdir(model_name):
         return model_name
     if model_name:
-        direct_candidate = os.path.join(PROJECT_ROOT, "models", model_name)
+        direct_candidate = os.path.join(MODELS_ROOT, model_name)
         if os.path.isdir(direct_candidate):
             return direct_candidate
     model_dir = resolve_existing_path(_aligner_candidates())

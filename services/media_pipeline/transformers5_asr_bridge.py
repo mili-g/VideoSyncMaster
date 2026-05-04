@@ -6,19 +6,13 @@ import subprocess
 import sys
 from typing import Any
 
-from bootstrap.path_layout import get_project_root, get_runtime_overlay_dir, get_storage_cache_dir, get_storage_runtime_dir, resolve_portable_python
+from bootstrap.path_layout import get_project_root, get_runtime_overlay_dir, resolve_portable_python
 
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = get_project_root(CURRENT_DIR)
 RUNNER_PATH = os.path.join(CURRENT_DIR, "transformers5_asr_runner.py")
-_CACHE_DIR = get_storage_cache_dir(PROJECT_ROOT)
-_RUNTIME_DIR = get_storage_runtime_dir(PROJECT_ROOT)
 PREFERRED_OVERLAY_DIR = get_runtime_overlay_dir(PROJECT_ROOT, "transformers5_asr")
-LEGACY_OVERLAY_DIRS = [
-    os.path.join(_RUNTIME_DIR, "transformers5_asr"),
-    os.path.join(_CACHE_DIR, "transformers5_asr_overlay"),
-]
 _IGNORED_TRANSFORMERS5_STDERR_PATTERNS = (
     "VibeVoiceAsrProcessor` defines `feature_extractor_class",
     "Loading weights:",
@@ -26,11 +20,6 @@ _IGNORED_TRANSFORMERS5_STDERR_PATTERNS = (
 
 
 def resolve_transformers5_overlay_dir() -> str:
-    if os.path.isdir(PREFERRED_OVERLAY_DIR):
-        return PREFERRED_OVERLAY_DIR
-    for legacy_dir in LEGACY_OVERLAY_DIRS:
-        if os.path.isdir(legacy_dir):
-            return legacy_dir
     return PREFERRED_OVERLAY_DIR
 
 

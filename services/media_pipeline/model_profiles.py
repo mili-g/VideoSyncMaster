@@ -1,9 +1,11 @@
 import os
 
+from bootstrap.path_layout import get_project_root
+
 
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.abspath(os.path.join(BACKEND_DIR, ".."))
-PROJECT_ROOT_PROD = os.path.abspath(os.path.join(BACKEND_DIR, "..", ".."))
+APP_ROOT = get_project_root(BACKEND_DIR)
+MODELS_ROOT = os.path.join(APP_ROOT, "models")
 USER_HOME = os.path.expanduser("~")
 
 
@@ -33,15 +35,12 @@ ASR_MODEL_PROFILES = {
             "modelscope_vad_id": "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch",
             "use_itn": True,
             "candidates": [
-                os.path.join(PROJECT_ROOT, "models", "FunASR-SenseVoiceSmall"),
-                os.path.join(PROJECT_ROOT_PROD, "models", "FunASR-SenseVoiceSmall"),
-                os.path.join(PROJECT_ROOT, "models", "SenseVoiceSmall"),
-                os.path.join(PROJECT_ROOT_PROD, "models", "SenseVoiceSmall"),
+                os.path.join(MODELS_ROOT, "FunASR-SenseVoiceSmall"),
+                os.path.join(MODELS_ROOT, "SenseVoiceSmall"),
                 os.path.join(USER_HOME, ".cache", "modelscope", "hub", "models", "iic", "SenseVoiceSmall"),
             ],
             "vad_candidates": [
-                os.path.join(PROJECT_ROOT, "models", "FunASR-fsmn-vad"),
-                os.path.join(PROJECT_ROOT_PROD, "models", "FunASR-fsmn-vad"),
+                os.path.join(MODELS_ROOT, "FunASR-fsmn-vad"),
                 os.path.join(USER_HOME, ".cache", "modelscope", "hub", "models", "iic", "speech_fsmn_vad_zh-cn-16k-common-pytorch"),
             ],
             "languages": ["auto", "zh", "yue", "en", "ja", "ko", "nospeech"],
@@ -57,17 +56,14 @@ ASR_MODEL_PROFILES = {
             "languages": ["auto", "zh"],
             "use_itn": True,
             "candidates": [
-                os.path.join(PROJECT_ROOT, "models", "FunASR-paraformer-zh"),
-                os.path.join(PROJECT_ROOT_PROD, "models", "FunASR-paraformer-zh"),
+                os.path.join(MODELS_ROOT, "FunASR-paraformer-zh"),
             ],
             "vad_candidates": [
-                os.path.join(PROJECT_ROOT, "models", "FunASR-fsmn-vad"),
-                os.path.join(PROJECT_ROOT_PROD, "models", "FunASR-fsmn-vad"),
+                os.path.join(MODELS_ROOT, "FunASR-fsmn-vad"),
                 os.path.join(USER_HOME, ".cache", "modelscope", "hub", "models", "iic", "speech_fsmn_vad_zh-cn-16k-common-pytorch"),
             ],
             "punc_candidates": [
-                os.path.join(PROJECT_ROOT, "models", "FunASR-ct-punc"),
-                os.path.join(PROJECT_ROOT_PROD, "models", "FunASR-ct-punc"),
+                os.path.join(MODELS_ROOT, "FunASR-ct-punc"),
             ],
         },
     },
@@ -76,20 +72,16 @@ ASR_MODEL_PROFILES = {
             "label": "large-v3-turbo",
             "model_name": "large-v3-turbo",
             "candidates": [
-                os.path.join(PROJECT_ROOT, "models", "faster-whisper-large-v3-turbo-ct2"),
-                os.path.join(PROJECT_ROOT_PROD, "models", "faster-whisper-large-v3-turbo-ct2"),
-                os.path.join(PROJECT_ROOT, "models", "faster-whisper-large-v3-ct2"),
-                os.path.join(PROJECT_ROOT_PROD, "models", "faster-whisper-large-v3-ct2"),
+                os.path.join(MODELS_ROOT, "faster-whisper-large-v3-turbo-ct2"),
+                os.path.join(MODELS_ROOT, "faster-whisper-large-v3-ct2"),
             ],
         },
         "quality": {
             "label": "large-v3",
             "model_name": "large-v3",
             "candidates": [
-                os.path.join(PROJECT_ROOT, "models", "faster-whisper-large-v3-ct2"),
-                os.path.join(PROJECT_ROOT_PROD, "models", "faster-whisper-large-v3-ct2"),
-                os.path.join(PROJECT_ROOT, "models", "faster-whisper-large-v3-turbo-ct2"),
-                os.path.join(PROJECT_ROOT_PROD, "models", "faster-whisper-large-v3-turbo-ct2"),
+                os.path.join(MODELS_ROOT, "faster-whisper-large-v3-ct2"),
+                os.path.join(MODELS_ROOT, "faster-whisper-large-v3-turbo-ct2"),
             ],
         },
     },
@@ -98,16 +90,14 @@ ASR_MODEL_PROFILES = {
             "label": "Qwen3-ASR-1.7B",
             "model_name": "Qwen3-ASR-1.7B",
             "candidates": [
-                os.path.join(PROJECT_ROOT, "models", "Qwen3-ASR-1.7B"),
-                os.path.join(PROJECT_ROOT_PROD, "models", "Qwen3-ASR-1.7B"),
+                os.path.join(MODELS_ROOT, "Qwen3-ASR-1.7B"),
             ],
         },
         "fast": {
             "label": "Qwen3-ASR-0.6B",
             "model_name": "Qwen3-ASR-0.6B",
             "candidates": [
-                os.path.join(PROJECT_ROOT, "models", "Qwen3-ASR-0.6B"),
-                os.path.join(PROJECT_ROOT_PROD, "models", "Qwen3-ASR-0.6B"),
+                os.path.join(MODELS_ROOT, "Qwen3-ASR-0.6B"),
             ],
         },
     },
@@ -117,8 +107,7 @@ ASR_MODEL_PROFILES = {
             "model_name": "VibeVoice-ASR-HF",
             "hf_model_id": "microsoft/VibeVoice-ASR-HF",
             "candidates": [
-                os.path.join(PROJECT_ROOT, "models", "VibeVoice-ASR-HF"),
-                os.path.join(PROJECT_ROOT_PROD, "models", "VibeVoice-ASR-HF"),
+                os.path.join(MODELS_ROOT, "VibeVoice-ASR-HF"),
             ],
         },
     },
@@ -130,8 +119,7 @@ TTS_MODEL_PROFILES = {
         "standard": {
             "label": "Index-TTS Standard",
             "model_dir_candidates": [
-                os.path.join(PROJECT_ROOT, "models", "index-tts"),
-                os.path.join(PROJECT_ROOT_PROD, "models", "index-tts"),
+                os.path.join(MODELS_ROOT, "index-tts"),
             ],
         },
     },

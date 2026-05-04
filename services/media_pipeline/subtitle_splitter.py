@@ -10,6 +10,7 @@ from typing import List, Union
 from app_logging import get_logger, redirect_print
 from asr_data import ASRData, ASRDataSeg
 from llm import LLMTranslator
+from path_layout import get_project_root
 from text_utils import count_words, is_mainly_cjk, is_pure_punctuation, is_space_separated_language
 
 logger = get_logger("subtitle.splitter")
@@ -101,11 +102,9 @@ def _should_enable_llm(splitter_kwargs: dict | None) -> bool:
         return os.path.exists(model_dir)
 
     backend_dir = os.path.dirname(os.path.abspath(__file__))
-    default_paths = [
-        os.path.join(backend_dir, "..", "models", "Qwen2.5-7B-Instruct"),
-        os.path.join(backend_dir, "..", "..", "models", "Qwen2.5-7B-Instruct"),
-    ]
-    return any(os.path.exists(path) for path in default_paths)
+    project_root = get_project_root(backend_dir)
+    default_path = os.path.join(project_root, "models", "Qwen2.5-7B-Instruct")
+    return os.path.exists(default_path)
 
 
 def split_by_llm(text: str, translator: LLMTranslator, max_word_count_cjk: int, max_word_count_english: int) -> List[str]:

@@ -28,7 +28,7 @@ from asr_chunking import (
     merge_chunk_segments,
     split_audio_file,
 )
-from model_profiles import PROJECT_ROOT, PROJECT_ROOT_PROD, get_asr_profile, resolve_existing_path
+from model_profiles import APP_ROOT, get_asr_profile, resolve_existing_path
 from subtitle_postprocess import clean_segment_text, finalize_subtitle_segments, normalize_output_segments
 
 
@@ -222,9 +222,8 @@ def _resolve_faster_whisper_program_path(program_name):
     filename = f"{program_name}.exe" if os.name == "nt" else program_name
     extra_root = os.environ.get("FASTER_WHISPER_BIN_DIR")
     search_roots = get_faster_whisper_runtime_search_roots(
-        PROJECT_ROOT_PROD,
+        APP_ROOT,
         backend_dir=BACKEND_DIR,
-        legacy_project_root=PROJECT_ROOT,
         extra_root=extra_root,
     )
 

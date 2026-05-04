@@ -307,9 +307,6 @@ function getFasterWhisperRuntimeSearchRoots(projectRoot: string) {
     path.join(projectRoot, 'resources', 'media_tools'),
     path.join(projectRoot, 'resources'),
     projectRoot,
-    path.join(projectRoot, 'resource', 'bin'),
-    path.join(projectRoot, 'resource', 'bin', 'Faster-Whisper-XXL'),
-    path.join(projectRoot, 'resource', 'bin', 'Faster-Whisper-XXL', 'Faster-Whisper-XXL'),
   ]
 
   return Array.from(new Set(candidates.map(candidate => path.resolve(candidate))))
@@ -618,7 +615,6 @@ function looksLikeProjectRoot(candidate: string) {
   }
 
   return hasStructureMarkers(candidate, ['apps', 'services', 'docs'])
-    || hasStructureMarkers(candidate, ['ui', 'backend'])
 }
 
 function hasStructureMarkers(candidate: string, markers: string[]) {
@@ -2305,14 +2301,7 @@ app.whenReady().then(async () => {
           return false;
         };
 
-        const preferredOverlayRuntimeDir = path.join(projectRoot, 'runtime', 'overlays', 'transformers5_asr');
-        const legacyOverlayRuntimeDirs = [
-          path.join(projectRoot, 'storage', 'runtime', 'transformers5_asr'),
-          path.join(projectRoot, 'storage', 'cache', 'transformers5_asr_overlay')
-        ];
-        const overlayRuntimeDir = fs.existsSync(preferredOverlayRuntimeDir)
-          ? preferredOverlayRuntimeDir
-          : (legacyOverlayRuntimeDirs.find((candidate) => fs.existsSync(candidate)) || preferredOverlayRuntimeDir);
+        const overlayRuntimeDir = path.join(projectRoot, 'runtime', 'overlays', 'transformers5_asr');
         const overlayTransformersReady = fs.existsSync(path.join(overlayRuntimeDir, 'transformers'));
         const overlayVersion = (() => {
           if (!fs.existsSync(overlayRuntimeDir)) {
@@ -2683,7 +2672,7 @@ app.whenReady().then(async () => {
           vibevoice_asr_standard: vibeVoiceAsrDetail.installed,
           index_tts: indexTtsDetail.installed,
           source_separation: sourceSeparationDetail.installed,
-          qwen: checkDir(['Qwen2.5-7B-Instruct', 'qwen/Qwen2.5-7B-Instruct']),
+          qwen: checkDir(['Qwen2.5-7B-Instruct']),
           qwen_tokenizer: qwenTokenizerDetail.installed,
           qwen_17b_base: qwen17BBaseDetail.installed,
           qwen_17b_design: qwen17BDesignDetail.installed,
@@ -3018,10 +3007,6 @@ except Exception as e:
         const trackingKey = args?.key || 'transformers5_asr_runtime';
         const { projectRoot } = resolveModelsRoot();
         const targetDir = path.join(projectRoot, 'runtime', 'overlays', 'transformers5_asr');
-        const legacyDirs = [
-          path.join(projectRoot, 'storage', 'runtime', 'transformers5_asr'),
-          path.join(projectRoot, 'storage', 'cache', 'transformers5_asr_overlay')
-        ];
 
         if (!fs.existsSync(targetDir)) {
           fs.mkdirSync(targetDir, { recursive: true });
@@ -3029,7 +3014,6 @@ except Exception as e:
 
         const pythonExe = getPythonExe(projectRoot);
         const safeTargetDir = targetDir.replace(/\\/g, '\\\\');
-        const safeLegacyDirsJson = JSON.stringify(legacyDirs.map((candidate) => candidate.replace(/\\/g, '\\\\')));
         const script = `
 import os
 import shutil
@@ -3037,7 +3021,6 @@ import subprocess
 import sys
 
 target_dir = r"${safeTargetDir}"
-legacy_dirs = ${safeLegacyDirsJson}
 packages = [
     "transformers==5.7.0",
 ]
@@ -3093,13 +3076,6 @@ for package in packages:
 
 prune_scientific_stack(target_dir)
 emit(85, "已移除 overlay 内的科学计算基础包，避免污染主 runtime")
-
-for legacy_dir in legacy_dirs:
-    if os.path.isdir(legacy_dir):
-        try:
-            shutil.rmtree(legacy_dir, ignore_errors=True)
-        except OSError:
-            pass
 
 emit(100, "共享 Transformers 5.x ASR Runtime 安装完成")
 print("SUCCESS", flush=True)

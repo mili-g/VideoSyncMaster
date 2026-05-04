@@ -4,6 +4,7 @@ import tempfile
 import logging
 
 from app_logging import get_logger, redirect_print
+from bootstrap.path_layout import get_project_root, get_storage_cache_dir
 from ffmpeg_utils import ensure_portable_ffmpeg_in_path
 from source_separation import prepare_background_stem
 
@@ -555,13 +556,9 @@ def merge_audios_to_video(video_path, audio_segments, output_path, strategy='aut
 
 def get_rife_executable():
     """Locate rife-ncnn-vulkan executable."""
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    
-    candidates = [
-        os.path.join(current_dir, "..", "models", "rife"),
-        os.path.join(current_dir, "..", "..", "models", "rife"),
-        os.path.join(current_dir, "models", "rife")
-    ]
+    app_root = get_project_root(os.path.dirname(os.path.abspath(__file__)))
+
+    candidates = [os.path.join(app_root, "models", "rife")]
     
     rife_exe = None
     rife_model_path = None
@@ -675,11 +672,8 @@ def apply_rife_interpolation(input_path, output_path, target_duration):
 
     # Setup Cache Directories
     # Use .cache/rife/work_<uuid>
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) # From backend/alignment.py -> Backend -> Root ? 
-    # Actually explicit path provided by user: .cache/rife
-    # Let's try to find root relative to this file: e:\VideoSyncMaster\backend\alignment.py -> e:\VideoSyncMaster
-    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    cache_root = os.path.join(root_dir, '.cache', 'rife')
+    app_root = get_project_root(os.path.dirname(os.path.abspath(__file__)))
+    cache_root = os.path.join(get_storage_cache_dir(app_root), "rife")
     
     unique_id = uuid.uuid4().hex[:8]
     work_dir = os.path.join(cache_root, f"work_{unique_id}")

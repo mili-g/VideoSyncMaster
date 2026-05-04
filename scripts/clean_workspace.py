@@ -79,8 +79,6 @@ def clean_workspace(include_runtime_caches: bool = False) -> list[Path]:
         for base in [
             ROOT_DIR / "runtime" / "python",
             ROOT_DIR / "runtime" / "overlays" / "transformers5_asr",
-            ROOT_DIR / "storage" / "runtime" / "transformers5_asr",
-            ROOT_DIR / "storage" / "cache" / "transformers5_asr_overlay",
             ROOT_DIR / "models",
         ]:
             if not base.exists():

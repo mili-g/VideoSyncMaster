@@ -2,6 +2,9 @@ import importlib.util
 import os
 import sys
 
+from model_profiles import MODELS_ROOT
+
+
 class LLMTranslator:
     def __init__(self, model_dir=None, api_key=None, base_url=None, model=None, enable_local_llm=False):
         self.api_key = api_key
@@ -128,16 +131,7 @@ class LLMTranslator:
         return None
 
     def _resolve_local_model_dir(self, model_dir=None):
-        # Path Logic
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-
-        # Candidates
-        # 1. Dev: ../models/Qwen2.5-7B-Instruct
-        path_dev = os.path.join(base_dir, "..", "models", "Qwen2.5-7B-Instruct")
-        # 2. Prod: ../../models/Qwen2.5-7B-Instruct (resources/backend -> resources -> root)
-        path_prod = os.path.join(base_dir, "..", "..", "models", "Qwen2.5-7B-Instruct")
-
-        default_dir = path_prod if os.path.exists(path_prod) else path_dev
+        default_dir = os.path.join(MODELS_ROOT, "Qwen2.5-7B-Instruct")
 
         if not model_dir:
             return default_dir

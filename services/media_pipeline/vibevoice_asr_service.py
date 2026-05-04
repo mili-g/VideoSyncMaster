@@ -16,10 +16,6 @@ def _resolve_model_dir(model_name: str | None = None) -> str:
     candidates = list(profile.get("candidates") or [])
     if model_name and os.path.isdir(model_name):
         return model_name
-    if model_name:
-        direct_candidate = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "models", model_name)
-        if os.path.isdir(direct_candidate):
-            return direct_candidate
     model_dir = resolve_existing_path(candidates)
     if not model_dir:
         raise FileNotFoundError(

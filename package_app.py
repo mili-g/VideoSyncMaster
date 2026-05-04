@@ -30,13 +30,6 @@ except ImportError:
         RESET_ALL = BRIGHT = ""
 
 
-def resolve_first_existing(*candidates: Path) -> Path:
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    return candidates[0]
-
-
 @dataclass(frozen=True)
 class ProjectLayout:
     root_dir: Path
@@ -55,24 +48,15 @@ class ProjectLayout:
 
 
 def get_ui_dir(root_dir: Path) -> Path:
-    return resolve_first_existing(
-        root_dir / "apps" / "desktop" / "ui",
-        root_dir / "ui"
-    )
+    return root_dir / "apps" / "desktop" / "ui"
 
 
 def get_backend_dir(root_dir: Path) -> Path:
-    return resolve_first_existing(
-        root_dir / "services" / "media_pipeline",
-        root_dir / "backend"
-    )
+    return root_dir / "services" / "media_pipeline"
 
 
 def get_python_dir(root_dir: Path) -> Path:
-    return resolve_first_existing(
-        root_dir / "runtime" / "python",
-        root_dir / "python"
-    )
+    return root_dir / "runtime" / "python"
 
 
 def get_models_dir(root_dir: Path) -> Path:
@@ -84,24 +68,15 @@ def get_env_cache_dir(root_dir: Path) -> Path:
 
 
 def get_qwen_asr_dir(root_dir: Path) -> Path:
-    return resolve_first_existing(
-        root_dir / "models" / "asr" / "qwen3",
-        root_dir / "Qwen3-ASR"
-    )
+    return root_dir / "models" / "asr" / "qwen3"
 
 
 def get_vc_redist_path(root_dir: Path) -> Path:
-    return resolve_first_existing(
-        root_dir / "resources" / "packaging" / "runtime" / "VC_redist.x64.exe",
-        root_dir / "VC_redist.x64.exe"
-    )
+    return root_dir / "resources" / "packaging" / "runtime" / "VC_redist.x64.exe"
 
 
 def get_installer_script_path(root_dir: Path) -> Path:
-    return resolve_first_existing(
-        root_dir / "resources" / "packaging" / "installer" / "patch_installer.iss",
-        root_dir / "patch_installer.iss"
-    )
+    return root_dir / "resources" / "packaging" / "installer" / "patch_installer.iss"
 
 
 def build_project_layout(root_dir: Path) -> ProjectLayout:

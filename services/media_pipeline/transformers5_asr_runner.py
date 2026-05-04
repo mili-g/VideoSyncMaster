@@ -13,24 +13,13 @@ CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 if CURRENT_DIR not in sys.path:
     sys.path.insert(0, CURRENT_DIR)
 
-from bootstrap.path_layout import get_project_root, get_runtime_overlay_dir, get_runtime_python_dir, get_storage_cache_dir, get_storage_runtime_dir
+from bootstrap.path_layout import get_project_root, get_runtime_overlay_dir, get_runtime_python_dir, get_storage_cache_dir
 
 
 PROJECT_ROOT = get_project_root(CURRENT_DIR)
 _CACHE_DIR = get_storage_cache_dir(PROJECT_ROOT)
-_RUNTIME_DIR = get_storage_runtime_dir(PROJECT_ROOT)
 _OFFLOAD_ROOT = os.path.join(_CACHE_DIR, "transformers5_asr_offload")
-PREFERRED_OVERLAY_DIR = get_runtime_overlay_dir(PROJECT_ROOT, "transformers5_asr")
-LEGACY_OVERLAY_DIRS = [
-    os.path.join(_RUNTIME_DIR, "transformers5_asr"),
-    os.path.join(_CACHE_DIR, "transformers5_asr_overlay"),
-]
-OVERLAY_DIR = PREFERRED_OVERLAY_DIR
-if not os.path.isdir(OVERLAY_DIR):
-    for _legacy_dir in LEGACY_OVERLAY_DIRS:
-        if os.path.isdir(_legacy_dir):
-            OVERLAY_DIR = _legacy_dir
-            break
+OVERLAY_DIR = get_runtime_overlay_dir(PROJECT_ROOT, "transformers5_asr")
 RUNTIME_SITE_PACKAGES = os.path.join(get_runtime_python_dir(PROJECT_ROOT), "Lib", "site-packages")
 
 

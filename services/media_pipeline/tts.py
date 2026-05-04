@@ -18,7 +18,7 @@ from audio_validation import validate_generated_audio, validate_generated_audio_
 from event_protocol import emit_issue, emit_partial_result, emit_progress, emit_stage
 from ffmpeg_utils import ensure_portable_ffmpeg_in_path, resolve_ffmpeg_executable
 from gpu_runtime import choose_adaptive_batch_size, format_gpu_snapshot
-from model_profiles import get_tts_profile, resolve_existing_path
+from model_profiles import MODELS_ROOT, get_tts_profile, resolve_existing_path
 
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 if BACKEND_DIR not in sys.path:
@@ -43,18 +43,8 @@ except ImportError as e:
     IndexTTS2 = None
     INDEXTTS_IMPORT_ERROR = str(e)
 
-# Default Checkpoint Paths
-BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
-# 1. Dev: ../models/index-tts
-PATH_DEV = os.path.join(BACKEND_DIR, "..", "models", "index-tts")
-# 2. Prod: ../../models/index-tts
-PATH_PROD = os.path.join(BACKEND_DIR, "..", "..", "models", "index-tts")
+DEFAULT_MODEL_DIR = os.path.join(MODELS_ROOT, "index-tts")
 
-if os.path.exists(PATH_PROD):
-    DEFAULT_MODEL_DIR = PATH_PROD
-else:
-    DEFAULT_MODEL_DIR = PATH_DEV
-    
 DEFAULT_CONFIG_PATH = os.path.join(DEFAULT_MODEL_DIR, "config.yaml")
 INDEXTTS_ALLOWED_INFER_KWARGS = {
     "do_sample",

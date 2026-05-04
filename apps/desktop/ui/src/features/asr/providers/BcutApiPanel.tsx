@@ -1,8 +1,6 @@
-import type { AsrProviderPanelProps } from '../types';
 import { InfoPanel } from '../shared';
 
-export default function BcutApiPanel({
-}: AsrProviderPanelProps) {
+export default function BcutApiPanel() {
     return (
         <div className="provider-settings-grid">
             <section className="config-section config-section--wide">

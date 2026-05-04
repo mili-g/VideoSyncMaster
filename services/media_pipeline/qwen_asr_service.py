@@ -39,7 +39,6 @@ except ImportError:
 def _get_qwen_repo_candidates():
     return [
         os.path.join(project_root, "models", "asr", "qwen3"),
-        os.path.join(project_root, "Qwen3-ASR"),
     ]
 
 

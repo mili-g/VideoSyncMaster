@@ -194,12 +194,7 @@ def resolve_models_hub_dir(app_root: str, current_dir: str, argv: list[str], deb
         except Exception:
             pass
 
-    possible_paths = [
-        os.path.join(app_root, "models"),
-        os.path.join(app_root, "resources", "models"),
-        os.path.abspath(os.path.join(current_dir, "..", "..", "..", "models")),
-        os.path.abspath(os.path.join(current_dir, "..", "models")),
-    ]
+    possible_paths = [os.path.join(app_root, "models")]
 
     debug_print(f"[DEBUG] APP_ROOT detected as: {app_root}")
     debug_print("[DEBUG] Checking model paths:")
