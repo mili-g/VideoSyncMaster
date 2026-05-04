@@ -229,7 +229,7 @@ const TranslationPanel: React.FC<TranslationPanelProps> = ({
                                     minWidth: '54px'
                                 }}
                             >
-                                {translationBusy ? '翻译中...' : '翻译'}
+                                {translationBusy ? '翻译中' : '翻译'}
                             </button>
                             <button
                                 onClick={onGenerateAll}
@@ -247,7 +247,7 @@ const TranslationPanel: React.FC<TranslationPanelProps> = ({
                                     minWidth: '72px'
                                 }}
                             >
-                                {dubbingLoading ? '处理中...' : (generatingSegmentId !== null ? '单个生成中...' : '生成配音')}
+                                {dubbingLoading ? '处理中' : (generatingSegmentId !== null ? '单项中' : '生成配音')}
                             </button>
                             <button
                                 onClick={() => fileInputRef.current?.click()}

@@ -165,6 +165,16 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
         translatedSegmentsRef.current = translatedSegments;
     }, [translatedSegments]);
     useEffect(() => {
+        if (generatingSegmentId === null) {
+            return;
+        }
+
+        const activeSegment = translatedSegments[generatingSegmentId];
+        if (!activeSegment || (activeSegment.audioStatus !== 'pending' && activeSegment.audioStatus !== 'generating')) {
+            setGeneratingSegmentId(null);
+        }
+    }, [generatingSegmentId, translatedSegments]);
+    useEffect(() => {
         originalVideoPathRef.current = originalVideoPath;
     }, [originalVideoPath]);
     useEffect(() => {

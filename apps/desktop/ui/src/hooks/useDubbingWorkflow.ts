@@ -80,26 +80,31 @@ export function useDubbingWorkflow({
     const voiceMode = getStoredTtsVoiceMode();
     const useNarrationMode = voiceMode === 'narration';
 
+    const showBlockingFeedback = (title: string, message: string, statusText?: string) => {
+        setStatus(statusText || message);
+        setFeedback({
+            title,
+            message,
+            type: 'error'
+        });
+    };
+
     const ensureSubtitleLanguagesBeforeDubbing = (segmentsToUse: Segment[]) => {
         const sourceValidation = validateSegmentLanguageFit(sourceSegments, asrOriLang, 'source');
         if (!sourceValidation.ok) {
-            setStatus(sourceValidation.reason || '原字幕语言与当前配置不匹配。');
-            setFeedback({
-                title: '原字幕语言不匹配',
-                message: sourceValidation.reason || '原字幕语言与当前配置不匹配。',
-                type: 'error'
-            });
+            showBlockingFeedback(
+                '原字幕语言不匹配',
+                sourceValidation.reason || '原字幕语言与当前配置不匹配。'
+            );
             return false;
         }
 
         const translatedValidation = validateSegmentLanguageFit(segmentsToUse, targetLang, 'target');
         if (!translatedValidation.ok) {
-            setStatus(translatedValidation.reason || '翻译字幕语言与当前配置不匹配。');
-            setFeedback({
-                title: '翻译字幕语言不匹配',
-                message: translatedValidation.reason || '翻译字幕语言与当前配置不匹配。',
-                type: 'error'
-            });
+            showBlockingFeedback(
+                '翻译字幕语言不匹配',
+                translatedValidation.reason || '翻译字幕语言与当前配置不匹配。'
+            );
             return false;
         }
 
@@ -157,19 +162,26 @@ export function useDubbingWorkflow({
     };
 
     const handleGenerateSingleDubbing = async (index: number) => {
-        if (!originalVideoPath) return;
+        setFeedback(null);
+        setStatus('正在检查单段配音前置条件...');
+        if (!originalVideoPath) {
+            showBlockingFeedback('缺少视频', '请先上传或选择视频，再生成配音。');
+            return;
+        }
         const segment = translatedSegments[index];
-        if (!segment) return;
+        if (!segment) {
+            showBlockingFeedback('片段不存在', '当前字幕片段不存在或已被删除，请刷新后重试。');
+            return;
+        }
         if (!ensureSubtitleLanguagesBeforeDubbing(translatedSegments)) return;
 
         const blockingReason = await getTtsBlockingReason();
         if (blockingReason) {
-            setStatus(`当前 TTS 通道不可执行: ${blockingReason}`);
-            setFeedback({
-                title: 'TTS 通道不可执行',
-                message: `${blockingReason}\n\n系统不会自动切换到其他 TTS provider。请前往模型中心或环境诊断处理后再重试。`,
-                type: 'error'
-            });
+            showBlockingFeedback(
+                'TTS 通道不可执行',
+                `${blockingReason}\n\n系统不会自动切换到其他 TTS provider。请前往模型中心或环境诊断处理后再重试。`,
+                `当前 TTS 通道不可执行: ${blockingReason}`
+            );
             return;
         }
 
@@ -277,17 +289,25 @@ export function useDubbingWorkflow({
 
     const handleGenerateAllDubbing = async (overrideSegments?: Segment[]): Promise<Segment[] | null> => {
         const segmentsToUse = overrideSegments || translatedSegments;
-        if (!originalVideoPath || segmentsToUse.length === 0) return null;
+        setFeedback(null);
+        setStatus('正在检查批量配音前置条件...');
+        if (!originalVideoPath) {
+            showBlockingFeedback('缺少视频', '请先上传或选择视频，再生成配音。');
+            return null;
+        }
+        if (segmentsToUse.length === 0) {
+            showBlockingFeedback('缺少翻译字幕', '当前没有可生成配音的翻译字幕，请先完成翻译或导入目标字幕。');
+            return null;
+        }
         if (!ensureSubtitleLanguagesBeforeDubbing(segmentsToUse)) return null;
 
         const blockingReason = await getTtsBlockingReason();
         if (blockingReason) {
-            setStatus(`当前 TTS 通道不可执行: ${blockingReason}`);
-            setFeedback({
-                title: 'TTS 通道不可执行',
-                message: `${blockingReason}\n\n系统不会自动切换到其他 TTS provider。请前往模型中心或环境诊断处理后再重试。`,
-                type: 'error'
-            });
+            showBlockingFeedback(
+                'TTS 通道不可执行',
+                `${blockingReason}\n\n系统不会自动切换到其他 TTS provider。请前往模型中心或环境诊断处理后再重试。`,
+                `当前 TTS 通道不可执行: ${blockingReason}`
+            );
             return null;
         }
 
@@ -339,7 +359,7 @@ export function useDubbingWorkflow({
 
             const { blocked } = buildTtsExtraArgs(ttsService, batchSize, cloneBatchSize);
             if (blocked) {
-                setFeedback(blocked);
+                showBlockingFeedback(blocked.title, blocked.message);
                 setDubbingLoading(false);
                 return null;
             }
@@ -474,6 +494,7 @@ export function useDubbingWorkflow({
     };
 
     const handleRetryErrors = async () => {
+        setFeedback(null);
         const errorSegments = translatedSegments
             .map((segment, index) => ({ segment, index }))
             .filter(item => item.segment.audioStatus === 'error');
@@ -486,12 +507,11 @@ export function useDubbingWorkflow({
 
         const blockingReason = await getTtsBlockingReason();
         if (blockingReason) {
-            setStatus(`当前 TTS 通道不可执行: ${blockingReason}`);
-            setFeedback({
-                title: 'TTS 通道不可执行',
-                message: `${blockingReason}\n\n系统不会自动切换到其他 TTS provider。请前往模型中心或环境诊断处理后再重试。`,
-                type: 'error'
-            });
+            showBlockingFeedback(
+                'TTS 通道不可执行',
+                `${blockingReason}\n\n系统不会自动切换到其他 TTS provider。请前往模型中心或环境诊断处理后再重试。`,
+                `当前 TTS 通道不可执行: ${blockingReason}`
+            );
             return;
         }
 
