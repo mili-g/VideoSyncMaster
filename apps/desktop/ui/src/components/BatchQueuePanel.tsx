@@ -350,7 +350,7 @@ export default function BatchQueuePanel({
                                             display: 'grid',
                                             gridTemplateColumns: '1.3fr 1fr 0.8fr auto auto',
                                             gap: '10px',
-                                            alignItems: 'center',
+                                            alignItems: 'start',
                                             padding: '12px',
                                             borderRadius: '12px',
                                             background: 'rgba(15,23,42,0.35)',
@@ -373,7 +373,7 @@ export default function BatchQueuePanel({
                                             footer={assignmentValidation && !assignmentValidation.ok ? assignmentValidation.reason : undefined}
                                         />
                                         <div>
-                                            <div style={{ color: 'rgba(255,255,255,0.5)', fontSize: '0.78em', marginBottom: '4px' }}>目标视频</div>
+                                            <div style={unmatchedAssignmentFieldLabelStyle}>目标视频</div>
                                             <select
                                                 value={selection?.itemId || ''}
                                                 onChange={(event) => {
@@ -399,7 +399,7 @@ export default function BatchQueuePanel({
                                             )}
                                         </div>
                                         <div>
-                                            <div style={{ color: 'rgba(255,255,255,0.5)', fontSize: '0.78em', marginBottom: '4px' }}>字幕类型</div>
+                                            <div style={unmatchedAssignmentFieldLabelStyle}>字幕类型</div>
                                             <select
                                                 value={selection?.kind || getSubtitleKind(asset)}
                                                 onChange={(event) => {
@@ -429,7 +429,10 @@ export default function BatchQueuePanel({
                                                 });
                                             }}
                                             disabled={!selection?.itemId || assignmentValidation?.ok === false}
-                                            style={buttonStyle('accentSoft', !selection?.itemId || assignmentValidation?.ok === false)}
+                                            style={{
+                                                ...buttonStyle('accentSoft', !selection?.itemId || assignmentValidation?.ok === false),
+                                                ...unmatchedAssignmentActionStyle
+                                            }}
                                         >
                                             关联
                                         </button>
@@ -442,7 +445,10 @@ export default function BatchQueuePanel({
                                                     return next;
                                                 });
                                             }}
-                                            style={buttonStyle('secondary')}
+                                            style={{
+                                                ...buttonStyle('secondary'),
+                                                ...unmatchedAssignmentActionStyle
+                                            }}
                                         >
                                             移除
                                         </button>
@@ -972,6 +978,19 @@ const selectStyle: React.CSSProperties = {
     border: '1px solid rgba(255,255,255,0.12)',
     background: 'rgba(15,23,42,0.9)',
     color: '#fff'
+};
+
+const unmatchedAssignmentFieldLabelStyle: React.CSSProperties = {
+    color: 'rgba(255,255,255,0.5)',
+    fontSize: '0.78em',
+    marginBottom: '4px',
+    lineHeight: 1.25,
+    minHeight: '18px'
+};
+
+const unmatchedAssignmentActionStyle: React.CSSProperties = {
+    alignSelf: 'start',
+    marginTop: '22px'
 };
 
 function statusLabel(status: BatchQueueItem['status']) {
