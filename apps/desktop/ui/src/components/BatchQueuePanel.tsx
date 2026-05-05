@@ -84,6 +84,7 @@ export default function BatchQueuePanel({
     const inputRef = useRef<HTMLInputElement>(null);
     const originalSubtitleInputRef = useRef<HTMLInputElement>(null);
     const translatedSubtitleInputRef = useRef<HTMLInputElement>(null);
+    const isSingleQueueItem = items.length === 1;
     const [manualAssignments, setManualAssignments] = useState<Record<string, { itemId: string; kind: 'subtitle-original' | 'subtitle-translated' }>>({});
     const [expandedItems, setExpandedItems] = useState<Record<string, boolean>>({});
     const getSubtitleKind = (asset: BatchInputAsset): 'subtitle-original' | 'subtitle-translated' => (
@@ -306,7 +307,17 @@ export default function BatchQueuePanel({
                         event.preventDefault();
                         await consumeFiles(event.dataTransfer.files);
                     }}
-                    style={{ flex: 1, minHeight: 0, overflowY: 'auto', display: 'grid', gap: '12px', paddingRight: '4px' }}
+                    style={{
+                        flex: 1,
+                        minHeight: 0,
+                        overflowY: 'auto',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '12px',
+                        alignItems: 'stretch',
+                        alignContent: 'flex-start',
+                        paddingRight: '4px'
+                    }}
                 >
                 {unmatchedSubtitleAssets.length > 0 && (
                     <div style={{
@@ -442,7 +453,7 @@ export default function BatchQueuePanel({
                     </div>
                 )}
 
-                <div style={{ display: 'grid', gap: '12px' }}>
+                <div style={{ display: 'grid', gap: '12px', alignContent: 'start' }}>
                     {items.length === 0 && (
                         <div style={{ padding: '24px', textAlign: 'center', color: 'rgba(255,255,255,0.6)' }}>
                             暂无任务
@@ -463,82 +474,162 @@ export default function BatchQueuePanel({
                         >
                             <div style={{
                                 display: 'grid',
-                                gridTemplateColumns: 'minmax(0, 1.4fr) minmax(180px, 0.8fr) auto auto auto',
+                                gridTemplateColumns: isSingleQueueItem
+                                    ? 'minmax(0, 1.6fr) auto'
+                                    : 'minmax(0, 1.4fr) minmax(180px, 0.8fr) auto auto auto',
                                 gap: '12px',
-                                alignItems: 'center'
+                                alignItems: isSingleQueueItem ? 'start' : 'center'
                             }}>
-                                <div style={{ minWidth: 0 }}>
+                                <div style={{ minWidth: 0, display: 'grid', gap: isSingleQueueItem ? '10px' : '4px' }}>
                                     <div style={{ color: '#fff', fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                                         {item.fileName}
                                     </div>
                                     <div style={{ color: 'rgba(255,255,255,0.56)', fontSize: '0.82em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: '4px' }}>
                                         {item.stage}
                                     </div>
+                                    <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                                        {getCompactBadges(item).map((badge) => (
+                                            <span
+                                                key={badge.label}
+                                                style={{
+                                                    display: 'inline-flex',
+                                                    alignItems: 'center',
+                                                    padding: '3px 9px',
+                                                    borderRadius: '999px',
+                                                    fontSize: '0.74em',
+                                                    fontWeight: 700,
+                                                    color: badge.color,
+                                                    background: badge.background,
+                                                    whiteSpace: 'nowrap'
+                                                }}
+                                            >
+                                                {badge.label}
+                                            </span>
+                                        ))}
+                                    </div>
+                                    {isSingleQueueItem && (
+                                        <div style={{ display: 'flex', gap: '14px', flexWrap: 'wrap', color: 'rgba(255,255,255,0.68)', fontSize: '0.82em' }}>
+                                            <span>时长 {formatDuration(item.sourceDurationSec)}</span>
+                                            <span>耗时 {formatItemElapsed(item, summary.nowEpochMs)}</span>
+                                            {item.sourcePath && (
+                                                <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '520px' }}>
+                                                    {item.sourcePath}
+                                                </span>
+                                            )}
+                                        </div>
+                                    )}
                                 </div>
 
-                                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                                    {getCompactBadges(item).map((badge) => (
-                                        <span
-                                            key={badge.label}
-                                            style={{
+                                {isSingleQueueItem ? (
+                                    <div style={{ display: 'grid', gap: '10px', justifyItems: 'end', alignContent: 'start' }}>
+                                        <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                                            <div style={{ color: 'rgba(255,255,255,0.72)', fontSize: '0.86em', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                                                <div>{formatDuration(item.sourceDurationSec)}</div>
+                                                <div style={{ marginTop: '4px', color: 'rgba(255,255,255,0.5)' }}>{formatItemElapsed(item, summary.nowEpochMs)}</div>
+                                            </div>
+                                            <span style={{
                                                 display: 'inline-flex',
-                                                alignItems: 'center',
-                                                padding: '3px 9px',
+                                                padding: '4px 10px',
                                                 borderRadius: '999px',
-                                                fontSize: '0.74em',
-                                                fontWeight: 700,
-                                                color: badge.color,
-                                                background: badge.background,
+                                                color: '#fff',
+                                                background: statusColor[item.status],
+                                                fontSize: '0.8em',
+                                                fontWeight: 600,
                                                 whiteSpace: 'nowrap'
-                                            }}
-                                        >
-                                            {badge.label}
-                                        </span>
-                                    ))}
-                                </div>
+                                            }}>
+                                                {statusLabel(item.status)}
+                                            </span>
+                                        </div>
+                                        <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', alignItems: 'center', flexWrap: 'wrap' }}>
+                                            {hasSecondaryInfo(item) && (
+                                                <button
+                                                    onClick={() => setExpandedItems(prev => ({ ...prev, [item.id]: !prev[item.id] }))}
+                                                    style={buttonStyle('secondary')}
+                                                >
+                                                    {expandedItems[item.id] ? '收起' : '详情'}
+                                                </button>
+                                            )}
+                                            {item.outputPath && (
+                                                <button onClick={() => onOpenOutput(item)} style={buttonStyle('accentSoft')}>
+                                                    打开输出
+                                                </button>
+                                            )}
+                                            <button
+                                                onClick={() => onRemoveItem(item.id)}
+                                                disabled={item.status === 'processing'}
+                                                style={buttonStyle('secondary', item.status === 'processing')}
+                                            >
+                                                移除
+                                            </button>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <>
+                                        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                                            {getCompactBadges(item).map((badge) => (
+                                                <span
+                                                    key={badge.label}
+                                                    style={{
+                                                        display: 'inline-flex',
+                                                        alignItems: 'center',
+                                                        padding: '3px 9px',
+                                                        borderRadius: '999px',
+                                                        fontSize: '0.74em',
+                                                        fontWeight: 700,
+                                                        color: badge.color,
+                                                        background: badge.background,
+                                                        whiteSpace: 'nowrap'
+                                                    }}
+                                                >
+                                                    {badge.label}
+                                                </span>
+                                            ))}
+                                        </div>
 
-                                <div style={{ color: 'rgba(255,255,255,0.72)', fontSize: '0.86em', textAlign: 'right', whiteSpace: 'nowrap' }}>
-                                    <div>{formatDuration(item.sourceDurationSec)}</div>
-                                    <div style={{ marginTop: '4px', color: 'rgba(255,255,255,0.5)' }}>{formatItemElapsed(item, summary.nowEpochMs)}</div>
-                                </div>
+                                        <div style={{ color: 'rgba(255,255,255,0.72)', fontSize: '0.86em', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                                            <div>{formatDuration(item.sourceDurationSec)}</div>
+                                            <div style={{ marginTop: '4px', color: 'rgba(255,255,255,0.5)' }}>{formatItemElapsed(item, summary.nowEpochMs)}</div>
+                                        </div>
 
-                                <div>
-                                    <span style={{
-                                        display: 'inline-flex',
-                                        padding: '4px 10px',
-                                        borderRadius: '999px',
-                                        color: '#fff',
-                                        background: statusColor[item.status],
-                                        fontSize: '0.8em',
-                                        fontWeight: 600,
-                                        whiteSpace: 'nowrap'
-                                    }}>
-                                        {statusLabel(item.status)}
-                                    </span>
-                                </div>
+                                        <div>
+                                            <span style={{
+                                                display: 'inline-flex',
+                                                padding: '4px 10px',
+                                                borderRadius: '999px',
+                                                color: '#fff',
+                                                background: statusColor[item.status],
+                                                fontSize: '0.8em',
+                                                fontWeight: 600,
+                                                whiteSpace: 'nowrap'
+                                            }}>
+                                                {statusLabel(item.status)}
+                                            </span>
+                                        </div>
 
-                                <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', alignItems: 'center' }}>
-                                    {hasSecondaryInfo(item) && (
-                                        <button
-                                            onClick={() => setExpandedItems(prev => ({ ...prev, [item.id]: !prev[item.id] }))}
-                                            style={buttonStyle('secondary')}
-                                        >
-                                            {expandedItems[item.id] ? '收起' : '详情'}
-                                        </button>
-                                    )}
-                                    {item.outputPath && (
-                                        <button onClick={() => onOpenOutput(item)} style={buttonStyle('accentSoft')}>
-                                            打开输出
-                                        </button>
-                                    )}
-                                    <button
-                                        onClick={() => onRemoveItem(item.id)}
-                                        disabled={item.status === 'processing'}
-                                        style={buttonStyle('secondary', item.status === 'processing')}
-                                    >
-                                        移除
-                                    </button>
-                                </div>
+                                        <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', alignItems: 'center' }}>
+                                            {hasSecondaryInfo(item) && (
+                                                <button
+                                                    onClick={() => setExpandedItems(prev => ({ ...prev, [item.id]: !prev[item.id] }))}
+                                                    style={buttonStyle('secondary')}
+                                                >
+                                                    {expandedItems[item.id] ? '收起' : '详情'}
+                                                </button>
+                                            )}
+                                            {item.outputPath && (
+                                                <button onClick={() => onOpenOutput(item)} style={buttonStyle('accentSoft')}>
+                                                    打开输出
+                                                </button>
+                                            )}
+                                            <button
+                                                onClick={() => onRemoveItem(item.id)}
+                                                disabled={item.status === 'processing'}
+                                                style={buttonStyle('secondary', item.status === 'processing')}
+                                            >
+                                                移除
+                                            </button>
+                                        </div>
+                                    </>
+                                )}
                             </div>
 
                             {expandedItems[item.id] && hasSecondaryInfo(item) && (

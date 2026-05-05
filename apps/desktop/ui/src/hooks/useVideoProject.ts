@@ -78,6 +78,7 @@ interface UseVideoProjectOptions {
 export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = {}) {
     const MAX_CONSOLE_ENTRIES = 120;
     const MAX_RAW_LOG_LINES = 220;
+    const TTS_RUNTIME_SWITCH_TIMEOUT_MS = 180000;
     const [videoPath, setVideoPath] = useState<string>('');
     const [originalVideoPath, setOriginalVideoPath] = useState<string>('');
     const [mergedVideoPath, setMergedVideoPath] = useState<string>('');
@@ -150,6 +151,18 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
     const clearExecutionConsole = useCallback(() => {
         setConsoleEntries([]);
         setRawLogLines([]);
+    }, []);
+
+    const restartBackendAfterSwitchTimeout = useCallback(async () => {
+        try {
+            await window.api.killBackend();
+        } catch (error: unknown) {
+            logUiError('TTS 切换超时后重启后端失败', {
+                domain: 'workflow.tts',
+                action: 'switchTtsRuntime.killBackend',
+                detail: error instanceof Error ? error.message : String(error)
+            });
+        }
     }, []);
 
     useEffect(() => {
@@ -361,11 +374,20 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
         setStatus(`正在切换到 ${newService === 'qwen' ? 'Qwen3-TTS' : 'Index-TTS'} 运行环境...`);
 
         try {
-            const result = await runBackendCommand(buildWarmupTtsRuntimeCommand({
-                ttsService: newService,
-                ttsModelProfile: ttsModelProfiles[newService],
-                json: true
-            }));
+            const result = await Promise.race([
+                runBackendCommand(buildWarmupTtsRuntimeCommand({
+                    ttsService: newService,
+                    ttsModelProfile: ttsModelProfiles[newService],
+                    json: true
+                })),
+                new Promise<never>((_, reject) => {
+                    window.setTimeout(() => {
+                        reject(new Error(
+                            `TTS_RUNTIME_SWITCH_TIMEOUT:${newService}:${TTS_RUNTIME_SWITCH_TIMEOUT_MS}`
+                        ));
+                    }, TTS_RUNTIME_SWITCH_TIMEOUT_MS);
+                })
+            ]);
 
             const errorInfo = normalizeBackendError(result, 'TTS 运行环境切换失败');
             if (!result || result.success !== true) {
@@ -383,10 +405,24 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
             setStatus(`${newService === 'qwen' ? 'Qwen3-TTS' : 'Index-TTS'} 运行环境已就绪`);
             return true;
         } catch (e: unknown) {
+            const rawMessage = e instanceof Error ? e.message : String(e);
+            if (rawMessage.startsWith('TTS_RUNTIME_SWITCH_TIMEOUT:')) {
+                await restartBackendAfterSwitchTimeout();
+                const engineName = newService === 'qwen' ? 'Qwen3-TTS' : 'Index-TTS';
+                const timeoutSeconds = Math.round(TTS_RUNTIME_SWITCH_TIMEOUT_MS / 1000);
+                const timeoutMessage = `${engineName} 切换超时（>${timeoutSeconds} 秒），已自动重置后端运行环境。请重试一次；若仍复现，请查看执行日志中的最后一条 TTS 初始化信息。`;
+                setFeedback({
+                    title: '切换超时',
+                    message: timeoutMessage,
+                    type: 'error'
+                });
+                setStatus(timeoutMessage);
+                return false;
+            }
             logUiError('切换 TTS 运行环境失败', {
                 domain: 'workflow.tts',
                 action: 'switchTtsRuntime',
-                detail: e instanceof Error ? e.message : String(e)
+                detail: rawMessage
             });
             const errorInfo = normalizeBackendError(e, 'TTS 运行环境切换失败');
             setFeedback({
@@ -408,8 +444,10 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
         setInstallingDeps,
         setStatus,
         setTtsService,
+        restartBackendAfterSwitchTimeout,
         ttsModelProfiles,
-        ttsService
+        ttsService,
+        TTS_RUNTIME_SWITCH_TIMEOUT_MS
     ]);
 
     useEffect(() => {
