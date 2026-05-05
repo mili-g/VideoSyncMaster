@@ -158,8 +158,8 @@ const backendWorkers: Record<BackendLane, BackendWorkerState> = {
 
 const utf8Decoder = new TextDecoder('utf-8', { fatal: false })
 const gbkDecoder = new TextDecoder('gbk', { fatal: false })
-// Keep cache sessions for a while so interrupted jobs can resume after app restart.
-const CACHE_RETENTION_DAYS = 7
+// Keep recoverable sessions for a while so interrupted jobs can resume after app restart.
+const CACHE_RETENTION_DAYS = 3
 const CACHE_RETENTION_MS = CACHE_RETENTION_DAYS * 24 * 60 * 60 * 1000
 
 function countReplacementChars(value: string) {
@@ -689,6 +689,14 @@ function getOutputRoot(projectRoot = getProjectRoot()) {
   return path.join(getStorageRoot(projectRoot), 'output')
 }
 
+function getOutputCacheRoot(projectRoot = getProjectRoot()) {
+  return path.join(getOutputRoot(projectRoot), '.videosync-cache')
+}
+
+function getOutputSessionCacheRoot(projectRoot = getProjectRoot()) {
+  return path.join(getOutputCacheRoot(projectRoot), 'sessions')
+}
+
 function getPythonRoot(projectRoot = getProjectRoot()) {
   return resolveFirstExistingPath([
     path.join(projectRoot, 'runtime', 'python'),
@@ -922,6 +930,8 @@ function getBackendLogSnapshot(projectRoot = getProjectRoot()) {
 }
 
 let activeAsrDiagnosticsPromise: Promise<Record<string, unknown>> | null = null
+let shutdownCleanupState: 'idle' | 'running' | 'completed' = 'idle'
+let allowQuitAfterCleanup = false
 
 function isResumeAudioSegmentFile(fileName: string) {
   return /^segment(?:_retry)?_\d+\.wav$/i.test(fileName)
@@ -1407,13 +1417,67 @@ function analyzeVideoWithFfprobe(filePath: string): Promise<AnalyzeVideoResult> 
   })
 }
 
-async function cleanupExpiredCacheSessions() {
-  const { cacheDir } = getAppPaths()
-  const cleanupRoots = [
-    path.join(cacheDir, 'sessions'),
-    path.join(cacheDir, 'sources'),
-    path.join(cacheDir, 'previews')
-  ]
+async function cleanupExpiredCacheSessions(options?: { forceAll?: boolean }) {
+  const { projectRoot, cacheDir } = getAppPaths()
+  const forceAll = options?.forceAll === true
+  const cleanupRoots = {
+    legacySessions: path.join(cacheDir, 'sessions'),
+    outputSessions: getOutputSessionCacheRoot(projectRoot),
+    sources: path.join(cacheDir, 'sources'),
+    previews: path.join(cacheDir, 'previews'),
+    sourceSeparation: path.join(cacheDir, 'source_separation'),
+    rife: path.join(cacheDir, 'rife')
+  }
+
+  async function removeExpiredSessionEntries(rootPath: string) {
+    await fs.promises.mkdir(rootPath, { recursive: true })
+    const now = Date.now()
+    const entries = await fs.promises.readdir(rootPath, { withFileTypes: true })
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue
+
+      const entryPath = path.join(rootPath, entry.name)
+      try {
+        const stat = await fs.promises.stat(entryPath)
+        const lastTouched = Math.max(
+          stat.atimeMs || 0,
+          stat.mtimeMs || 0,
+          stat.birthtimeMs || 0
+        )
+        if (!forceAll && now - lastTouched <= CACHE_RETENTION_MS) {
+          continue
+        }
+
+        const manifestPath = path.join(entryPath, 'session-manifest.json')
+        let finalDir = ''
+        try {
+          const raw = await fs.promises.readFile(manifestPath, 'utf-8')
+          const manifest = JSON.parse(raw) as SessionManifestCleanupSnapshot
+          finalDir = String(manifest?.artifacts?.finalDir || '')
+        } catch {
+          finalDir = ''
+        }
+
+        await fs.promises.rm(entryPath, { recursive: true, force: true })
+        if (finalDir) {
+          await fs.promises.rm(finalDir, { recursive: true, force: true }).catch(() => undefined)
+        }
+
+        logMainDebug('清理过期恢复会话', {
+          domain: 'cache.lifecycle',
+          action: 'cleanupExpiredCacheSessions',
+          detail: finalDir ? `${entryPath}\n${finalDir}` : entryPath
+        })
+      } catch (error) {
+        logMainError('检查恢复会话失败', {
+          domain: 'cache.lifecycle',
+          action: 'cleanupExpiredCacheSessions',
+          detail: `${entryPath}\n${error instanceof Error ? error.message : String(error)}`
+        })
+      }
+    }
+  }
 
   async function removeExpiredEntries(rootPath: string, removeDirectoriesOnly: boolean) {
     await fs.promises.mkdir(rootPath, { recursive: true })
@@ -1433,7 +1497,7 @@ async function cleanupExpiredCacheSessions() {
           stat.birthtimeMs || 0
         )
 
-        if (now - lastTouched > CACHE_RETENTION_MS) {
+        if (forceAll || now - lastTouched > CACHE_RETENTION_MS) {
           await fs.promises.rm(entryPath, { recursive: true, force: true })
           logMainDebug('清理过期缓存项', {
             domain: 'cache.lifecycle',
@@ -1452,27 +1516,57 @@ async function cleanupExpiredCacheSessions() {
   }
 
   try {
-    const sessionsRoot = cleanupRoots[0]
-    const sessionTypeDirs = await fs.promises.readdir(sessionsRoot, { withFileTypes: true }).catch(async () => {
-      await fs.promises.mkdir(sessionsRoot, { recursive: true })
-      return []
-    })
+    for (const sessionsRoot of [cleanupRoots.legacySessions, cleanupRoots.outputSessions]) {
+      const sessionTypeDirs = await fs.promises.readdir(sessionsRoot, { withFileTypes: true }).catch(async () => {
+        await fs.promises.mkdir(sessionsRoot, { recursive: true })
+        return []
+      })
 
-    for (const typeDir of sessionTypeDirs) {
-      if (!typeDir.isDirectory()) continue
+      for (const typeDir of sessionTypeDirs) {
+        if (!typeDir.isDirectory()) continue
 
-      const typeDirPath = path.join(sessionsRoot, typeDir.name)
-      await removeExpiredEntries(typeDirPath, true)
+        const typeDirPath = path.join(sessionsRoot, typeDir.name)
+        await removeExpiredSessionEntries(typeDirPath)
+      }
     }
 
-    await removeExpiredEntries(cleanupRoots[1], false)
-    await removeExpiredEntries(cleanupRoots[2], false)
+    await removeExpiredEntries(cleanupRoots.sources, false)
+    await removeExpiredEntries(cleanupRoots.previews, false)
+    await removeExpiredEntries(cleanupRoots.sourceSeparation, true)
+    await removeExpiredEntries(cleanupRoots.rife, true)
   } catch (error) {
     logMainError('启动阶段缓存清理失败', {
       domain: 'cache.lifecycle',
       action: 'cleanupExpiredCacheSessions',
       detail: error instanceof Error ? error.message : String(error)
     })
+  }
+}
+
+interface SessionManifestCleanupSnapshot {
+  phase?: string
+  artifacts?: {
+    finalDir?: string
+  }
+}
+
+async function removePureCacheDirectoriesOnQuit(projectRoot = getProjectRoot()) {
+  const cacheRoot = getCacheRoot(projectRoot)
+  const pureCacheDirs = [
+    path.join(cacheRoot, 'sources'),
+    path.join(cacheRoot, 'previews'),
+    path.join(cacheRoot, 'source_separation'),
+    path.join(cacheRoot, 'rife')
+  ]
+
+  for (const targetDir of pureCacheDirs) {
+    await fs.promises.rm(targetDir, { recursive: true, force: true }).catch(() => undefined)
+  }
+
+  const cacheEntries = await fs.promises.readdir(cacheRoot, { withFileTypes: true }).catch(() => [])
+  for (const entry of cacheEntries) {
+    if (!entry.isDirectory() || !entry.name.startsWith('electron.backup-')) continue
+    await fs.promises.rm(path.join(cacheRoot, entry.name), { recursive: true, force: true }).catch(() => undefined)
   }
 }
 
@@ -1597,6 +1691,32 @@ ipcMain.handle('window-close', () => {
 
 ipcMain.handle('window-is-maximized', () => {
   return win?.isMaximized() || false
+})
+
+app.on('before-quit', (event) => {
+  if (allowQuitAfterCleanup || shutdownCleanupState === 'completed') {
+    return
+  }
+
+  event.preventDefault()
+  if (shutdownCleanupState === 'running') {
+    return
+  }
+
+  shutdownCleanupState = 'running'
+  void removePureCacheDirectoriesOnQuit()
+    .catch((error) => {
+      logMainError('关闭应用时清理中间产物失败', {
+        domain: 'cache.lifecycle',
+        action: 'removePureCacheDirectoriesOnQuit',
+        detail: error instanceof Error ? error.message : String(error)
+      })
+    })
+    .finally(() => {
+      shutdownCleanupState = 'completed'
+      allowQuitAfterCleanup = true
+      app.quit()
+    })
 })
 
 app.on('window-all-closed', () => {
