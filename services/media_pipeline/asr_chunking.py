@@ -113,7 +113,7 @@ def _is_word_level_text(text: str) -> bool:
     value = str(text or "").strip()
     if not value:
         return False
-    cjk_count = sum(1 for char in value if "\u4e00" <= char <= "\u9fff")
+    cjk_count = sum(1 for char in value if "一" <= char <= "鿿")
     total_count = sum(1 for char in value if char.strip())
     if total_count == 0:
         return False

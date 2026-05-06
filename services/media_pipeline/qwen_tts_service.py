@@ -12,7 +12,7 @@ from audio_validation import validate_generated_audio
 from event_protocol import emit_issue, emit_partial_result, emit_progress, emit_stage
 from gpu_runtime import choose_adaptive_batch_size, format_gpu_snapshot
 from model_profiles import get_tts_profile
-from path_layout import get_media_tool_bin_dir, get_media_tool_root, get_project_root
+from path_layout import get_media_tool_bin_dir, get_media_tool_root, get_models_root, get_project_root
 
 logger = get_logger("tts.qwen")
 print = redirect_print(logger, default_level=logging.DEBUG)
@@ -216,6 +216,17 @@ QWEN_ALLOWED_GENERATION_KWARGS = {
 }
 
 
+def _resolve_local_qwen_tts_model_path(project_root, model_size, model_type):
+    models_dir = get_models_root(project_root)
+    model_dir_name = f"Qwen3-TTS-12Hz-{model_size}-{model_type}"
+    direct_path = os.path.join(models_dir, model_dir_name)
+    nested_path = os.path.join(models_dir, "Qwen", model_dir_name)
+    for candidate in [direct_path, nested_path]:
+        if os.path.isdir(candidate):
+            return candidate
+    return None
+
+
 def _preview_text(text, limit=48):
     text = str(text or "").replace("\n", " ").strip()
     if len(text) <= limit:
@@ -315,19 +326,19 @@ def get_model(model_type, model_size="1.7B", device="cuda"):
     # Check Local Path First
     backend_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = get_project_root(backend_dir)
-    models_dir = os.path.join(project_root, "models")
-    
-    # Folder name convention: Qwen3-TTS-12Hz-{size}-{type}
-    # e.g. Qwen3-TTS-12Hz-1.7B-VoiceDesign
-    model_dir_name = f"Qwen3-TTS-12Hz-{model_size}-{model_type}"
-    local_model_path = os.path.join(models_dir, model_dir_name)
-    
-    if os.path.exists(local_model_path):
+    local_model_path = _resolve_local_qwen_tts_model_path(project_root, model_size, model_type)
+
+    if local_model_path:
         print(f"[QwenTTS] Found local model at: {local_model_path}")
         repo_id = local_model_path
     else:
-        print(f"[QwenTTS] Local model not found at {local_model_path}, trying HF Hub...")
-        repo_id = f"Qwen/Qwen3-TTS-12Hz-{model_size}-{model_type}"
+        raise FileNotFoundError(
+            "Qwen3-TTS local model directory not found. Expected one of: "
+            + ", ".join([
+                os.path.join(get_models_root(project_root), f"Qwen3-TTS-12Hz-{model_size}-{model_type}"),
+                os.path.join(get_models_root(project_root), "Qwen", f"Qwen3-TTS-12Hz-{model_size}-{model_type}"),
+            ])
+        )
     
     first_attempt_kwargs = {
         "device_map": device,

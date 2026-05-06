@@ -49,7 +49,7 @@ def _infer_alignment_language(language: str | None, transcript: str) -> str | No
         return None
 
     latin_letters = sum(1 for char in text if ("A" <= char <= "Z") or ("a" <= char <= "z"))
-    cjk_letters = sum(1 for char in text if "\u4e00" <= char <= "\u9fff")
+    cjk_letters = sum(1 for char in text if "一" <= char <= "鿿")
     kana_letters = sum(1 for char in text if ("\u3040" <= char <= "\u30ff"))
     hangul_letters = sum(1 for char in text if ("\uac00" <= char <= "\ud7af"))
     letter_total = sum(1 for char in text if unicodedata.category(char).startswith("L"))

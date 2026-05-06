@@ -7,7 +7,7 @@ import re
 import logging
 from asr_data import ASRData, ASRDataSeg
 from app_logging import get_logger, redirect_print
-from path_layout import first_existing_path, get_media_tool_bin_dir, get_project_root
+from path_layout import first_existing_path, get_media_tool_bin_dir, get_models_root, get_project_root
 from subtitle_postprocess import clean_segment_text, finalize_subtitle_segments, normalize_output_segments
 
 # Force strict offline mode
@@ -20,6 +20,7 @@ print = redirect_print(logger, default_level=logging.DEBUG)
 # Setup FFmpeg path for portable environment
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = get_project_root(current_dir)
+models_root = get_models_root(project_root)
 ffmpeg_bin = get_media_tool_bin_dir(project_root, "ffmpeg")
 if os.path.exists(os.path.join(ffmpeg_bin, "ffmpeg.exe")):
     if ffmpeg_bin not in os.environ.get("PATH", ""):
@@ -44,15 +45,15 @@ def _get_qwen_repo_candidates():
 
 def _get_qwen_model_candidates(model_name):
     return [
-        os.path.join(project_root, "models", model_name),
-        os.path.join(project_root, "models", "Qwen", model_name),
+        os.path.join(models_root, model_name),
+        os.path.join(models_root, "Qwen", model_name),
     ]
 
 
 def _get_qwen_aligner_candidates(aligner_name="Qwen3-ForcedAligner-0.6B"):
     return [
-        os.path.join(project_root, "models", aligner_name),
-        os.path.join(project_root, "models", "Qwen", aligner_name),
+        os.path.join(models_root, aligner_name),
+        os.path.join(models_root, "Qwen", aligner_name),
     ]
 
 
@@ -132,7 +133,7 @@ _TERM_NORMALIZATION_RULES = (
     (r"\bRedshift\s+Live\b", "Redshift Live"),
     (r"\bAuto\s+DS\b", "AutoDS"),
     (r"\bWeb\s+Coding\b", "Web Coding"),
-    (r"Redshift Live(?=[\u4e00-\u9fff])", "Redshift Live，"),
+    (r"Redshift Live(?=[一-鿿])", "Redshift Live，"),
     (r"VirtualWorks(?=的)", "VirtualWorks "),
     (r"(?<!标)志着其进入", "标志着其进入"),
     (r"(?<!取)代现有的", "取代现有的"),
@@ -156,7 +157,7 @@ _CN_DIGITS = {
 }
 
 def _is_cjk_token(text):
-    return bool(re.search(r"[\u4e00-\u9fff]", str(text or "")))
+    return bool(re.search(r"[一-鿿]", str(text or "")))
 
 
 def _is_ascii_alnum_token(text):
@@ -242,7 +243,7 @@ def _normalize_contextual_terms(text):
     normalized = re.sub(r"Unity\s*64(?=发布)", "Unity 6.4", normalized)
     normalized = re.sub(r"Redshift\s*20264(?=发布)", "Redshift 2026.4", normalized)
     normalized = re.sub(r"Octane Render\s*20271(?=\s*Alpha版)", "Octane Render 2027.1", normalized)
-    normalized = re.sub(r"(?<=[\u4e00-\u9fff])大路(?=(市场|插件|资产|用户))", "大陆", normalized)
+    normalized = re.sub(r"(?<=[一-鿿])大路(?=(市场|插件|资产|用户))", "大陆", normalized)
     normalized = re.sub(r"^大路资产", "大陆资产", normalized)
     normalized = re.sub(r"^大路插件", "大陆插件", normalized)
     normalized = re.sub(r"商城插件开发", "商城插件开发", normalized)

@@ -166,7 +166,7 @@ def _build_pause_grouped_segments_from_word_items(
     def joined_text(items):
         texts = [str(item.get("text", "")).strip() for item in items if str(item.get("text", "")).strip()]
         merged = "".join(texts)
-        has_cjk = any("\u4e00" <= char <= "\u9fff" for char in merged)
+        has_cjk = any("一" <= char <= "鿿" for char in merged)
         return merged if has_cjk else " ".join(texts)
 
     def flush():

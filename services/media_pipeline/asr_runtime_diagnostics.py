@@ -131,7 +131,7 @@ def _from_bool_runtime_status(result: tuple[bool, str | None]) -> RuntimeStatus:
 
 
 def get_faster_whisper_runtime_status(model_profile: str = "quality") -> RuntimeStatus:
-    from asr import _resolve_faster_whisper_execution_plan, _resolve_faster_whisper_model_config
+    from asr import _resolve_faster_whisper_execution_plans, _resolve_faster_whisper_model_config
 
     model_config = _resolve_faster_whisper_model_config(model_profile)
     model_dir = model_config["model_dir"]
@@ -147,11 +147,14 @@ def get_faster_whisper_runtime_status(model_profile: str = "quality") -> Runtime
         return RuntimeStatus(False, "blocked", f"faster-whisper model directory is incomplete: missing {', '.join(missing_files)}")
 
     try:
-        execution_plan = _resolve_faster_whisper_execution_plan()
+        execution_plans = _resolve_faster_whisper_execution_plans()
     except Exception as error:
         return RuntimeStatus(False, "blocked", f"runtime_unavailable:{error}")
 
-    return RuntimeStatus(True, "ready", execution_plan["detail"])
+    if not execution_plans:
+        return RuntimeStatus(False, "blocked", "runtime_unavailable: no faster-whisper execution plan available")
+
+    return RuntimeStatus(True, "ready", execution_plans[0]["detail"])
 
 
 def get_vibevoice_asr_runtime_status(model_name: str = "VibeVoice-ASR-HF") -> RuntimeStatus:

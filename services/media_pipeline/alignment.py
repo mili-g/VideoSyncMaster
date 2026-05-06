@@ -4,7 +4,7 @@ import tempfile
 import logging
 
 from app_logging import get_logger, redirect_print
-from bootstrap.path_layout import get_project_root, get_storage_cache_dir
+from bootstrap.path_layout import get_models_root, get_project_root, get_storage_cache_dir
 from ffmpeg_utils import ensure_portable_ffmpeg_in_path, probe_media, run_ffmpeg
 from source_separation import prepare_background_stem
 
@@ -559,8 +559,9 @@ def merge_audios_to_video(video_path, audio_segments, output_path, strategy='aut
 def get_rife_executable():
     """Locate rife-ncnn-vulkan executable."""
     app_root = get_project_root(os.path.dirname(os.path.abspath(__file__)))
+    models_root = get_models_root(app_root)
 
-    candidates = [os.path.join(app_root, "models", "rife")]
+    candidates = [os.path.join(models_root, "rife")]
     
     rife_exe = None
     rife_model_path = None

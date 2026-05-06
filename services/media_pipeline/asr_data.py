@@ -25,7 +25,7 @@ def is_mainly_cjk(text: str) -> bool:
     cjk_count = 0
     total_count = 0
     for char in text:
-        if '\u4e00' <= char <= '\u9fff':
+        if '一' <= char <= '鿿':
             cjk_count += 1
             total_count += 1
         elif char.strip():
@@ -43,7 +43,7 @@ _WORD_SPLIT_PATTERN = (
     r"|[\u0600-\u06ff]+"  # 阿拉伯文
     r"|[\u0590-\u05ff]+"  # 希伯来文
     r"|\d+"  # 数字
-    r"|[\u4e00-\u9fff]"  # 中文
+    r"|[一-鿿]"  # 中文
     r"|[\u3040-\u309f]"  # 日文平假名
     r"|[\u30a0-\u30ff]"  # 日文片假名
     r"|[\uac00-\ud7af]"  # 韩文

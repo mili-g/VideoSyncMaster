@@ -6,7 +6,7 @@ from typing import Dict
 import ffmpeg
 from app_logging import get_logger, redirect_print
 from ffmpeg_utils import run_ffmpeg
-from path_layout import get_media_tool_bin_dir, get_project_root, get_storage_cache_dir
+from path_layout import get_media_tool_bin_dir, get_models_root, get_project_root, get_storage_cache_dir
 
 
 TARGET_SAMPLE_RATE = 44100
@@ -24,7 +24,7 @@ def _project_root() -> str:
 
 
 def _model_root() -> str:
-    return os.path.join(_project_root(), "models", "source_separation")
+    return os.path.join(get_models_root(_project_root()), "source_separation")
 
 
 def _setup_portable_ffmpeg() -> None:

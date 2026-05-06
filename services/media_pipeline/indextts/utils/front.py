@@ -84,7 +84,7 @@ class TextNormalizer:
     例如：xuan4, jve2, ying1, zhong4, shang5
     不匹配：beta1, voice2
     """
-    NAME_PATTERN = r"[\u4e00-\u9fff]+(?:[-·—][\u4e00-\u9fff]+){1,2}"
+    NAME_PATTERN = r"[一-鿿]+(?:[-·—][一-鿿]+){1,2}"
     """
     匹配人名，格式：中文·中文，中文·中文-中文
     例如：克里斯托弗·诺兰，约瑟夫·高登-莱维特
@@ -103,7 +103,7 @@ class TextNormalizer:
 
 
     def use_chinese(self, s):
-        has_chinese = bool(re.search(r"[\u4e00-\u9fff]", s))
+        has_chinese = bool(re.search(r"[一-鿿]", s))
         has_alpha = bool(re.search(r"[a-zA-Z]", s))
         is_email = self.match_email(s)
         if has_chinese or not has_alpha or is_email:

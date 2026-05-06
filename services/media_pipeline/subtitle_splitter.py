@@ -10,7 +10,7 @@ from typing import List, Union
 from app_logging import get_logger, redirect_print
 from asr_data import ASRData, ASRDataSeg
 from llm import LLMTranslator
-from path_layout import get_project_root
+from path_layout import get_models_root, get_project_root
 from text_utils import count_words, is_mainly_cjk, is_pure_punctuation, is_space_separated_language
 
 logger = get_logger("subtitle.splitter")
@@ -103,7 +103,7 @@ def _should_enable_llm(splitter_kwargs: dict | None) -> bool:
 
     backend_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = get_project_root(backend_dir)
-    default_path = os.path.join(project_root, "models", "Qwen2.5-7B-Instruct")
+    default_path = os.path.join(get_models_root(project_root), "Qwen2.5-7B-Instruct")
     return os.path.exists(default_path)
 
 

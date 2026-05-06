@@ -122,7 +122,7 @@ def _load_aligner(model_dir: str, device_key: str):
         }
 
     print(f"[QwenForcedAligner] Loading aligner from {model_dir} on {device_key}")
-    return Qwen3ForcedAligner.from_pretrained(model_dir, **kwargs)
+    return Qwen3ForcedAligner.from_pretrained(model_dir, local_files_only=True, **kwargs)
 
 
 def _resolve_device(device: str = "auto") -> str:

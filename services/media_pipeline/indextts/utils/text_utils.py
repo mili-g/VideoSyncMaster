@@ -5,16 +5,16 @@ from textstat import textstat
 
 def contains_chinese(text):
     # 正则表达式，用于匹配中文字符 + 数字 -> 都认为是 zh
-    if re.search(r'[\u4e00-\u9fff0-9]', text):
+    if re.search(r'[一-鿿0-9]', text):
         return True
     return False
 
 
 def get_text_syllable_num(text):
-    chinese_char_pattern = re.compile(r'[\u4e00-\u9fff]')
+    chinese_char_pattern = re.compile(r'[一-鿿]')
     number_char_pattern = re.compile(r'[0-9]')
     syllable_num = 0
-    tokens = re.findall(r'[\u4e00-\u9fff]+|[a-zA-Z]+|[0-9]+', text)
+    tokens = re.findall(r'[一-鿿]+|[a-zA-Z]+|[0-9]+', text)
     # print(tokens)
     if contains_chinese(text):
         for token in tokens:

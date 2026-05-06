@@ -378,11 +378,12 @@ def _run_inference(
     transformers = _import_transformers5_module()
     torch_device = _select_device(device)
     processor_class = getattr(transformers, "VibeVoiceAsrProcessor")
-    processor = processor_class.from_pretrained(model_dir, trust_remote_code=True)
+    processor = processor_class.from_pretrained(model_dir, trust_remote_code=True, local_files_only=True)
 
     model_class = getattr(transformers, "VibeVoiceAsrForConditionalGeneration")
     model = model_class.from_pretrained(
         model_dir,
+        local_files_only=True,
         **_resolve_model_load_kwargs(service_key, torch_device),
     )
     if getattr(model, "hf_device_map", None) is None:
