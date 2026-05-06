@@ -37,11 +37,21 @@ class LLMTranslator:
         from transformers import AutoModelForCausalLM, AutoTokenizer
         self.model_dir = self._resolve_local_model_dir(model_dir)
 
+        if not self.model_dir:
+            print("[LLMTranslator] Local text model directory is unavailable. Skipping local LLM initialization.")
+            self.model = None
+            self.tokenizer = None
+            return
+
         print(f"Initializing Local LLM from {self.model_dir}...")
         
         # Initialize tokenizer first (independent of model quantization)
         try:
-            self.tokenizer = AutoTokenizer.from_pretrained(self.model_dir, trust_remote_code=True)
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                self.model_dir,
+                trust_remote_code=True,
+                local_files_only=True,
+            )
         except Exception as e:
             print(f"Failed to load tokenizer: {e}")
             self.model = None
@@ -78,6 +88,7 @@ class LLMTranslator:
 
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.model_dir,
+                local_files_only=True,
                 **four_bit_kwargs
             )
             print("Local LLM Initialized successfully (4-bit).")
@@ -112,6 +123,7 @@ class LLMTranslator:
             try:
                 model_kwargs = {
                     "trust_remote_code": True,
+                    "local_files_only": True,
                     "torch_dtype": torch.float16 if target_device == "cuda" else torch.float32,
                 }
                 model = auto_model_cls.from_pretrained(self.model_dir, **model_kwargs)
@@ -132,22 +144,24 @@ class LLMTranslator:
 
     def _resolve_local_model_dir(self, model_dir=None):
         default_dir = os.path.join(MODELS_ROOT, "Qwen2.5-7B-Instruct")
+        requested_dir = os.path.abspath(model_dir) if model_dir else None
 
-        if not model_dir:
-            return default_dir
+        for candidate_dir in [requested_dir, default_dir]:
+            if not candidate_dir:
+                continue
+            candidate_config = os.path.join(candidate_dir, "config.json")
+            candidate_tokenizer = os.path.join(candidate_dir, "tokenizer_config.json")
+            if os.path.exists(candidate_config) or os.path.exists(candidate_tokenizer):
+                return candidate_dir
 
-        candidate_dir = os.path.abspath(model_dir)
-        candidate_config = os.path.join(candidate_dir, "config.json")
-        candidate_tokenizer = os.path.join(candidate_dir, "tokenizer_config.json")
-
-        if os.path.exists(candidate_config) or os.path.exists(candidate_tokenizer):
-            return candidate_dir
-
-        print(
-            f"[LLMTranslator] Provided model_dir does not look like a local text model: {candidate_dir}. "
-            f"Falling back to {default_dir}"
-        )
-        return default_dir
+        if requested_dir:
+            print(
+                f"[LLMTranslator] Provided model_dir does not look like a local text model: {requested_dir}. "
+                f"Fallback default is also unavailable: {default_dir}"
+            )
+        else:
+            print(f"[LLMTranslator] Default local text model directory is unavailable: {default_dir}")
+        return None
 
     def translate(self, text, target_lang="English"):
         if self.use_external:
