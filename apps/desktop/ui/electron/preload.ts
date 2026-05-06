@@ -51,6 +51,9 @@ contextBridge.exposeInMainWorld('api', {
   getPaths() {
     return ipcRenderer.invoke('get-paths')
   },
+  getRuntimeDownloadInfo() {
+    return ipcRenderer.invoke('get-runtime-download-info')
+  },
   async runBackend(args: string[], options?: { lane?: 'default' | 'prep' }) {
     const result = await ipcRenderer.invoke('run-backend', {
       args,

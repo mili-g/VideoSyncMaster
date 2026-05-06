@@ -157,6 +157,7 @@ function App() {
   const [showRepairConfirm, setShowRepairConfirm] = useState(false);
   const [repairConfirmMessage, setRepairConfirmMessage] = useState('');
   const [repairResult, setRepairResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [runtimeDownloadUrl, setRuntimeDownloadUrl] = useState('');
   const [missingDeps, setMissingDeps] = useState<string[]>([]);
   const [currentView, setCurrentView] = useState<ViewId>(() => (localStorage.getItem('currentView') as ViewId) || 'home');
   const backendBusy = loading || dubbingLoading || generatingSegmentId !== null || isBatchQueueRunning;
@@ -211,7 +212,7 @@ function App() {
 
           if (result && !result.success) {
             if (result.status === 'missing_python') {
-              setStatus("未检测到 Python 环境 (根目录下无 python 文件夹)，请手动下载或放置便携版 Python。");
+              setStatus(String(result.error || '未检测到 Python 运行环境，请执行修复。'));
             } else {
               logUiError('环境检查失败', {
                 domain: 'ui.environment',
@@ -246,6 +247,27 @@ function App() {
       window.clearTimeout(timer);
     };
   }, [setStatus]);
+
+  useEffect(() => {
+    let active = true;
+
+    void window.api.getRuntimeDownloadInfo()
+      .then((result) => {
+        if (!active || !result?.success) return;
+        setRuntimeDownloadUrl(result.downloadPageUrl || result.downloadUrl || '');
+      })
+      .catch((error) => {
+        logUiWarn('加载运行时下载地址失败', {
+          domain: 'ui.environment',
+          action: 'getRuntimeDownloadInfo',
+          detail: error instanceof Error ? error.message : String(error)
+        });
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   // Persistence for Settings
   useEffect(() => { localStorage.setItem('leftWidth', leftWidth.toString()); }, [leftWidth]);
@@ -660,7 +682,7 @@ function App() {
         setMissingDeps([]); // Clear flag
       } else {
         setStatus(`修复失败: ${result.error}`);
-        setRepairResult({ success: false, message: `修复失败: ${result.error}\n请检查日志或网络。` });
+        setRepairResult({ success: false, message: String(result.error || '运行环境修复失败') });
       }
     } catch (e: unknown) {
       setStatus(`修复请求异常: ${e instanceof Error ? e.message : String(e)}`);
@@ -972,10 +994,16 @@ function App() {
             title="系统提示"
             message={repairResult?.message || ""}
             onConfirm={() => setRepairResult(null)}
+            onSecondaryAction={
+              repairResult && !repairResult.success && runtimeDownloadUrl
+                ? () => { void window.api.openExternal(runtimeDownloadUrl); }
+                : undefined
+            }
             isLightMode={false}
             confirmText="确定"
             cancelText=""
             onCancel={undefined}
+            secondaryActionText="前往下载"
             confirmColor={repairResult?.success ? "#22c55e" : "#ef4444"}
           />
 

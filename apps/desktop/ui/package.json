@@ -37,6 +37,11 @@
     "productName": "VideoSync",
     "appId": "com.videosync.app",
     "asar": true,
+    "files": [
+      "dist/**",
+      "dist-electron/**",
+      "package.json"
+    ],
     "directories": {
       "output": "release"
     },
@@ -56,7 +61,8 @@
         "from": "../../../resources/media_tools",
         "to": "resources/media_tools",
         "filter": [
-          "**/*"
+          "**/*",
+          "!faster_whisper/**"
         ]
       },
       {
@@ -94,6 +100,46 @@
       {
         "from": "../../../resources/packaging/runtime/python-runtime-manifest.json",
         "to": "python-runtime-manifest.json"
+      },
+      {
+        "from": "../../../runtime/python/Lib/site-packages/triton",
+        "to": "resources/runtime-patches/site-packages/triton",
+        "filter": [
+          "**/*",
+          "!**/__pycache__/**",
+          "!**/*.pyc"
+        ]
+      },
+      {
+        "from": "../../../runtime/python/Lib/site-packages/triton-3.1.0.dist-info",
+        "to": "resources/runtime-patches/site-packages/triton-3.1.0.dist-info",
+        "filter": [
+          "**/*",
+          "!**/__pycache__/**",
+          "!**/*.pyc"
+        ]
+      },
+      {
+        "from": "../../../runtime/python/Lib/site-packages/flash_attn",
+        "to": "resources/runtime-patches/site-packages/flash_attn",
+        "filter": [
+          "**/*",
+          "!**/__pycache__/**",
+          "!**/*.pyc"
+        ]
+      },
+      {
+        "from": "../../../runtime/python/Lib/site-packages/flash_attn-2.8.1.dist-info",
+        "to": "resources/runtime-patches/site-packages/flash_attn-2.8.1.dist-info",
+        "filter": [
+          "**/*",
+          "!**/__pycache__/**",
+          "!**/*.pyc"
+        ]
+      },
+      {
+        "from": "../../../runtime/python/Lib/site-packages/flash_attn_2_cuda.cp311-win_amd64.pyd",
+        "to": "resources/runtime-patches/site-packages/flash_attn_2_cuda.cp311-win_amd64.pyd"
       }
     ]
   }

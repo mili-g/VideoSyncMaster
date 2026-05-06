@@ -40,7 +40,7 @@ export function usePersistentSettings({ setFeedback }: PersistentSettingsOptions
     const [targetLang, setTargetLang] = useState(() => localStorage.getItem('targetLang') || 'English');
     const [asrService, setAsrService] = useState<AsrService>(() => {
         const saved = localStorage.getItem('asrService');
-        return isSupportedAsrService(saved) ? saved : 'faster-whisper';
+        return isSupportedAsrService(saved) ? saved : 'qwen';
     });
     const [asrOriLang, setAsrOriLang] = useState<AsrSourceLanguage>(() => {
         const saved = localStorage.getItem('asrOriLang');

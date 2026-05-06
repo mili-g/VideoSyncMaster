@@ -17,26 +17,6 @@ interface DownloadTaskSnapshot {
   message?: string
 }
 
-interface RuntimeCriticalFile {
-  path: string
-  size?: number
-  sha256?: string
-}
-
-interface PythonRuntimeManifest {
-  schemaVersion: number
-  appVersion: string
-  runtimeVersion: string
-  bundleFileName: string
-  bundleSha256: string
-  bundleSize?: number
-  releaseTag?: string
-  downloadUrl: string
-  expectedFileCount?: number
-  requiredPaths: string[]
-  criticalFiles?: RuntimeCriticalFile[]
-}
-
 const downloadTaskSnapshots = new Map<string, DownloadTaskSnapshot>()
 const PYTHON_RUNTIME_TRACKING_KEY = 'python_runtime'
 let pythonRuntimeInstallPromise: Promise<{ success: boolean; installed: boolean; error?: string }> | null = null
@@ -794,13 +774,6 @@ function getPythonRoot(projectRoot = getProjectRoot()) {
   ])
 }
 
-function getPythonRuntimeManifestPath(projectRoot = getProjectRoot()) {
-  return resolveFirstExistingPath([
-    path.join(projectRoot, 'python-runtime-manifest.json'),
-    path.join(projectRoot, 'resources', 'packaging', 'runtime', 'python-runtime-manifest.json')
-  ])
-}
-
 function getManagedPythonLocationHint(projectRoot = getProjectRoot()) {
   return [
     path.join(getManagedRuntimeRoot(projectRoot), 'python'),
@@ -819,36 +792,99 @@ function getBackendRoot(projectRoot = getProjectRoot()) {
   ])
 }
 
-function readPythonRuntimeManifest(projectRoot = getProjectRoot()): PythonRuntimeManifest {
-  const manifestPath = getPythonRuntimeManifestPath(projectRoot)
-  if (!manifestPath || !fs.existsSync(manifestPath)) {
-    throw new Error(`Python runtime manifest not found at ${manifestPath}`)
+const OFFICIAL_PYTHON_VERSION = '3.11.9'
+const OFFICIAL_PYTHON_ARCHIVE_NAME = `python-${OFFICIAL_PYTHON_VERSION}-embed-amd64.zip`
+const OFFICIAL_PYTHON_DOWNLOAD_URL = `https://www.python.org/ftp/python/${OFFICIAL_PYTHON_VERSION}/${OFFICIAL_PYTHON_ARCHIVE_NAME}`
+const OFFICIAL_GET_PIP_URL = 'https://bootstrap.pypa.io/get-pip.py'
+const OFFICIAL_GET_PIP_FILE_NAME = 'get-pip.py'
+const MANAGED_RUNTIME_STATE_FILE = '.videosync-runtime-bootstrap.json'
+const MANAGED_RUNTIME_PATCH_SIGNATURE = 'triton-3.1.0|flash_attn-2.8.1'
+const MANAGED_RUNTIME_PATCH_NAMES = [
+  'triton',
+  'triton-3.1.0.dist-info',
+  'flash_attn',
+  'flash_attn-2.8.1.dist-info',
+  'flash_attn_2_cuda.cp311-win_amd64.pyd'
+]
+
+function getManagedRuntimeStatePath(projectRoot = getProjectRoot()) {
+  return path.join(getManagedRuntimeRoot(projectRoot), MANAGED_RUNTIME_STATE_FILE)
+}
+
+function getManagedRuntimePythonRoot(projectRoot = getProjectRoot()) {
+  return path.join(getManagedRuntimeRoot(projectRoot), 'python')
+}
+
+function getManagedRuntimePythonExe(projectRoot = getProjectRoot()) {
+  return path.join(getManagedRuntimePythonRoot(projectRoot), 'python.exe')
+}
+
+function getRequirementsHash(projectRoot = getProjectRoot()) {
+  const requirementsPath = path.join(projectRoot, 'requirements.txt')
+  if (!fs.existsSync(requirementsPath)) {
+    throw new Error(`requirements.txt 不存在：${requirementsPath}`)
+  }
+  return sha256File(requirementsPath)
+}
+
+function readManagedRuntimeState(projectRoot = getProjectRoot()) {
+  const statePath = getManagedRuntimeStatePath(projectRoot)
+  if (!fs.existsSync(statePath)) {
+    return null
   }
 
-  const parsed = JSON.parse(fs.readFileSync(manifestPath, 'utf-8')) as Partial<PythonRuntimeManifest>
-  if (!parsed.downloadUrl || !parsed.bundleSha256 || !parsed.bundleFileName || !Array.isArray(parsed.requiredPaths)) {
-    throw new Error(`Python runtime manifest is invalid: ${manifestPath}`)
+  try {
+    return JSON.parse(fs.readFileSync(statePath, 'utf-8')) as {
+      schemaVersion?: number
+      pythonVersion?: string
+      requirementsHash?: string
+      patchSignature?: string
+      installedAt?: string
+    }
+  } catch {
+    return null
+  }
+}
+
+function isManagedPythonRuntimeReady(projectRoot = getProjectRoot()) {
+  const pythonExe = getManagedRuntimePythonExe(projectRoot)
+  if (!fs.existsSync(pythonExe)) {
+    return false
   }
 
+  const state = readManagedRuntimeState(projectRoot)
+  if (!state) {
+    return false
+  }
+
+  try {
+    return state.pythonVersion === OFFICIAL_PYTHON_VERSION
+      && state.requirementsHash === getRequirementsHash(projectRoot)
+      && state.patchSignature === MANAGED_RUNTIME_PATCH_SIGNATURE
+  } catch {
+    return false
+  }
+}
+
+function getRuntimeDownloadInfo() {
   return {
-    schemaVersion: Number(parsed.schemaVersion || 1),
-    appVersion: String(parsed.appVersion || app.getVersion()),
-    runtimeVersion: String(parsed.runtimeVersion || ''),
-    bundleFileName: String(parsed.bundleFileName),
-    bundleSha256: String(parsed.bundleSha256),
-    bundleSize: typeof parsed.bundleSize === 'number' ? parsed.bundleSize : undefined,
-    releaseTag: parsed.releaseTag ? String(parsed.releaseTag) : undefined,
-    downloadUrl: String(parsed.downloadUrl),
-    expectedFileCount: typeof parsed.expectedFileCount === 'number' ? parsed.expectedFileCount : undefined,
-    requiredPaths: parsed.requiredPaths.map((item) => String(item)),
-    criticalFiles: Array.isArray(parsed.criticalFiles)
-      ? parsed.criticalFiles.map((item) => ({
-          path: String(item.path),
-          size: typeof item.size === 'number' ? item.size : undefined,
-          sha256: item.sha256 ? String(item.sha256) : undefined
-        }))
-      : []
+    success: true,
+    bundleFileName: OFFICIAL_PYTHON_ARCHIVE_NAME,
+    downloadUrl: OFFICIAL_PYTHON_DOWNLOAD_URL,
+    downloadPageUrl: OFFICIAL_PYTHON_DOWNLOAD_URL
   }
+}
+
+function buildRuntimeManualDownloadMessage(reason: string, projectRoot = getProjectRoot()) {
+  const info = getRuntimeDownloadInfo()
+  return [
+    `Python 运行时自动安装失败：${reason}`,
+    '',
+    `可手动下载官方 Python 运行包：${info.downloadPageUrl}`,
+    `Python 版本：${OFFICIAL_PYTHON_VERSION} x64`,
+    `安装目录：${getManagedRuntimePythonRoot(projectRoot)}`,
+    '下载完成后重新执行“修复运行环境”即可继续安装依赖。'
+  ].join('\n')
 }
 
 function sha256File(filePath: string) {
@@ -856,78 +892,6 @@ function sha256File(filePath: string) {
   const data = fs.readFileSync(filePath)
   hash.update(data)
   return hash.digest('hex')
-}
-
-function countFilesRecursive(rootDir: string) {
-  if (!fs.existsSync(rootDir)) {
-    return 0
-  }
-
-  let count = 0
-  const pending = [rootDir]
-  while (pending.length > 0) {
-    const current = pending.pop()
-    if (!current) continue
-    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
-      const fullPath = path.join(current, entry.name)
-      if (entry.isDirectory()) {
-        pending.push(fullPath)
-      } else if (entry.isFile() && entry.name !== '.videosync-runtime-manifest.json') {
-        count += 1
-      }
-    }
-  }
-  return count
-}
-
-function verifyPythonRuntimeInstall(installRoot: string, manifest: PythonRuntimeManifest) {
-  for (const relativePath of manifest.requiredPaths) {
-    if (!fs.existsSync(path.join(installRoot, relativePath))) {
-      return {
-        ok: false,
-        detail: `Missing runtime file: ${relativePath}`
-      }
-    }
-  }
-
-  for (const file of manifest.criticalFiles || []) {
-    const targetPath = path.join(installRoot, file.path)
-    if (!fs.existsSync(targetPath)) {
-      return {
-        ok: false,
-        detail: `Missing critical runtime file: ${file.path}`
-      }
-    }
-
-    if (typeof file.size === 'number' && fs.statSync(targetPath).size !== file.size) {
-      return {
-        ok: false,
-        detail: `Runtime file size mismatch: ${file.path}`
-      }
-    }
-
-    if (file.sha256 && sha256File(targetPath).toLowerCase() !== file.sha256.toLowerCase()) {
-      return {
-        ok: false,
-        detail: `Runtime file hash mismatch: ${file.path}`
-      }
-    }
-  }
-
-  if (typeof manifest.expectedFileCount === 'number') {
-    const fileCount = countFilesRecursive(installRoot)
-    if (fileCount !== manifest.expectedFileCount) {
-      return {
-        ok: false,
-        detail: `Runtime file count mismatch: expected ${manifest.expectedFileCount}, got ${fileCount}`
-      }
-    }
-  }
-
-  return {
-    ok: true,
-    detail: `Runtime ready (${manifest.runtimeVersion || manifest.bundleFileName})`
-  }
 }
 
 async function downloadRuntimeBundle(downloadUrl: string, destinationPath: string, onProgress?: (percent: number, message: string) => void) {
@@ -994,56 +958,194 @@ async function extractRuntimeBundle(archivePath: string, destinationRoot: string
   })
 }
 
+function ensureEmbeddedPythonSiteEnabled(pythonRoot: string) {
+  const pthPath = path.join(pythonRoot, 'python311._pth')
+  if (!fs.existsSync(pthPath)) {
+    return
+  }
+
+  const raw = fs.readFileSync(pthPath, 'utf-8')
+  if (/^\s*import site\s*$/m.test(raw)) {
+    return
+  }
+
+  const updated = raw.replace(/^\s*#?\s*import site\s*$/m, 'import site')
+  fs.writeFileSync(pthPath, `${updated.trimEnd()}\n`, 'utf-8')
+}
+
+function getBootstrapPythonEnv(projectRoot = getProjectRoot()): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    PYTHONUTF8: '1',
+    PYTHONUNBUFFERED: '1',
+    PYTHONIOENCODING: 'utf-8',
+    VSM_STORAGE_ROOT: getStorageRoot(projectRoot)
+  }
+}
+
+function getPackagedRuntimePatchRoot(projectRoot = getProjectRoot()) {
+  return path.join(projectRoot, 'resources', 'runtime-patches', 'site-packages')
+}
+
+function createBootstrapRequirementsFile(projectRoot: string, cacheRoot: string) {
+  const requirementsPath = path.join(projectRoot, 'requirements.txt')
+  const raw = fs.readFileSync(requirementsPath, 'utf-8')
+  const filtered = raw
+    .split(/\r?\n/)
+    .filter((line) => line.trim().toLowerCase() !== 'triton')
+    .join('\n')
+  const bootstrapRequirementsPath = path.join(cacheRoot, 'requirements.bootstrap.txt')
+  fs.writeFileSync(bootstrapRequirementsPath, `${filtered.trimEnd()}\n`, 'utf-8')
+  return bootstrapRequirementsPath
+}
+
+function applyPackagedRuntimePatches(projectRoot: string, pythonRoot: string) {
+  const patchRoot = getPackagedRuntimePatchRoot(projectRoot)
+  if (!fs.existsSync(patchRoot)) {
+    throw new Error(`未找到运行时补丁目录：${patchRoot}`)
+  }
+
+  const sitePackagesRoot = path.join(pythonRoot, 'Lib', 'site-packages')
+  fs.mkdirSync(sitePackagesRoot, { recursive: true })
+
+  for (const patchName of MANAGED_RUNTIME_PATCH_NAMES) {
+    const sourcePath = path.join(patchRoot, patchName)
+    if (!fs.existsSync(sourcePath)) {
+      throw new Error(`运行时补丁缺失：${sourcePath}`)
+    }
+
+    const targetPath = path.join(sitePackagesRoot, patchName)
+    fs.rmSync(targetPath, { recursive: true, force: true })
+    fs.cpSync(sourcePath, targetPath, { recursive: true, force: true })
+  }
+}
+
+async function runProcessWithLogs(
+  executable: string,
+  args: string[],
+  options: {
+    cwd?: string
+    env?: NodeJS.ProcessEnv
+    progressMessage?: string
+    percent?: number
+  } = {}
+) {
+  if (options.progressMessage) {
+    broadcastModelDownloadProgress(PYTHON_RUNTIME_TRACKING_KEY, {
+      phase: 'installing',
+      percent: options.percent,
+      message: options.progressMessage
+    })
+  }
+
+  return await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+    const proc = spawn(executable, args, {
+      cwd: options.cwd,
+      env: options.env
+    })
+
+    let stdout = ''
+    let stderr = ''
+
+    proc.stdout.on('data', (data) => {
+      stdout += decodeProcessChunk(data)
+    })
+    proc.stderr.on('data', (data) => {
+      stderr += decodeProcessChunk(data)
+    })
+    proc.on('error', reject)
+    proc.on('close', (code) => {
+      if (code === 0) {
+        resolve({ stdout, stderr })
+        return
+      }
+      reject(new Error(`${executable} ${args.join(' ')} failed with code ${code}\n${stderr || stdout}`))
+    })
+  })
+}
+
 async function installManagedPythonRuntime() {
   const projectRoot = getProjectRoot()
   const runtimeRoot = getManagedRuntimeRoot(projectRoot)
-  const manifest = readPythonRuntimeManifest(projectRoot)
-  const existingState = verifyPythonRuntimeInstall(runtimeRoot, manifest)
-  if (existingState.ok) {
+  if (isManagedPythonRuntimeReady(projectRoot)) {
     return { success: true, installed: false }
   }
 
-  const cacheRoot = path.join(getCacheRoot(projectRoot), 'downloads', 'runtime')
-  const archivePath = path.join(cacheRoot, manifest.bundleFileName)
+  const cacheRoot = path.join(getCacheRoot(projectRoot), 'downloads', 'runtime-bootstrap')
+  const archivePath = path.join(cacheRoot, OFFICIAL_PYTHON_ARCHIVE_NAME)
+  const getPipPath = path.join(cacheRoot, OFFICIAL_GET_PIP_FILE_NAME)
   const stagingRoot = `${runtimeRoot}.staging`
   const backupRoot = `${runtimeRoot}.backup`
+  const stagingPythonRoot = path.join(stagingRoot, 'python')
+  const bootstrapEnv = getBootstrapPythonEnv(projectRoot)
 
   fs.mkdirSync(cacheRoot, { recursive: true })
   if (fs.existsSync(stagingRoot)) {
     fs.rmSync(stagingRoot, { recursive: true, force: true })
   }
-  fs.mkdirSync(stagingRoot, { recursive: true })
+  fs.mkdirSync(stagingPythonRoot, { recursive: true })
 
   broadcastModelDownloadProgress(PYTHON_RUNTIME_TRACKING_KEY, {
     percent: 0,
     phase: 'preparing',
-    message: '准备安装 Python 运行时'
+    message: '准备安装官方 Python 运行时'
   })
 
-  await downloadRuntimeBundle(manifest.downloadUrl, archivePath, (percent, message) => {
+  await downloadRuntimeBundle(OFFICIAL_PYTHON_DOWNLOAD_URL, archivePath, (percent, message) => {
     broadcastModelDownloadProgress(PYTHON_RUNTIME_TRACKING_KEY, {
-      percent,
+      percent: Math.min(35, Math.round(percent * 0.35)),
       phase: 'downloading',
-      message
+      message: message.replace('运行时', '官方 Python')
     })
   })
 
-  const archiveHash = sha256File(archivePath)
-  if (archiveHash.toLowerCase() !== manifest.bundleSha256.toLowerCase()) {
-    throw new Error(`Runtime bundle hash mismatch: expected ${manifest.bundleSha256}, got ${archiveHash}`)
+  broadcastModelDownloadProgress(PYTHON_RUNTIME_TRACKING_KEY, {
+    percent: 40,
+    phase: 'extracting',
+    message: '正在解压官方 Python 运行时'
+  })
+  await extractRuntimeBundle(archivePath, stagingPythonRoot)
+  ensureEmbeddedPythonSiteEnabled(stagingPythonRoot)
+
+  if (!fs.existsSync(path.join(stagingPythonRoot, 'python.exe'))) {
+    throw new Error(`解压后的 Python 目录缺少 python.exe：${stagingPythonRoot}`)
   }
+
+  await downloadRuntimeBundle(OFFICIAL_GET_PIP_URL, getPipPath, (percent, message) => {
+    broadcastModelDownloadProgress(PYTHON_RUNTIME_TRACKING_KEY, {
+      percent: 40 + Math.min(10, Math.round(percent * 0.1)),
+      phase: 'downloading',
+      message: message.replace('运行时', 'pip 安装器')
+    })
+  })
+
+  const stagingPythonExe = path.join(stagingPythonRoot, 'python.exe')
+  const bootstrapRequirementsPath = createBootstrapRequirementsFile(projectRoot, cacheRoot)
+
+  await runProcessWithLogs(stagingPythonExe, [getPipPath], {
+    env: bootstrapEnv,
+    progressMessage: '正在安装 pip',
+    percent: 55
+  })
+
+  await runProcessWithLogs(stagingPythonExe, ['-m', 'pip', 'install', '--upgrade', 'pip', 'setuptools', 'wheel'], {
+    env: bootstrapEnv,
+    progressMessage: '正在升级 pip 基础工具',
+    percent: 65
+  })
+
+  await runProcessWithLogs(stagingPythonExe, ['-m', 'pip', 'install', '-r', bootstrapRequirementsPath], {
+    env: bootstrapEnv,
+    progressMessage: '正在从官方依赖源安装运行时依赖',
+    percent: 78
+  })
 
   broadcastModelDownloadProgress(PYTHON_RUNTIME_TRACKING_KEY, {
-    percent: 100,
-    phase: 'extracting',
-    message: '正在解压 Python 运行时'
+    percent: 92,
+    phase: 'installing',
+    message: '正在应用本地运行时补丁'
   })
-  await extractRuntimeBundle(archivePath, stagingRoot)
-
-  const verified = verifyPythonRuntimeInstall(stagingRoot, manifest)
-  if (!verified.ok) {
-    throw new Error(verified.detail)
-  }
+  applyPackagedRuntimePatches(projectRoot, stagingPythonRoot)
 
   if (fs.existsSync(backupRoot)) {
     fs.rmSync(backupRoot, { recursive: true, force: true })
@@ -1057,8 +1159,14 @@ async function installManagedPythonRuntime() {
   }
 
   fs.writeFileSync(
-    path.join(runtimeRoot, '.videosync-runtime-manifest.json'),
-    JSON.stringify(manifest, null, 2),
+    getManagedRuntimeStatePath(projectRoot),
+    JSON.stringify({
+      schemaVersion: 1,
+      pythonVersion: OFFICIAL_PYTHON_VERSION,
+      requirementsHash: getRequirementsHash(projectRoot),
+      patchSignature: MANAGED_RUNTIME_PATCH_SIGNATURE,
+      installedAt: new Date().toISOString()
+    }, null, 2),
     'utf-8'
   )
 
@@ -1085,9 +1193,9 @@ async function ensurePackagedPythonRuntime() {
       const message = error instanceof Error ? error.message : String(error)
       broadcastModelDownloadProgress(PYTHON_RUNTIME_TRACKING_KEY, {
         phase: 'failed',
-        message: `Python 运行时安装失败: ${message}`
+        message: buildRuntimeManualDownloadMessage(message)
       })
-      return { success: false, installed: false, error: message }
+      return { success: false, installed: false, error: buildRuntimeManualDownloadMessage(message) }
     })
     .finally(() => {
       pythonRuntimeInstallPromise = null
@@ -2423,6 +2531,10 @@ app.whenReady().then(async () => {
     return getAppPaths();
   })
 
+  ipcMain.handle('get-runtime-download-info', async () => {
+    return getRuntimeDownloadInfo();
+  })
+
   ipcMain.handle('analyze-video-metadata', async (_event, filePath: string) => {
     return analyzeVideoWithFfprobe(filePath)
   })
@@ -2556,7 +2668,11 @@ app.whenReady().then(async () => {
   // IPC Handler to open file externally (system default player)
   ipcMain.handle('open-external', async (_event, filePath: string) => {
     try {
-      await shell.openPath(filePath);
+      if (/^https?:\/\//i.test(filePath)) {
+        await shell.openExternal(filePath);
+      } else {
+        await shell.openPath(filePath);
+      }
       return true;
     } catch (e) {
       logMainError('调用系统程序打开文件失败', {
@@ -2724,7 +2840,13 @@ app.whenReady().then(async () => {
               });
             })
             .catch((error: unknown) => {
-              resolve({ success: false, error: error instanceof Error ? error.message : String(error) });
+              resolve({
+                success: false,
+                error: buildRuntimeManualDownloadMessage(
+                  error instanceof Error ? error.message : String(error),
+                  projectRoot
+                )
+              });
             });
           return;
         }
@@ -2813,7 +2935,13 @@ app.whenReady().then(async () => {
         const checkScriptPath = path.join(getBackendRoot(projectRoot), 'check_requirements.py');
 
         if (!fs.existsSync(pythonExe)) {
-          resolve({ success: false, status: 'missing_python', error: `找不到 Python 解释器。请确认运行时目录存在于 ${getManagedPythonLocationHint(projectRoot)}` });
+          resolve({
+            success: false,
+            status: 'missing_python',
+            error: app.isPackaged
+              ? buildRuntimeManualDownloadMessage('找不到已安装的 Python 解释器', projectRoot)
+              : `找不到 Python 解释器。请确认运行时目录存在于 ${getManagedPythonLocationHint(projectRoot)}`
+          });
           return;
         }
         if (!fs.existsSync(requirementsPath)) {

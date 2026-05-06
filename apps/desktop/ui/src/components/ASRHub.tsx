@@ -41,7 +41,7 @@ export default function ASRHub({
     asrRuntimeSettings,
     setAsrRuntimeSettings
 }: ASRHubProps) {
-    const currentService = (asrService in ASR_SERVICE_META ? asrService : 'faster-whisper') as AsrService;
+    const currentService = (asrService in ASR_SERVICE_META ? asrService : 'qwen') as AsrService;
 
     useEffect(() => {
         setAsrRuntimeSettings((prev) => ({

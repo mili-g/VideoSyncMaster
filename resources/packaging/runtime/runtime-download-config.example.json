@@ -1,0 +1,4 @@
+{
+  "runtimeDownloadBaseUrl": "https://download.example.com/videosync/runtime",
+  "runtimeDownloadPageUrl": "https://download.example.com/videosync/download"
+}

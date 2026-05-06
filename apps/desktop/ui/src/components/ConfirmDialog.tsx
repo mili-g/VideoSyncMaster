@@ -6,10 +6,12 @@ interface ConfirmDialogProps {
     message: string;
     onConfirm: () => void;
     onCancel?: () => void;
+    onSecondaryAction?: () => void;
     isLightMode?: boolean;
     confirmText?: string;
     cancelText?: string;
     confirmColor?: string;
+    secondaryActionText?: string;
 }
 
 const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
@@ -18,10 +20,12 @@ const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
     message,
     onConfirm,
     onCancel,
+    onSecondaryAction,
     isLightMode,
     confirmText = '确定',
     cancelText = '取消',
-    confirmColor = '#3b82f6' // Default Blue
+    confirmColor = '#3b82f6',
+    secondaryActionText = '前往下载'
 }) => {
     if (!isOpen) return null;
 
@@ -65,6 +69,25 @@ const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
                     {message}
                 </p>
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
+                    {onSecondaryAction && (
+                        <button
+                            onClick={onSecondaryAction}
+                            style={{
+                                padding: '8px 20px',
+                                borderRadius: '8px',
+                                border: `1px solid ${isLightMode ? '#e2e8f0' : '#475569'}`,
+                                background: isLightMode ? '#f8fafc' : 'rgba(255,255,255,0.05)',
+                                color: isLightMode ? '#1e293b' : '#e2e8f0',
+                                cursor: 'pointer',
+                                fontWeight: 500,
+                                transition: 'all 0.2s'
+                            }}
+                            onMouseOver={(e) => e.currentTarget.style.background = isLightMode ? '#eef2ff' : 'rgba(255,255,255,0.09)'}
+                            onMouseOut={(e) => e.currentTarget.style.background = isLightMode ? '#f8fafc' : 'rgba(255,255,255,0.05)'}
+                        >
+                            {secondaryActionText}
+                        </button>
+                    )}
                     {onCancel && (
                         <button
                             onClick={onCancel}

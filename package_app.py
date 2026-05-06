@@ -147,6 +147,41 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _read_runtime_download_config(config_path: Path) -> dict:
+    if not config_path.exists():
+        return {}
+
+    try:
+        return json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise RuntimeError(f"运行时下载配置文件无效: {config_path}") from exc
+
+
+def resolve_runtime_download_urls(root_dir: Path, bundle_name: str) -> tuple[str, str]:
+    config_path = root_dir / "resources" / "packaging" / "runtime" / "runtime-download-config.json"
+    config = _read_runtime_download_config(config_path)
+
+    explicit_download_url = os.environ.get("VIDEOSYNC_RUNTIME_DOWNLOAD_URL") or str(config.get("runtimeDownloadUrl") or "").strip()
+    download_base_url = os.environ.get("VIDEOSYNC_RUNTIME_DOWNLOAD_BASE_URL") or str(config.get("runtimeDownloadBaseUrl") or "").strip()
+    download_page_url = os.environ.get("VIDEOSYNC_RUNTIME_DOWNLOAD_PAGE_URL") or str(config.get("runtimeDownloadPageUrl") or "").strip()
+
+    download_url = explicit_download_url
+    if not download_url and download_base_url:
+        download_url = f"{download_base_url.rstrip('/')}/{bundle_name}"
+
+    if not download_url:
+        raise RuntimeError(
+            "未配置官方运行时下载地址。"
+            "请设置 VIDEOSYNC_RUNTIME_DOWNLOAD_URL 或 VIDEOSYNC_RUNTIME_DOWNLOAD_BASE_URL，"
+            "或提供 resources/packaging/runtime/runtime-download-config.json。"
+        )
+
+    if not download_page_url:
+        download_page_url = download_url
+
+    return download_url, download_page_url
+
+
 def create_zip_with_progress(
     output_path: Path,
     source_dirs: list,
@@ -488,6 +523,8 @@ def build_python_runtime_bundle(root_dir: Path) -> Optional[Path]:
             "sha256": sha256_file(source_path),
         })
 
+    download_url, download_page_url = resolve_runtime_download_urls(root_dir, bundle_name)
+
     manifest = {
         "schemaVersion": 1,
         "appVersion": version,
@@ -496,7 +533,8 @@ def build_python_runtime_bundle(root_dir: Path) -> Optional[Path]:
         "bundleSha256": bundle_sha256,
         "bundleSize": final_bundle_path.stat().st_size,
         "releaseTag": f"v{version}",
-        "downloadUrl": f"https://github.com/mili-g/VideoSyncMaster/releases/download/v{version}/{bundle_name}",
+        "downloadUrl": download_url,
+        "downloadPageUrl": download_page_url,
         "expectedFileCount": get_zip_entry_count(final_bundle_path),
         "requiredPaths": critical_paths,
         "criticalFiles": critical_files,
@@ -690,11 +728,6 @@ def build_installer(root_dir: Path):
     
     layout = build_project_layout(root_dir)
 
-    runtime_bundle = build_python_runtime_bundle(root_dir)
-    if not runtime_bundle:
-        print_error("运行时 Bundle 构建失败，已停止安装包构建")
-        return
-    
     # 1. 构建
     win_unpacked = run_npm_build(layout.ui_dir, output_dir_name="release", dir_only=False)
     if not win_unpacked:

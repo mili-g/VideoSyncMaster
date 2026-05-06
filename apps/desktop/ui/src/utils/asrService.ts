@@ -139,7 +139,7 @@ export function getAsrServiceLabel(value: string | null | undefined): string {
     if (value && isSupportedAsrService(value)) {
         return ASR_SERVICE_META[value].shortName;
     }
-    return 'faster-whisper';
+    return 'Qwen3';
 }
 
 export function getAsrWorkflowBlockReason(service: AsrService): string | null {
