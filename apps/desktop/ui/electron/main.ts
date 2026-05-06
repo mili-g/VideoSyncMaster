@@ -4506,11 +4506,119 @@ try:
     print(f"Downloading {model_id} to {target_dir}...")
     if model_id.startswith('hf://'):
         import os
+        import json
+        import requests
         from huggingface_hub import snapshot_download
         repo_id = model_id[len('hf://'):]
         os.environ['HF_HUB_DISABLE_XET'] = '1'
         os.environ['HF_HUB_ENABLE_HF_TRANSFER'] = '0'
         max_attempts = 4
+
+        def http_session():
+            session = requests.Session()
+            adapter = requests.adapters.HTTPAdapter(pool_connections=8, pool_maxsize=8, max_retries=0)
+            session.mount('https://', adapter)
+            session.mount('http://', adapter)
+            session.headers.update({
+                'User-Agent': 'VideoSyncMaster/1.0 (+https://huggingface.co)'
+            })
+            return session
+
+        def fetch_repo_tree(session):
+            base_url = f"https://huggingface.co/api/models/{repo_id}/tree/main"
+            params = {'recursive': '1', 'expand': '1'}
+            response = session.get(base_url, params=params, timeout=(20, 120))
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, list):
+                raise RuntimeError(f"官方树接口返回异常：{type(payload).__name__}")
+            files = []
+            for item in payload:
+                if not isinstance(item, dict):
+                    continue
+                if item.get('type') != 'file':
+                    continue
+                file_path = item.get('path') or item.get('rfilename') or item.get('name')
+                if not file_path:
+                    continue
+                size = item.get('size')
+                try:
+                    size = int(size) if size is not None else 0
+                except Exception:
+                    size = 0
+                files.append({'path': str(file_path), 'size': max(size, 0)})
+            if not files:
+                preview = json.dumps(payload[:2], ensure_ascii=False) if isinstance(payload, list) else str(payload)
+                raise RuntimeError(f"官方树接口未返回可下载文件：{preview}")
+            return files
+
+        def direct_download_with_manifest():
+            session = http_session()
+            files = fetch_repo_tree(session)
+            total_files = len(files)
+            total_bytes = sum(max(int(item.get('size', 0) or 0), 0) for item in files)
+            downloaded_bytes = 0
+            completed_files = 0
+            last_percent = -1
+            print(f"PROGRESS:8:已切换到 Hugging Face 官方直链下载，共 {total_files} 个文件", flush=True)
+
+            for item in files:
+                file_path = item['path']
+                expected_size = max(int(item.get('size', 0) or 0), 0)
+                local_path = os.path.join(target_dir, file_path.replace('/', os.sep))
+                os.makedirs(os.path.dirname(local_path), exist_ok=True)
+                current_size = os.path.getsize(local_path) if os.path.exists(local_path) else 0
+                if expected_size > 0 and current_size == expected_size:
+                    downloaded_bytes += expected_size
+                    completed_files += 1
+                    percent = min(99, int(downloaded_bytes * 100 / total_bytes)) if total_bytes > 0 else min(99, int(completed_files * 100 / total_files))
+                    if percent != last_percent:
+                        print(f"PROGRESS:{percent}:Hugging Face 官方直链校验中（{completed_files}/{total_files} 个文件）", flush=True)
+                        last_percent = percent
+                    continue
+
+                temp_path = local_path + '.part'
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+
+                download_url = f"https://huggingface.co/{repo_id}/resolve/main/{file_path}"
+                file_attempts = 3
+                for file_attempt in range(1, file_attempts + 1):
+                    try:
+                        with session.get(download_url, stream=True, timeout=(20, 300), allow_redirects=True) as response:
+                            response.raise_for_status()
+                            with open(temp_path, 'wb') as handle:
+                                file_downloaded = 0
+                                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                                    if not chunk:
+                                        continue
+                                    handle.write(chunk)
+                                    file_downloaded += len(chunk)
+                                    combined_bytes = downloaded_bytes + file_downloaded
+                                    percent = min(99, int(combined_bytes * 100 / total_bytes)) if total_bytes > 0 else min(99, int((completed_files + 1) * 100 / total_files))
+                                    if percent != last_percent:
+                                        print(f"PROGRESS:{percent}:Hugging Face 官方直链下载中（{completed_files}/{total_files} 个文件，当前 {file_path}）", flush=True)
+                                        last_percent = percent
+                        final_size = os.path.getsize(temp_path) if os.path.exists(temp_path) else 0
+                        if expected_size > 0 and final_size != expected_size:
+                            raise RuntimeError(f"{file_path} 文件大小不匹配，期望 {expected_size}，实际 {final_size}")
+                        os.replace(temp_path, local_path)
+                        downloaded_bytes += final_size if expected_size <= 0 else expected_size
+                        completed_files += 1
+                        percent = min(99, int(downloaded_bytes * 100 / total_bytes)) if total_bytes > 0 else min(99, int(completed_files * 100 / total_files))
+                        print(f"PROGRESS:{percent}:Hugging Face 官方直链已完成 {completed_files}/{total_files} 个文件", flush=True)
+                        break
+                    except Exception as file_error:
+                        if os.path.exists(temp_path):
+                            try:
+                                os.remove(temp_path)
+                            except OSError:
+                                pass
+                        if file_attempt >= file_attempts:
+                            raise RuntimeError(f"{file_path} 直链下载失败，已重试 {file_attempts} 次：{file_error}") from file_error
+                        print(f"PROGRESS:{max(5, last_percent)}:文件下载波动，重试 {file_attempt}/{file_attempts}：{file_path}", flush=True)
+                        time.sleep(min(4 * file_attempt, 10))
+
         last_error = None
         for attempt in range(1, max_attempts + 1):
             try:
@@ -4518,8 +4626,6 @@ try:
                 snapshot_download(
                     repo_id=repo_id,
                     local_dir=target_dir,
-                    local_dir_use_symlinks=False,
-                    resume_download=True,
                     max_workers=4,
                 )
                 print("PROGRESS:100:Hugging Face 官方下载完成", flush=True)
@@ -4527,10 +4633,18 @@ try:
                 break
             except Exception as download_error:
                 last_error = download_error
-                if attempt >= max_attempts:
-                    raise RuntimeError(f"Hugging Face 官方下载失败，已重试 {max_attempts} 次：{download_error}") from download_error
-                print(f"PROGRESS:{min(95, 10 + attempt * 15)}:下载失败，准备重试 {attempt}/{max_attempts}：{download_error}", flush=True)
+                print(f"PROGRESS:{min(95, 10 + attempt * 15)}:官方下载器失败，准备重试 {attempt}/{max_attempts}：{download_error}", flush=True)
                 time.sleep(min(5 * attempt, 12))
+        if last_error is not None:
+            print("PROGRESS:6:官方下载器不可用，切换到 Hugging Face 官方直链模式", flush=True)
+            try:
+                direct_download_with_manifest()
+                print("PROGRESS:100:Hugging Face 官方直链下载完成", flush=True)
+                last_error = None
+            except Exception as direct_error:
+                raise RuntimeError(
+                    f"Hugging Face 官方下载失败。官方下载器错误：{last_error}；官方直链错误：{direct_error}"
+                ) from direct_error
     else:
         from modelscope.hub.snapshot_download import snapshot_download
         print("PROGRESS:0:准备连接 ModelScope", flush=True)
