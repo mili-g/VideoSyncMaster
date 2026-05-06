@@ -1,11 +1,11 @@
 import os
 
-from bootstrap.path_layout import get_project_root
+from bootstrap.path_layout import get_models_root, get_project_root
 
 
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_ROOT = get_project_root(BACKEND_DIR)
-MODELS_ROOT = os.path.join(APP_ROOT, "models")
+MODELS_ROOT = get_models_root(APP_ROOT)
 USER_HOME = os.path.expanduser("~")
 
 

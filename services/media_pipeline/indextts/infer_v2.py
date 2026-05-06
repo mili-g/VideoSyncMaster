@@ -1,6 +1,8 @@
 import os
 from subprocess import CalledProcessError
 
+from bootstrap.path_layout import get_models_root
+
 # Fix for using local HF cache
 # Point HF_HUB_CACHE to ../models/index-tts-models/hub relative to this file
 # This assumes the structure is:
@@ -8,7 +10,7 @@ from subprocess import CalledProcessError
 # models/index-tts/hub
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, "..", "..", ".."))
-MODELS_ROOT = os.path.join(PROJECT_ROOT, "models", "index-tts")
+MODELS_ROOT = os.path.join(get_models_root(PROJECT_ROOT), "index-tts")
 HF_CACHE_DIR = os.path.join(MODELS_ROOT, "hub")
 
 os.environ['HF_HUB_CACHE'] = HF_CACHE_DIR

@@ -7,7 +7,7 @@ import subprocess
 import sys
 from typing import Callable
 
-from bootstrap.path_layout import get_media_tool_bin_dir, get_project_root, get_storage_logs_dir, resolve_portable_python
+from bootstrap.path_layout import get_media_tool_bin_dir, get_models_root, get_project_root, get_storage_logs_dir, resolve_portable_python
 from infra.logging import log_business, log_error, log_security
 
 
@@ -194,9 +194,11 @@ def resolve_models_hub_dir(app_root: str, current_dir: str, argv: list[str], deb
         except Exception:
             pass
 
-    possible_paths = [os.path.join(app_root, "models")]
+    resolved_models_root = get_models_root(app_root)
+    possible_paths = [resolved_models_root]
 
     debug_print(f"[DEBUG] APP_ROOT detected as: {app_root}")
+    debug_print(f"[DEBUG] VSM_MODELS_ROOT override: {os.environ.get('VSM_MODELS_ROOT', '') or '<unset>'}")
     debug_print("[DEBUG] Checking model paths:")
 
     for path in possible_paths:
@@ -208,7 +210,7 @@ def resolve_models_hub_dir(app_root: str, current_dir: str, argv: list[str], deb
             return _normalize_models_root(path)
 
     debug_print("  [WARNING] No valid model dir found in candidates. Defaulting to Root path.")
-    return os.path.join(app_root, "models")
+    return resolved_models_root
 
 
 def configure_models_environment(models_hub_dir: str) -> None:

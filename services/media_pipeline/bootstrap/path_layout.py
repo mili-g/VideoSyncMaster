@@ -75,6 +75,21 @@ def get_storage_runtime_dir(project_root: str) -> str:
     return os.path.join(get_storage_root(project_root), "runtime")
 
 
+def get_models_root(project_root: str) -> str:
+    models_override = os.environ.get("VSM_MODELS_ROOT")
+    if models_override:
+        return os.path.abspath(models_override)
+
+    project_models_dir = os.path.join(project_root, "models")
+    storage_models_dir = os.path.join(get_storage_root(project_root), "models")
+    existing = first_existing_path(
+        candidate
+        for candidate in (project_models_dir, storage_models_dir)
+        if os.path.isdir(candidate)
+    )
+    return existing or project_models_dir
+
+
 def get_app_runtime_dir(project_root: str) -> str:
     return os.path.join(project_root, "runtime")
 
