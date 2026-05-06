@@ -875,15 +875,33 @@ function getRuntimeDownloadInfo() {
   }
 }
 
+function getSevenZipExecutablePath(projectRoot = getProjectRoot()) {
+  const candidates = app.isPackaged
+    ? [
+        path.join(projectRoot, 'resources', 'bin', '7za.exe'),
+        path.join(process.resourcesPath, 'bin', '7za.exe'),
+        path7za
+      ]
+    : [path7za]
+
+  for (const candidate of candidates) {
+    if (candidate && fs.existsSync(candidate)) {
+      return candidate
+    }
+  }
+
+  throw new Error(`找不到 7za.exe：${candidates.join(' | ')}`)
+}
+
 function buildRuntimeManualDownloadMessage(reason: string, projectRoot = getProjectRoot()) {
   const info = getRuntimeDownloadInfo()
   return [
     `Python 运行时自动安装失败：${reason}`,
     '',
-    `可手动下载官方 Python 运行包：${info.downloadPageUrl}`,
+    `可前往官方下载页面：${info.downloadPageUrl}`,
     `Python 版本：${OFFICIAL_PYTHON_VERSION} x64`,
-    `安装目录：${getManagedRuntimePythonRoot(projectRoot)}`,
-    '下载完成后重新执行“修复运行环境”即可继续安装依赖。'
+    `运行时目标目录：${getManagedRuntimePythonRoot(projectRoot)}`,
+    '请优先重新点击“修复运行环境”。若仍失败，再使用“前往下载”获取官方安装包。'
   ].join('\n')
 }
 
@@ -947,8 +965,9 @@ async function downloadRuntimeBundle(downloadUrl: string, destinationPath: strin
 }
 
 async function extractRuntimeBundle(archivePath: string, destinationRoot: string) {
+  const sevenZipPath = getSevenZipExecutablePath()
   await new Promise<void>((resolve, reject) => {
-    execFile(path7za, ['x', archivePath, `-o${destinationRoot}`, '-y'], (error) => {
+    execFile(sevenZipPath, ['x', archivePath, `-o${destinationRoot}`, '-y'], (error) => {
       if (error) {
         reject(error)
         return
@@ -3734,7 +3753,7 @@ app.whenReady().then(async () => {
         const pythonExe = getPythonExe(projectRoot);
 
         const safeFinalDir = finalDir.replace(/\\/g, '\\\\');
-        const safe7zaPath = path7za.replace(/\\/g, '\\\\');
+        const safe7zaPath = getSevenZipExecutablePath(projectRoot).replace(/\\/g, '\\\\');
         const script = `
 import sys
 import os

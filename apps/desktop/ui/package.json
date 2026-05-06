@@ -71,6 +71,10 @@
         "to": "VC_redist.x64.exe"
       },
       {
+        "from": "node_modules/7zip-bin/win/x64/7za.exe",
+        "to": "resources/bin/7za.exe"
+      },
+      {
         "from": "../../../services/media_pipeline",
         "to": "services/media_pipeline",
         "filter": [
