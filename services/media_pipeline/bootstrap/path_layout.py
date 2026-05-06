@@ -4,6 +4,7 @@ import os
 from typing import Iterable
 
 CURRENT_STRUCTURE_MARKERS = ("apps", "services", "docs")
+PACKAGED_STRUCTURE_MARKERS = ("services", "resources", "models")
 
 
 def first_existing_path(candidates: Iterable[str]) -> str | None:
@@ -29,14 +30,15 @@ def _parent_chain(path: str, depth: int) -> Iterable[str]:
 
 
 def _looks_like_project_root(path: str) -> bool:
-    required_markers = [
-        os.path.join(path, "package.json"),
-        os.path.join(path, "requirements.txt"),
-    ]
-    if not all(os.path.exists(marker) for marker in required_markers):
+    requirements_marker = os.path.join(path, "requirements.txt")
+    if not os.path.exists(requirements_marker):
         return False
 
-    return _has_structure_markers(path, CURRENT_STRUCTURE_MARKERS)
+    package_marker = os.path.join(path, "package.json")
+    if os.path.exists(package_marker) and _has_structure_markers(path, CURRENT_STRUCTURE_MARKERS):
+        return True
+
+    return _has_structure_markers(path, PACKAGED_STRUCTURE_MARKERS)
 
 
 def _has_structure_markers(path: str, markers: Iterable[str]) -> bool:

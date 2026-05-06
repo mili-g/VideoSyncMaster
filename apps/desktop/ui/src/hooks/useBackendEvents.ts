@@ -103,6 +103,13 @@ export function useBackendEvents({
                 || normalized.includes('indextts');
         };
 
+        const isTranslationStage = (stage?: string, stageLabel?: string, text?: string) => {
+            const normalized = `${stage || ''} ${stageLabel || ''} ${text || ''}`.toLowerCase();
+            return normalized.includes('translate')
+                || normalized.includes('翻译')
+                || normalized.includes('subtitle');
+        };
+
         const extractItemProgressToken = (text: string) => {
             const match = text.match(/第\s*\d+\s*\/\s*\d+\s*条/);
             return match ? match[0].replace(/\s+/g, '') : '';
@@ -111,8 +118,19 @@ export function useBackendEvents({
         const buildProgressStatus = (payload: ProgressPayload) => {
             const stageLabel = payload.stage_label || '';
             const hasItemProgress = typeof payload.item_index === 'number' && typeof payload.item_total === 'number';
+            const progressKind = isTtsStage(payload.stage, payload.stage_label, `${payload.message || ''} ${payload.detail || ''}`)
+                ? 'tts'
+                : (isTranslationStage(payload.stage, payload.stage_label, `${payload.message || ''} ${payload.detail || ''}`)
+                    ? 'translation'
+                    : 'generic');
             const itemText = hasItemProgress
-                ? `第 ${payload.item_index}/${payload.item_total} 条语音合成`
+                ? (
+                    progressKind === 'tts'
+                        ? `第 ${payload.item_index}/${payload.item_total} 条语音合成`
+                        : progressKind === 'translation'
+                            ? `第 ${payload.item_index}/${payload.item_total} 条翻译中`
+                            : `第 ${payload.item_index}/${payload.item_total} 条处理中`
+                )
                 : '';
             const message = (payload.message || '').trim();
             const detail = (payload.detail || '').trim();
@@ -146,16 +164,17 @@ export function useBackendEvents({
             setIsIndeterminate(false);
             setProgress(percent);
 
-            if (typeof payload.item_total === 'number') {
+            const isTtsProgress = isTtsStage(payload.stage, payload.stage_label, `${payload.message || ''} ${payload.detail || ''}`);
+            if (isTtsProgress && typeof payload.item_total === 'number') {
                 ttsProgressTotalRef.current = payload.item_total;
             }
-            if (typeof payload.item_index === 'number') {
+            if (isTtsProgress && typeof payload.item_index === 'number') {
                 ttsProgressCompletedRef.current = Math.max(0, payload.item_index - 1);
             }
 
             const statusText = buildProgressStatus(payload);
             if (statusText) {
-                if (typeof payload.item_index === 'number' && typeof payload.item_total === 'number') {
+                if (isTtsProgress && typeof payload.item_index === 'number' && typeof payload.item_total === 'number') {
                     lastDetailedTtsStatusRef.current = statusText;
                 }
                 setStatus(statusText);
@@ -189,6 +208,12 @@ export function useBackendEvents({
                     stage: payload.stage || payload.stage_label
                 });
                 return;
+            }
+
+            if (!isTtsStage(payload.stage, payload.stage_label, `${payload.message || ''} ${payload.detail || ''}`)) {
+                ttsProgressTotalRef.current = null;
+                ttsProgressCompletedRef.current = 0;
+                lastDetailedTtsStatusRef.current = '';
             }
 
             if (isTtsStage(payload.stage, payload.stage_label, `${payload.message || ''} ${payload.detail || ''}`) && lastDetailedTtsStatusRef.current) {
@@ -244,6 +269,7 @@ export function useBackendEvents({
         const handlePartialResult = (_event: unknown, data: PartialResultPayload) => {
             if (data && typeof data.index === 'number') {
                 const segmentIndex = data.index;
+                const hasTtsArtifactUpdate = data.audio_path !== undefined || data.duration !== undefined || data.success !== undefined;
                 setTranslatedSegments(prev => {
                     const newSegs = [...prev];
                     if (newSegs[segmentIndex]) {
@@ -277,7 +303,7 @@ export function useBackendEvents({
                     return newSegs;
                 });
 
-                if (typeof ttsProgressTotalRef.current === 'number' && ttsProgressTotalRef.current > 0) {
+                if (hasTtsArtifactUpdate && typeof ttsProgressTotalRef.current === 'number' && ttsProgressTotalRef.current > 0) {
                     ttsProgressCompletedRef.current = Math.min(
                         ttsProgressCompletedRef.current + 1,
                         ttsProgressTotalRef.current

@@ -650,6 +650,7 @@ function restartBackendWorkerAfterFatalCuda(lane: BackendLane, message: string) 
 function getPythonProcessEnv() {
   const projectRoot = getProjectRoot()
   const storageRoot = getStorageRoot(projectRoot)
+  const modelsRoot = app.isPackaged ? getManagedModelsRoot(projectRoot) : path.join(projectRoot, 'models')
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     PYTHONUTF8: '1',
@@ -659,7 +660,8 @@ function getPythonProcessEnv() {
     HF_HUB_DISABLE_XET: '1',
     NUMBA_DISABLE_INTEL_SVML: '1',
     NUMBA_CPU_NAME: 'generic',
-    VSM_STORAGE_ROOT: storageRoot
+    VSM_STORAGE_ROOT: storageRoot,
+    VSM_MODELS_ROOT: modelsRoot
   }
 
   try {
@@ -1077,13 +1079,15 @@ function ensureEmbeddedPythonSiteEnabled(pythonRoot: string) {
 }
 
 function getBootstrapPythonEnv(projectRoot = getProjectRoot()): NodeJS.ProcessEnv {
+  const modelsRoot = app.isPackaged ? getManagedModelsRoot(projectRoot) : path.join(projectRoot, 'models')
   return {
     ...process.env,
     PYTHONUTF8: '1',
     PYTHONUNBUFFERED: '1',
     PYTHONIOENCODING: 'utf-8',
     SETUPTOOLS_USE_DISTUTILS: 'stdlib',
-    VSM_STORAGE_ROOT: getStorageRoot(projectRoot)
+    VSM_STORAGE_ROOT: getStorageRoot(projectRoot),
+    VSM_MODELS_ROOT: modelsRoot
   }
 }
 
@@ -1973,7 +1977,9 @@ function getBackendLaunchConfig() {
   const { projectRoot } = getAppPaths()
   const pythonExe = path.join(getPythonRoot(projectRoot), 'python.exe')
   const scriptPath = path.join(getBackendRoot(projectRoot), 'main.py')
-  const modelsDir = path.join(projectRoot, 'models', 'index-tts', 'hub')
+  const modelsDir = app.isPackaged
+    ? getManagedModelsRoot(projectRoot)
+    : path.join(projectRoot, 'models', 'index-tts', 'hub')
   const finalPythonExe = (app.isPackaged || fs.existsSync(pythonExe)) ? pythonExe : 'python'
 
   return {
