@@ -166,15 +166,12 @@ def translate_text_workflow(
 
         strategy: TranslationStrategy
         if isinstance(payload, list):
-            if getattr(translator, "use_external", False):
-                strategy = ExternalBatchTranslationStrategy(translator)
-            else:
-                strategy = ChunkedBatchTranslationStrategy(
-                    translator,
-                    emit_stage=emit_stage,
-                    emit_progress=emit_progress,
-                    emit_partial_result=emit_partial_result,
-                )
+            strategy = SequentialTranslationStrategy(
+                translator,
+                emit_stage=emit_stage,
+                emit_progress=emit_progress,
+                emit_partial_result=emit_partial_result,
+            )
         else:
             strategy = SequentialTranslationStrategy(
                 translator,

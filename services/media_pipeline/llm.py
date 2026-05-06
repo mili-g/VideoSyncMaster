@@ -372,28 +372,48 @@ Input:
 
         for index in range(0, total, batch_size):
             chunk = texts[index:index + batch_size]
-            json_input = json.dumps(chunk, ensure_ascii=False)
-            messages = [
-                {
-                    "role": "system",
-                    "content": (
-                        f"You are a professional translator. Translate each sentence into {target_lang}. "
-                        "Output ONLY a valid JSON array of translated strings. "
-                        "Keep the same order and same number of items. "
-                        "Do not output the original text. Do not explain."
-                    ),
-                },
-                {"role": "user", "content": json_input},
-            ]
-            raw_content = self._chat_complete_local(messages, temperature=0.1, max_new_tokens=1024)
-            batch_results = self._extract_json_list_from_text(raw_content)
-            if len(batch_results) != len(chunk):
-                raise RuntimeError(
-                    f"Local batch translation length mismatch. Expected {len(chunk)}, got {len(batch_results)}."
-                )
+            batch_results = self._translate_batch_local_chunk(chunk, target_lang)
             results.extend(batch_results)
 
         return results
+
+    def _translate_batch_local_chunk(self, chunk, target_lang, depth=0):
+        json_input = json.dumps(chunk, ensure_ascii=False)
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    f"You are a professional translator. Translate each sentence into {target_lang}. "
+                    "Output ONLY a valid JSON array of translated strings. "
+                    "Keep the same order and same number of items. "
+                    "Every input item must produce exactly one output item. "
+                    "Do not merge, skip, summarize, or explain anything. "
+                    "Do not output the original text."
+                ),
+            },
+            {"role": "user", "content": json_input},
+        ]
+        raw_content = self._chat_complete_local(messages, temperature=0.05, max_new_tokens=1536)
+        batch_results = self._extract_json_list_from_text(raw_content)
+        if len(batch_results) == len(chunk):
+            return batch_results
+
+        print(
+            f"[LocalBatchTranslation] Length mismatch at depth={depth}. "
+            f"Expected {len(chunk)}, got {len(batch_results)}. Falling back."
+        )
+
+        if len(chunk) == 1:
+            single_result = self._translate_local(chunk[0], target_lang)
+            cleaned_single = self._clean_response(single_result or "").strip()
+            if not cleaned_single:
+                raise RuntimeError("Local single-item translation fallback returned empty text.")
+            return [cleaned_single]
+
+        midpoint = max(1, len(chunk) // 2)
+        left_results = self._translate_batch_local_chunk(chunk[:midpoint], target_lang, depth + 1)
+        right_results = self._translate_batch_local_chunk(chunk[midpoint:], target_lang, depth + 1)
+        return left_results + right_results
 
     def _translate_local(self, text, target_lang):
         if not self.model:
