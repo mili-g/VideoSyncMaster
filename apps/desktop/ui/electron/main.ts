@@ -623,6 +623,7 @@ function getPythonProcessEnv() {
     PYTHONUTF8: '1',
     PYTHONUNBUFFERED: '1',
     PYTHONIOENCODING: 'utf-8',
+    SETUPTOOLS_USE_DISTUTILS: 'stdlib',
     HF_HUB_DISABLE_XET: '1',
     NUMBA_DISABLE_INTEL_SVML: '1',
     NUMBA_CPU_NAME: 'generic',
@@ -1010,6 +1011,7 @@ function getBootstrapPythonEnv(projectRoot = getProjectRoot()): NodeJS.ProcessEn
     PYTHONUTF8: '1',
     PYTHONUNBUFFERED: '1',
     PYTHONIOENCODING: 'utf-8',
+    SETUPTOOLS_USE_DISTUTILS: 'stdlib',
     VSM_STORAGE_ROOT: getStorageRoot(projectRoot)
   }
 }
@@ -1159,7 +1161,7 @@ async function installManagedPythonRuntime() {
     percent: 55
   })
 
-  await runProcessWithLogs(stagingPythonExe, ['-c', 'import pip, setuptools, wheel; print(pip.__version__)'], {
+  await runProcessWithLogs(stagingPythonExe, ['-c', 'import pip; print(pip.__version__)'], {
     env: bootstrapEnv,
     progressMessage: '正在校验 pip 运行环境',
     percent: 60
