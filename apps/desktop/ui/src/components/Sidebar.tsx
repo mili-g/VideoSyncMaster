@@ -17,6 +17,8 @@ type NavItem = {
     tone?: 'default' | 'warning';
 };
 
+const sidebarBrandIconSrc = `${import.meta.env.BASE_URL}icon.ico`;
+
 const makeIcon = (paths: React.ReactNode) => (
     <svg viewBox="0 0 24 24" aria-hidden="true" style={{ width: 24, height: 24 }}>
         {paths}
@@ -175,7 +177,7 @@ const Sidebar: React.FC<SidebarProps> = ({
         <aside className="sidebar-shell">
             <div className="sidebar-brand">
                 <div className="sidebar-brand__mark">
-                    <img src="/icon.ico" alt="VideoSyncMaster" className="sidebar-brand__icon" />
+                    <img src={sidebarBrandIconSrc} alt="VideoSyncMaster" className="sidebar-brand__icon" />
                 </div>
                 <div className="sidebar-brand__text">
                     <strong>VideoSyncMaster</strong>
