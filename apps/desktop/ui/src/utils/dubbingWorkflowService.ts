@@ -166,6 +166,12 @@ export function buildSingleTtsArgs(
     segment: Pick<DubbingSegmentLike, 'start' | 'end' | 'text'>,
     options: TtsRequestOptions
 ) {
+    const safeStart = Number.isFinite(segment.start) ? segment.start : 0;
+    const safeEnd = Number.isFinite(segment.end) ? segment.end : safeStart + 3;
+    const safeDuration = Math.max(
+        Number.isFinite(safeEnd - safeStart) ? safeEnd - safeStart : 0,
+        0.1
+    );
     const { args: extraArgs } = buildTtsExtraArgs(options.ttsService, options.batchSize, options.cloneBatchSize);
     const args = withBackendAction(
         BACKEND_ACTIONS.GENERATE_SINGLE_TTS,
@@ -174,8 +180,8 @@ export function buildSingleTtsArgs(
         '--output', outputPath,
         '--text', segment.text,
         '--lang', options.targetLang,
-        '--start', segment.start.toString(),
-        '--duration', String(Math.max(segment.end - segment.start, 0.1)),
+        '--start', safeStart.toString(),
+        '--duration', safeDuration.toString(),
         '--strategy', options.videoStrategy,
         '--max_new_tokens', String(options.maxNewTokens),
         '--dub_retry_attempts', '3',

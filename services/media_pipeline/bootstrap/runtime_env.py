@@ -22,9 +22,14 @@ def configure_stdio_utf8() -> None:
         sys.stderr.reconfigure(encoding="utf-8")
 
 
+def configure_huggingface_offline_mode() -> None:
+    offline_enabled = os.environ.get("VSM_HF_OFFLINE", "0") == "1"
+    os.environ["HF_HUB_OFFLINE"] = "1" if offline_enabled else "0"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1" if offline_enabled else "0"
+
+
 def apply_base_environment() -> None:
-    os.environ["HF_HUB_OFFLINE"] = "1"
-    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    configure_huggingface_offline_mode()
     os.environ["PYTHONUTF8"] = "1"
     os.environ["PYTHONIOENCODING"] = "utf-8"
     os.environ["NUMBA_DISABLE_INTEL_SVML"] = "1"
@@ -218,8 +223,7 @@ def configure_models_environment(models_hub_dir: str) -> None:
     os.environ["HF_HOME"] = models_root
     os.environ["HF_HUB_CACHE"] = models_root
     os.environ["VSM_MODELS_ROOT"] = models_root
-    os.environ["HF_HUB_OFFLINE"] = "1"
-    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    configure_huggingface_offline_mode()
 
 
 def ensure_portable_ffmpeg(app_root: str, logger: logging.Logger) -> str:

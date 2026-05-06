@@ -62,7 +62,7 @@ export function useTranslationWorkflow({
         abortRef.current = false;
         setIsIndeterminate(true);
         setProgress(0);
-        setStatus(`正在翻译 ${segsToUse.length} 个片段到 ${targetLang}...`);
+        setStatus(`正在提交 ${segsToUse.length} 个片段的翻译任务...`);
 
         const placeholders = segsToUse.map(seg => ({
             ...seg,
@@ -82,6 +82,7 @@ export function useTranslationWorkflow({
                 json: true
             });
             appendStoredTranslationArgs(command.args);
+            setStatus(`翻译任务已提交，正在等待 ${targetLang} 模型响应...`);
 
             const result = await runBackendCommand(command);
 
@@ -162,7 +163,7 @@ export function useTranslationWorkflow({
         setBusyTask('translation');
         setLoading(true);
         setRetranslatingSegmentId(index);
-        setStatus(`正在重新翻译片段 ${index + 1}...`);
+        setStatus(`正在提交片段 ${index + 1} 的重翻译任务...`);
 
         try {
             const sourceText = segments[index].text;
@@ -172,6 +173,7 @@ export function useTranslationWorkflow({
                 json: true
             });
             appendStoredTranslationArgs(command.args);
+            setStatus(`片段 ${index + 1} 的翻译任务已提交，正在等待模型响应...`);
 
             const result = await runBackendCommand(command);
 

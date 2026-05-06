@@ -552,7 +552,7 @@ export async function translateSegments(
 
     appendStoredTranslationArgs(command.args);
 
-    const result = await runBackendCommand(command, { lane: 'prep' });
+    const result = await runBackendCommand(command);
     if (!result || !result.success || !Array.isArray(result.segments)) {
         throw result || new Error('字幕翻译失败');
     }
