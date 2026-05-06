@@ -44,6 +44,9 @@ def _has_structure_markers(path: str, markers: Iterable[str]) -> bool:
 
 
 def get_storage_root(project_root: str) -> str:
+    storage_override = os.environ.get("VSM_STORAGE_ROOT")
+    if storage_override:
+        return os.path.abspath(storage_override)
     candidate = os.path.join(project_root, "storage")
     return candidate if os.path.isdir(candidate) else project_root
 

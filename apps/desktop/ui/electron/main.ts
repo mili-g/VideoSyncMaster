@@ -586,6 +586,8 @@ function restartBackendWorkerAfterFatalCuda(lane: BackendLane, message: string) 
 }
 
 function getPythonProcessEnv() {
+  const projectRoot = getProjectRoot()
+  const storageRoot = getStorageRoot(projectRoot)
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     PYTHONUTF8: '1',
@@ -593,11 +595,11 @@ function getPythonProcessEnv() {
     PYTHONIOENCODING: 'utf-8',
     HF_HUB_DISABLE_XET: '1',
     NUMBA_DISABLE_INTEL_SVML: '1',
-    NUMBA_CPU_NAME: 'generic'
+    NUMBA_CPU_NAME: 'generic',
+    VSM_STORAGE_ROOT: storageRoot
   }
 
   try {
-    const projectRoot = getProjectRoot()
     const sitePackages = path.join(getPythonRoot(projectRoot), 'Lib', 'site-packages')
     const torchLib = path.join(sitePackages, 'torch', 'lib')
     const cudaPaths = [
@@ -659,6 +661,22 @@ function getProjectRoot() {
     : findProjectRoot(process.env.APP_ROOT || path.join(__dirname, '..'))
 }
 
+function getLocalAppDataRoot() {
+  if (process.env.LOCALAPPDATA) {
+    return process.env.LOCALAPPDATA
+  }
+  return path.join(app.getPath('home'), 'AppData', 'Local')
+}
+
+function getPackagedStorageRoot() {
+  return path.join(getLocalAppDataRoot(), app.getName())
+}
+
+function getDefaultUserOutputRoot() {
+  const preferredBase = app.getPath('videos') || app.getPath('documents')
+  return path.join(preferredBase, app.getName())
+}
+
 function resolveFirstExistingPath(candidates: string[]) {
   for (const candidate of candidates) {
     if (candidate && fs.existsSync(candidate)) {
@@ -669,6 +687,9 @@ function resolveFirstExistingPath(candidates: string[]) {
 }
 
 function getStorageRoot(projectRoot = getProjectRoot()) {
+  if (app.isPackaged) {
+    return getPackagedStorageRoot()
+  }
   const storageRoot = path.join(projectRoot, 'storage')
   return fs.existsSync(storageRoot) ? storageRoot : projectRoot
 }
@@ -686,6 +707,9 @@ function getCacheRoot(projectRoot = getProjectRoot()) {
 }
 
 function getOutputRoot(projectRoot = getProjectRoot()) {
+  if (app.isPackaged) {
+    return getDefaultUserOutputRoot()
+  }
   return path.join(getStorageRoot(projectRoot), 'output')
 }
 
@@ -695,6 +719,10 @@ function getOutputCacheRoot(projectRoot = getProjectRoot()) {
 
 function getOutputSessionCacheRoot(projectRoot = getProjectRoot()) {
   return path.join(getOutputCacheRoot(projectRoot), 'sessions')
+}
+
+function getSessionCacheRoot(projectRoot = getProjectRoot()) {
+  return path.join(getCacheRoot(projectRoot), 'sessions')
 }
 
 function getPythonRoot(projectRoot = getProjectRoot()) {
@@ -821,7 +849,7 @@ async function runPythonJsonScript(
 
 function ensureElectronStoragePaths() {
   const projectRoot = getProjectRoot()
-  const electronDataDir = path.join(getCacheRoot(projectRoot), 'electron')
+  const electronDataDir = path.join(getStorageRoot(projectRoot), 'electron')
   const userDataDir = path.join(electronDataDir, 'user-data')
   const sessionDataDir = path.join(electronDataDir, 'session-data')
   const cacheDir = path.join(electronDataDir, 'cache')
@@ -877,6 +905,58 @@ function getDefaultOutputDir() {
 }
 
 ensureElectronStoragePaths()
+
+async function migrateLegacySessionCaches(projectRoot = getProjectRoot()) {
+  const legacyRoot = getOutputSessionCacheRoot(projectRoot)
+  const currentRoot = getSessionCacheRoot(projectRoot)
+
+  if (!fs.existsSync(legacyRoot)) {
+    return
+  }
+
+  await fs.promises.mkdir(currentRoot, { recursive: true })
+  const typeEntries = await fs.promises.readdir(legacyRoot, { withFileTypes: true }).catch(() => [])
+
+  for (const typeEntry of typeEntries) {
+    if (!typeEntry.isDirectory()) {
+      continue
+    }
+
+    const sourceTypeDir = path.join(legacyRoot, typeEntry.name)
+    const targetTypeDir = path.join(currentRoot, typeEntry.name)
+    await fs.promises.mkdir(targetTypeDir, { recursive: true })
+
+    const sessionEntries = await fs.promises.readdir(sourceTypeDir, { withFileTypes: true }).catch(() => [])
+    for (const sessionEntry of sessionEntries) {
+      const sourceEntryPath = path.join(sourceTypeDir, sessionEntry.name)
+      const targetEntryPath = path.join(targetTypeDir, sessionEntry.name)
+
+      if (fs.existsSync(targetEntryPath)) {
+        continue
+      }
+
+      try {
+        await fs.promises.rename(sourceEntryPath, targetEntryPath)
+      } catch (error) {
+        logMainWarn('迁移旧版会话缓存失败', {
+          domain: 'cache.lifecycle',
+          action: 'migrateLegacySessionCaches',
+          detail: `${sourceEntryPath} -> ${targetEntryPath}\n${error instanceof Error ? error.message : String(error)}`
+        })
+      }
+    }
+
+    const remainingEntries = await fs.promises.readdir(sourceTypeDir).catch(() => [])
+    if (remainingEntries.length === 0) {
+      await fs.promises.rm(sourceTypeDir, { recursive: true, force: true }).catch(() => undefined)
+    }
+  }
+
+  const remainingLegacyEntries = await fs.promises.readdir(legacyRoot).catch(() => [])
+  if (remainingLegacyEntries.length === 0) {
+    await fs.promises.rm(getOutputCacheRoot(projectRoot), { recursive: true, force: true }).catch(() => undefined)
+  }
+}
 
 function bringWindowToFront(targetWindow: BrowserWindow | null) {
   if (!targetWindow) {
@@ -1434,7 +1514,7 @@ async function cleanupExpiredCacheSessions(options?: { forceAll?: boolean }) {
   const { projectRoot, cacheDir } = getAppPaths()
   const forceAll = options?.forceAll === true
   const cleanupRoots = {
-    legacySessions: path.join(cacheDir, 'sessions'),
+    legacySessions: getSessionCacheRoot(projectRoot),
     outputSessions: getOutputSessionCacheRoot(projectRoot),
     sources: path.join(cacheDir, 'sources'),
     previews: path.join(cacheDir, 'previews'),
@@ -1892,6 +1972,7 @@ app.whenReady().then(async () => {
 
   // Check and install VC++ Runtime before creating window
   await checkAndInstallVCRuntime();
+  await migrateLegacySessionCaches();
   await cleanupExpiredCacheSessions();
 
   createWindow()

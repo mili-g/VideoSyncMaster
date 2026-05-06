@@ -58,8 +58,8 @@ function resolveOutputDir(paths: DesktopProjectPaths, outputDirOverride?: string
     return outputDirOverride?.trim() || paths.outputDir;
 }
 
-function buildSessionCacheRoot(outputDir: string) {
-    return `${outputDir}\\.videosync-cache\\sessions`;
+function buildSessionCacheRoot(paths: DesktopProjectPaths) {
+    return `${paths.cacheDir}\\sessions`;
 }
 
 export function getFileNameFromPath(filePath: string, fallback = 'video.mp4') {
@@ -76,7 +76,7 @@ export function buildSingleOutputPaths(
     const sessionKey = buildSessionKey(fileName);
     const outputDir = resolveOutputDir(paths, outputDirOverride);
     const finalDir = `${outputDir}\\${sessionKey}`;
-    const sessionCacheDir = `${buildSessionCacheRoot(outputDir)}\\single\\${sessionKey}`;
+    const sessionCacheDir = `${buildSessionCacheRoot(paths)}\\single\\${sessionKey}`;
     const sourceLangTag = artifactLanguages.sourceLangTag || 'und';
     const targetLangTag = artifactLanguages.targetLangTag || 'und';
     const subtitlePaths = buildSubtitleArtifactPaths(finalDir, baseName, sourceLangTag, targetLangTag);
@@ -107,7 +107,7 @@ export function buildBatchOutputPaths(
     const sessionKey = `${buildSessionKey(fileName)}_${itemId.slice(-4)}`;
     const outputDir = resolveOutputDir(paths, outputDirOverride);
     const finalDir = `${outputDir}\\${sessionKey}`;
-    const sessionCacheDir = `${buildSessionCacheRoot(outputDir)}\\batch\\${sessionKey}`;
+    const sessionCacheDir = `${buildSessionCacheRoot(paths)}\\batch\\${sessionKey}`;
     const sourceLangTag = artifactLanguages.sourceLangTag || 'und';
     const targetLangTag = artifactLanguages.targetLangTag || 'und';
     const subtitlePaths = buildSubtitleArtifactPaths(finalDir, baseName, sourceLangTag, targetLangTag);
