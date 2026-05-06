@@ -7,6 +7,7 @@ import { spawn, exec, execFile, ChildProcess } from 'child_process'
 import fs from 'fs'
 
 const activeDownloads = new Map<string, ChildProcess>();
+const canceledDownloadKeys = new Set<string>()
 type DownloadProgressPhase = 'preparing' | 'downloading' | 'extracting' | 'installing' | 'completed' | 'failed' | 'canceled'
 
 interface DownloadTaskSnapshot {
@@ -15,6 +16,13 @@ interface DownloadTaskSnapshot {
   percent?: number
   phase?: DownloadProgressPhase
   message?: string
+}
+
+interface GitHubReleaseAssetSpec {
+  owner: string
+  repo: string
+  tag: string
+  assetPattern: string
 }
 
 const downloadTaskSnapshots = new Map<string, DownloadTaskSnapshot>()
@@ -313,6 +321,29 @@ function getDownloadTaskSnapshots() {
   return Array.from(downloadTaskSnapshots.values())
 }
 
+async function resolveGitHubReleaseAssetDownloadUrl(spec: GitHubReleaseAssetSpec) {
+  const apiUrl = `https://api.github.com/repos/${spec.owner}/${spec.repo}/releases/tags/${encodeURIComponent(spec.tag)}`
+  const response = await fetch(apiUrl, {
+    headers: {
+      Accept: 'application/vnd.github+json',
+      'User-Agent': 'VideoSyncMaster'
+    }
+  })
+  if (!response.ok) {
+    throw new Error(`GitHub release API returned ${response.status}`)
+  }
+
+  const payload = await response.json() as {
+    assets?: Array<{ name?: string; browser_download_url?: string }>
+  }
+  const matcher = new RegExp(spec.assetPattern)
+  const matchedAsset = (payload.assets || []).find((asset) => matcher.test(asset.name || '') && asset.browser_download_url)
+  if (!matchedAsset?.browser_download_url) {
+    throw new Error(`No release asset matched pattern: ${spec.assetPattern}`)
+  }
+  return matchedAsset.browser_download_url
+}
+
 function findFileInRoots(searchRoots: string[], candidateNames: string[]) {
   for (const root of searchRoots) {
     if (!root || !fs.existsSync(root)) continue
@@ -349,6 +380,7 @@ function findFileInRoots(searchRoots: string[], candidateNames: string[]) {
 
 function getFasterWhisperRuntimeSearchRoots(projectRoot: string) {
   const candidates = [
+    path.join(getStorageRoot(projectRoot), 'models', 'faster_whisper_runtime'),
     path.join(projectRoot, 'models', 'faster_whisper_runtime'),
     path.join(projectRoot, 'resources', 'media_tools', 'faster_whisper'),
     path.join(projectRoot, 'resources', 'media_tools'),
@@ -760,6 +792,10 @@ function getManagedRuntimeRoot(projectRoot = getProjectRoot()) {
   return path.join(getStorageRoot(projectRoot), 'runtime')
 }
 
+function getManagedModelsRoot(projectRoot = getProjectRoot()) {
+  return path.join(getStorageRoot(projectRoot), 'models')
+}
+
 function getRuntimeOverlayRoot(overlayName: string, projectRoot = getProjectRoot()) {
   return resolveFirstExistingPath([
     path.join(getManagedRuntimeRoot(projectRoot), 'overlays', overlayName),
@@ -1032,6 +1068,33 @@ function createBootstrapRequirementsFile(projectRoot: string, cacheRoot: string)
   return bootstrapRequirementsPath
 }
 
+async function cleanupExpiredRuntimeBootstrapCache(cacheRoot: string) {
+  const now = Date.now()
+  const entries = await fs.promises.readdir(cacheRoot, { withFileTypes: true }).catch(() => [])
+
+  for (const entry of entries) {
+    const entryPath = path.join(cacheRoot, entry.name)
+    const stat = await fs.promises.stat(entryPath).catch(() => null)
+    if (!stat) continue
+
+    const lastTouched = Math.max(stat.mtimeMs || 0, stat.ctimeMs || 0, stat.birthtimeMs || 0)
+    if (now - lastTouched <= CACHE_RETENTION_MS) {
+      continue
+    }
+
+    await fs.promises.rm(entryPath, { recursive: true, force: true }).catch(() => undefined)
+  }
+
+  const remainingEntries = await fs.promises.readdir(cacheRoot).catch(() => [])
+  if (remainingEntries.length === 0) {
+    await fs.promises.rm(cacheRoot, { recursive: true, force: true }).catch(() => undefined)
+  }
+}
+
+async function cleanupRuntimeBootstrapCache(cacheRoot: string) {
+  await fs.promises.rm(cacheRoot, { recursive: true, force: true }).catch(() => undefined)
+}
+
 function applyPackagedRuntimePatches(projectRoot: string, pythonRoot: string) {
   const patchRoot = getPackagedRuntimePatchRoot(projectRoot)
   if (!fs.existsSync(patchRoot)) {
@@ -1111,7 +1174,9 @@ async function installManagedPythonRuntime() {
   const backupRoot = `${runtimeRoot}.backup`
   const stagingPythonRoot = path.join(stagingRoot, 'python')
   const bootstrapEnv = getBootstrapPythonEnv(projectRoot)
+  let installSucceeded = false
 
+  await cleanupExpiredRuntimeBootstrapCache(cacheRoot)
   fs.mkdirSync(cacheRoot, { recursive: true })
   if (fs.existsSync(stagingRoot)) {
     fs.rmSync(stagingRoot, { recursive: true, force: true })
@@ -1124,98 +1189,105 @@ async function installManagedPythonRuntime() {
     message: '准备安装官方 Python 运行时'
   })
 
-  await downloadRuntimeBundle(OFFICIAL_PYTHON_DOWNLOAD_URL, archivePath, (percent, message) => {
-    broadcastModelDownloadProgress(PYTHON_RUNTIME_TRACKING_KEY, {
-      percent: Math.min(35, Math.round(percent * 0.35)),
-      phase: 'downloading',
-      message: message.replace('运行时', '官方 Python')
+  try {
+    await downloadRuntimeBundle(OFFICIAL_PYTHON_DOWNLOAD_URL, archivePath, (percent, message) => {
+      broadcastModelDownloadProgress(PYTHON_RUNTIME_TRACKING_KEY, {
+        percent: Math.min(35, Math.round(percent * 0.35)),
+        phase: 'downloading',
+        message: message.replace('运行时', '官方 Python')
+      })
     })
-  })
 
-  broadcastModelDownloadProgress(PYTHON_RUNTIME_TRACKING_KEY, {
-    percent: 40,
-    phase: 'extracting',
-    message: '正在解压官方 Python 运行时'
-  })
-  await extractRuntimeBundle(archivePath, stagingPythonRoot)
-  ensureEmbeddedPythonSiteEnabled(stagingPythonRoot)
-
-  if (!fs.existsSync(path.join(stagingPythonRoot, 'python.exe'))) {
-    throw new Error(`解压后的 Python 目录缺少 python.exe：${stagingPythonRoot}`)
-  }
-
-  await downloadRuntimeBundle(OFFICIAL_GET_PIP_URL, getPipPath, (percent, message) => {
     broadcastModelDownloadProgress(PYTHON_RUNTIME_TRACKING_KEY, {
-      percent: 40 + Math.min(10, Math.round(percent * 0.1)),
-      phase: 'downloading',
-      message: message.replace('运行时', 'pip 安装器')
+      percent: 40,
+      phase: 'extracting',
+      message: '正在解压官方 Python 运行时'
     })
-  })
+    await extractRuntimeBundle(archivePath, stagingPythonRoot)
+    ensureEmbeddedPythonSiteEnabled(stagingPythonRoot)
 
-  const stagingPythonExe = path.join(stagingPythonRoot, 'python.exe')
-  const bootstrapRequirementsPath = createBootstrapRequirementsFile(projectRoot, cacheRoot)
+    if (!fs.existsSync(path.join(stagingPythonRoot, 'python.exe'))) {
+      throw new Error(`解压后的 Python 目录缺少 python.exe：${stagingPythonRoot}`)
+    }
 
-  await runProcessWithLogs(stagingPythonExe, [getPipPath], {
-    env: bootstrapEnv,
-    progressMessage: '正在安装 pip',
-    percent: 55
-  })
+    await downloadRuntimeBundle(OFFICIAL_GET_PIP_URL, getPipPath, (percent, message) => {
+      broadcastModelDownloadProgress(PYTHON_RUNTIME_TRACKING_KEY, {
+        percent: 40 + Math.min(10, Math.round(percent * 0.1)),
+        phase: 'downloading',
+        message: message.replace('运行时', 'pip 安装器')
+      })
+    })
 
-  await runProcessWithLogs(stagingPythonExe, ['-c', 'import pip; print(pip.__version__)'], {
-    env: bootstrapEnv,
-    progressMessage: '正在校验 pip 运行环境',
-    percent: 60
-  })
+    const stagingPythonExe = path.join(stagingPythonRoot, 'python.exe')
+    const bootstrapRequirementsPath = createBootstrapRequirementsFile(projectRoot, cacheRoot)
 
-  await runProcessWithLogs(stagingPythonExe, ['-m', 'pip', 'install', '--upgrade', 'pip', 'setuptools', 'wheel'], {
-    env: bootstrapEnv,
-    progressMessage: '正在升级 pip 基础工具',
-    percent: 65
-  })
+    await runProcessWithLogs(stagingPythonExe, [getPipPath], {
+      env: bootstrapEnv,
+      progressMessage: '正在安装 pip',
+      percent: 55
+    })
 
-  await runProcessWithLogs(stagingPythonExe, ['-m', 'pip', 'install', '-r', bootstrapRequirementsPath], {
-    env: bootstrapEnv,
-    progressMessage: '正在从官方依赖源安装运行时依赖',
-    percent: 78
-  })
+    await runProcessWithLogs(stagingPythonExe, ['-c', 'import pip; print(pip.__version__)'], {
+      env: bootstrapEnv,
+      progressMessage: '正在校验 pip 运行环境',
+      percent: 60
+    })
 
-  broadcastModelDownloadProgress(PYTHON_RUNTIME_TRACKING_KEY, {
-    percent: 92,
-    phase: 'installing',
-    message: '正在应用本地运行时补丁'
-  })
-  applyPackagedRuntimePatches(projectRoot, stagingPythonRoot)
+    await runProcessWithLogs(stagingPythonExe, ['-m', 'pip', 'install', '--upgrade', 'pip', 'setuptools', 'wheel'], {
+      env: bootstrapEnv,
+      progressMessage: '正在升级 pip 基础工具',
+      percent: 65
+    })
 
-  if (fs.existsSync(backupRoot)) {
-    fs.rmSync(backupRoot, { recursive: true, force: true })
+    await runProcessWithLogs(stagingPythonExe, ['-m', 'pip', 'install', '-r', bootstrapRequirementsPath], {
+      env: bootstrapEnv,
+      progressMessage: '正在从官方依赖源安装运行时依赖',
+      percent: 78
+    })
+
+    broadcastModelDownloadProgress(PYTHON_RUNTIME_TRACKING_KEY, {
+      percent: 92,
+      phase: 'installing',
+      message: '正在应用本地运行时补丁'
+    })
+    applyPackagedRuntimePatches(projectRoot, stagingPythonRoot)
+
+    if (fs.existsSync(backupRoot)) {
+      fs.rmSync(backupRoot, { recursive: true, force: true })
+    }
+    if (fs.existsSync(runtimeRoot)) {
+      fs.renameSync(runtimeRoot, backupRoot)
+    }
+    fs.renameSync(stagingRoot, runtimeRoot)
+    if (fs.existsSync(backupRoot)) {
+      fs.rmSync(backupRoot, { recursive: true, force: true })
+    }
+
+    fs.writeFileSync(
+      getManagedRuntimeStatePath(projectRoot),
+      JSON.stringify({
+        schemaVersion: 1,
+        pythonVersion: OFFICIAL_PYTHON_VERSION,
+        requirementsHash: getRequirementsHash(projectRoot),
+        patchSignature: MANAGED_RUNTIME_PATCH_SIGNATURE,
+        installedAt: new Date().toISOString()
+      }, null, 2),
+      'utf-8'
+    )
+
+    installSucceeded = true
+    broadcastModelDownloadProgress(PYTHON_RUNTIME_TRACKING_KEY, {
+      percent: 100,
+      phase: 'completed',
+      message: 'Python 运行时已安装完成'
+    })
+
+    return { success: true, installed: true }
+  } finally {
+    if (installSucceeded) {
+      await cleanupRuntimeBootstrapCache(cacheRoot)
+    }
   }
-  if (fs.existsSync(runtimeRoot)) {
-    fs.renameSync(runtimeRoot, backupRoot)
-  }
-  fs.renameSync(stagingRoot, runtimeRoot)
-  if (fs.existsSync(backupRoot)) {
-    fs.rmSync(backupRoot, { recursive: true, force: true })
-  }
-
-  fs.writeFileSync(
-    getManagedRuntimeStatePath(projectRoot),
-    JSON.stringify({
-      schemaVersion: 1,
-      pythonVersion: OFFICIAL_PYTHON_VERSION,
-      requirementsHash: getRequirementsHash(projectRoot),
-      patchSignature: MANAGED_RUNTIME_PATCH_SIGNATURE,
-      installedAt: new Date().toISOString()
-    }, null, 2),
-    'utf-8'
-  )
-
-  broadcastModelDownloadProgress(PYTHON_RUNTIME_TRACKING_KEY, {
-    percent: 100,
-    phase: 'completed',
-    message: 'Python 运行时已安装完成'
-  })
-
-  return { success: true, installed: true }
 }
 
 async function ensurePackagedPythonRuntime() {
@@ -3082,7 +3154,7 @@ app.whenReady().then(async () => {
       if (process.env.PORTABLE_EXECUTABLE_DIR) {
         modelsRoot = path.join(process.env.PORTABLE_EXECUTABLE_DIR, 'models');
       } else {
-        modelsRoot = path.join(projectRoot, 'models');
+        modelsRoot = getManagedModelsRoot(projectRoot);
       }
     } else {
       modelsRoot = path.join(projectRoot, 'models');
@@ -3685,6 +3757,7 @@ app.whenReady().then(async () => {
 
     const proc = activeDownloads.get(trackingKey);
     if (proc) {
+      canceledDownloadKeys.add(trackingKey)
       logMainSecurity('取消模型下载任务', {
         domain: 'download.lifecycle',
         action: 'cancel-download',
@@ -3723,6 +3796,7 @@ app.whenReady().then(async () => {
     // Re-use logic if possible, or maintain separate map
     const proc = activeDownloads.get(key);
     if (proc) {
+      canceledDownloadKeys.add(key)
       logMainSecurity('取消文件下载任务', {
         domain: 'download.lifecycle',
         action: 'cancel-file-download',
@@ -3753,9 +3827,43 @@ app.whenReady().then(async () => {
 
   // IPC Handler for Generic File Download (e.g. RIFE ncnn)
   ipcMain.handle('download-file', async (_event, args) => {
-    return new Promise((resolve) => {
-      try {
-        const { url, targetDir, key, name, outputFileName, baseDir } = args;
+    try {
+      const { url, urls, targetDir, key, name, outputFileName, baseDir, releaseAsset } = args as {
+        url?: string
+        urls?: string[]
+        targetDir: string
+        key?: string
+        name: string
+        outputFileName?: string
+        baseDir?: 'models' | 'project'
+        releaseAsset?: GitHubReleaseAssetSpec
+      }
+      const candidateUrls = Array.from(new Set([
+        ...(Array.isArray(urls) ? urls : []),
+        ...(url ? [url] : [])
+      ].filter((item): item is string => !!item)))
+
+      if (releaseAsset) {
+        try {
+          const resolvedReleaseUrl = await resolveGitHubReleaseAssetDownloadUrl(releaseAsset)
+          if (!candidateUrls.includes(resolvedReleaseUrl)) {
+            candidateUrls.unshift(resolvedReleaseUrl)
+          }
+        } catch (error) {
+          logMainWarn('解析 GitHub release 下载地址失败，回退到静态地址', {
+            domain: 'download.lifecycle',
+            action: 'download-file',
+            detail: error instanceof Error ? error.message : String(error)
+          })
+        }
+      }
+
+      if (candidateUrls.length === 0) {
+        return { success: false, error: `${name} 缺少可用下载地址` }
+      }
+
+      return await new Promise((resolve) => {
+        try {
         const { modelsRoot, projectRoot } = resolveModelsRoot();
 
         const baseRoot = baseDir === 'project' ? projectRoot : modelsRoot;
@@ -3774,6 +3882,7 @@ app.whenReady().then(async () => {
 
         const safeFinalDir = finalDir.replace(/\\/g, '\\\\');
         const safe7zaPath = getSevenZipExecutablePath(projectRoot).replace(/\\/g, '\\\\');
+        const serializedUrls = JSON.stringify(candidateUrls)
         const script = `
 import sys
 import os
@@ -3784,14 +3893,9 @@ import subprocess
 import time
 import requests
 
-url = "${url}"
+download_urls = ${serializedUrls}
 out_dir = r"${safeFinalDir}"
-archive_ext = os.path.splitext(urllib.parse.urlparse(url).path)[1].lower() or ".bin"
-archive_path = os.path.join(out_dir, "temp_download" + archive_ext)
-archive_part_path = archive_path + ".part"
 single_file_name = ${JSON.stringify(outputFileName || '')}
-single_file_path = os.path.join(out_dir, single_file_name) if single_file_name else ""
-single_file_part_path = single_file_path + ".part" if single_file_name else ""
 seven_zip_exe = r"${safe7zaPath}"
 
 def flatten_single_nested_dir(root_dir):
@@ -3856,26 +3960,54 @@ def stream_download(download_url, destination_path, label):
             print(f"RETRY:{attempt}:{label}:{exc}", flush=True)
             time.sleep(min(5 * attempt, 10))
 
+archive_path = ""
+archive_part_path = ""
+single_file_path = os.path.join(out_dir, single_file_name) if single_file_name else ""
+single_file_part_path = single_file_path + ".part" if single_file_name else ""
+
 try:
-    print(f"Downloading {url}...")
-    if single_file_name:
-        stream_download(url, single_file_path, single_file_name)
-        print(f"Saved file to {single_file_path}")
-    else:
-        stream_download(url, archive_path, os.path.basename(archive_path))
-        print("PROGRESS:100:下载完成，开始解压", flush=True)
-        print("Download complete. Extracting...")
-        if archive_ext == ".zip":
-            with zipfile.ZipFile(archive_path, 'r') as zip_ref:
-                zip_ref.extractall(out_dir)
-        elif archive_ext == ".7z":
-            subprocess.run([seven_zip_exe, 'x', archive_path, '-o' + out_dir, '-y'], check=True)
-        else:
-            raise RuntimeError(f"Unsupported archive format: {archive_ext}")
-        flatten_single_nested_dir(out_dir)
-        print("PROGRESS:100:解压完成", flush=True)
-        print("Extraction complete.")
-        os.remove(archive_path)
+    errors = []
+    downloaded = False
+    for index, current_url in enumerate(download_urls, start=1):
+        archive_ext = os.path.splitext(urllib.parse.urlparse(current_url).path)[1].lower() or ".bin"
+        archive_path = os.path.join(out_dir, "temp_download" + archive_ext)
+        archive_part_path = archive_path + ".part"
+        try:
+            print(f"PROGRESS:0:尝试下载地址 {index}/{len(download_urls)}", flush=True)
+            print(f"Downloading {current_url}...")
+            if single_file_name:
+                stream_download(current_url, single_file_path, single_file_name)
+                print(f"Saved file to {single_file_path}")
+            else:
+                stream_download(current_url, archive_path, os.path.basename(archive_path))
+                print("PROGRESS:100:下载完成，开始解压", flush=True)
+                print("Download complete. Extracting...")
+                if archive_ext == ".zip":
+                    with zipfile.ZipFile(archive_path, 'r') as zip_ref:
+                        zip_ref.extractall(out_dir)
+                elif archive_ext == ".7z":
+                    subprocess.run([seven_zip_exe, 'x', archive_path, '-o' + out_dir, '-y'], check=True)
+                else:
+                    raise RuntimeError(f"Unsupported archive format: {archive_ext}")
+                flatten_single_nested_dir(out_dir)
+                print("PROGRESS:100:解压完成", flush=True)
+                print("Extraction complete.")
+                if os.path.exists(archive_path):
+                    os.remove(archive_path)
+            downloaded = True
+            break
+        except Exception as download_error:
+            errors.append(f"{current_url} -> {download_error}")
+            for leftover_path in (archive_path, archive_part_path, single_file_part_path):
+                if leftover_path and os.path.exists(leftover_path):
+                    try:
+                        os.remove(leftover_path)
+                    except OSError:
+                        pass
+            if index < len(download_urls):
+                print(f"PROGRESS:0:当前地址失败，准备切换备用地址 {index + 1}/{len(download_urls)}", flush=True)
+    if not downloaded:
+        raise RuntimeError("所有下载地址均失败：\\n" + "\\n".join(errors))
     print("SUCCESS")
 except Exception as e:
     for leftover_path in (archive_part_path, single_file_part_path):
@@ -3925,6 +4057,11 @@ except Exception as e:
 
         proc.on('close', (code) => {
           if (key) activeDownloads.delete(key);
+          const wasCanceled = !!key && canceledDownloadKeys.delete(key);
+          if (wasCanceled) {
+            resolve({ success: false, canceled: true, error: 'Cancelled' });
+            return;
+          }
           if (code === 0 && output.includes('SUCCESS') && key) {
             emitModelDownloadProgress(_event.sender, key, {
               percent: 100,
@@ -3949,6 +4086,9 @@ except Exception as e:
         resolve({ success: false, error: e instanceof Error ? e.message : String(e) });
       }
     });
+    } catch (e: unknown) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
   });
 
   ipcMain.handle('install-transformers5-asr-runtime', async (_event, args) => {
@@ -4065,6 +4205,11 @@ print("SUCCESS", flush=True)
 
         proc.on('close', (code) => {
           activeDownloads.delete(trackingKey);
+          const wasCanceled = canceledDownloadKeys.delete(trackingKey);
+          if (wasCanceled) {
+            resolve({ success: false, canceled: true, error: 'Cancelled' });
+            return;
+          }
           if (code === 0 && output.includes('SUCCESS')) {
             emitModelDownloadProgress(_event.sender, trackingKey, {
               percent: 100,
@@ -4155,6 +4300,11 @@ print("SUCCESS", flush=True)
 
         proc.on('close', (code) => {
           activeDownloads.delete(trackingKey);
+          const wasCanceled = canceledDownloadKeys.delete(trackingKey);
+          if (wasCanceled) {
+            resolve({ success: false, canceled: true, error: 'Cancelled' });
+            return;
+          }
           if (code === 0 && output.includes('SUCCESS')) {
             emitModelDownloadProgress(_event.sender, trackingKey, {
               percent: 100,
@@ -4411,9 +4561,15 @@ except Exception as e:
           if (activeDownloads.has(trackingKey)) {
             activeDownloads.delete(trackingKey);
           }
+          const wasCanceled = canceledDownloadKeys.delete(trackingKey);
           if (logStream) {
             logStream.write(`\n[${new Date().toISOString()}] [DownloadModel] Finished with code ${code}\n`);
             logStream.end();
+          }
+
+          if (wasCanceled) {
+            resolve({ success: false, canceled: true, error: 'Cancelled' });
+            return;
           }
 
           if (code === 0 && output.includes('SUCCESS')) {

@@ -113,7 +113,7 @@ contextBridge.exposeInMainWorld('api', {
   downloadModel(payload: { key: string; model: string; localDir: string }) {
     return ipcRenderer.invoke('download-model', payload)
   },
-  downloadFile(payload: { key: string; url: string; targetDir: string; name: string; outputFileName?: string; baseDir?: 'models' | 'project' }) {
+  downloadFile(payload: { key: string; url?: string; urls?: string[]; targetDir: string; name: string; outputFileName?: string; baseDir?: 'models' | 'project'; releaseAsset?: { owner: string; repo: string; tag: string; assetPattern: string } }) {
     return ipcRenderer.invoke('download-file', payload)
   },
   installTransformers5AsrRuntime(payload: { key: string }) {

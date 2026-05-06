@@ -34,6 +34,7 @@ interface ModelStatusDetail {
 }
 
 interface DownloadResponse extends BackendResponseBase {
+    canceled?: boolean;
     error?: string;
 }
 
@@ -69,12 +70,19 @@ type DownloadSpec = {
     localDir: string;
     genericFile?: boolean;
     downloadUrl?: string;
+    downloadUrls?: string[];
     baseDir?: 'models' | 'project';
     outputFileName?: string;
+    releaseAsset?: {
+        owner: string;
+        repo: string;
+        tag: string;
+        assetPattern: string;
+    };
 };
 
 const modelCatalog: ModelItem[] = [
-    { key: 'faster_whisper_runtime', name: 'faster-whisper Runtime', desc: '离线识别执行环境。', link: 'resources/media_tools/faster_whisper', group: 'asr', usage: '离线识别运行时', requiredBy: 'faster-whisper 默认执行链路' },
+    { key: 'faster_whisper_runtime', name: 'faster-whisper Runtime', desc: '离线识别执行环境。', link: 'models/faster_whisper_runtime', group: 'asr', usage: '离线识别运行时', requiredBy: 'faster-whisper 默认执行链路' },
     { key: 'funasr_runtime', name: 'FunASR Python Runtime', desc: '官方 AutoModel 所需的 Python 运行时。', link: 'runtime/python/Lib/site-packages/funasr', group: 'asr', usage: 'FunASR 运行时', requiredBy: 'FunASR' },
     { key: 'transformers5_asr_runtime', name: 'Transformers 5.x ASR Runtime', desc: 'Transformers 系 ASR 共享执行环境。', link: 'runtime/overlays/transformers5_asr', group: 'asr', usage: '共享 ASR 运行时', requiredBy: 'VibeVoice-ASR' },
     { key: 'faster_whisper_model', name: 'faster-whisper large-v3', desc: '高质量离线识别模型。', link: 'Models/faster-whisper-large-v3-ct2', group: 'asr', usage: '标准离线识别', requiredBy: 'faster-whisper / Quality' },
@@ -106,10 +114,15 @@ const groupMeta: Record<ModelGroup, { title: string; description: string }> = {
 const downloadSpecs: Record<string, DownloadSpec> = {
     faster_whisper_runtime: {
         modelId: 'faster-whisper Runtime',
-        localDir: 'resources/media_tools/faster_whisper',
+        localDir: 'faster_whisper_runtime',
         genericFile: true,
-        baseDir: 'project',
-        downloadUrl: 'https://github.com/Purfview/whisper-standalone-win/releases/download/Faster-Whisper-XXL/Faster-Whisper-XXL_r245.2_windows.7z'
+        downloadUrl: 'https://github.com/Purfview/whisper-standalone-win/releases/download/Faster-Whisper-XXL/Faster-Whisper-XXL_r245.4_windows.7z',
+        releaseAsset: {
+            owner: 'Purfview',
+            repo: 'whisper-standalone-win',
+            tag: 'Faster-Whisper-XXL',
+            assetPattern: '^Faster-Whisper-XXL_.*_windows\\.7z$'
+        }
     },
     funasr_standard: {
         modelId: 'iic/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch',
@@ -365,10 +378,12 @@ const ModelManager: React.FC<ModelManagerProps> = ({ onStatusChange, onFeedback 
                 result = await window.api.downloadFile({
                     key: modelKey,
                     url: spec!.downloadUrl || '',
+                    urls: spec!.downloadUrls,
                     targetDir: spec!.localDir,
                     name: modelId,
                     baseDir: spec!.baseDir || 'models',
-                    outputFileName: spec!.outputFileName
+                    outputFileName: spec!.outputFileName,
+                    releaseAsset: spec!.releaseAsset
                 });
             } else {
                 result = await window.api.downloadModel({
@@ -386,7 +401,9 @@ const ModelManager: React.FC<ModelManagerProps> = ({ onStatusChange, onFeedback 
                     type: 'success'
                 });
                 void checkStatus();
-            } else if (result.error !== 'Cancelled') {
+            } else if (result.canceled || result.error === 'Cancelled') {
+                onStatusChange?.(`已取消下载：${modelId}`);
+            } else {
                 onStatusChange?.(`模型下载失败：${modelId}`);
                 notify({
                     title: '下载失败',
@@ -408,7 +425,9 @@ const ModelManager: React.FC<ModelManagerProps> = ({ onStatusChange, onFeedback 
                 ...prev,
                 [modelKey]: {
                     active: false,
-                    progress: prev[modelKey]?.progress || '下载已结束',
+                    progress: prev[modelKey]?.phase === 'canceled'
+                        ? prev[modelKey]?.progress || '下载已取消'
+                        : prev[modelKey]?.progress || '下载已结束',
                     percent: prev[modelKey]?.phase === 'completed'
                         ? 100
                         : prev[modelKey]?.percent,
@@ -430,7 +449,7 @@ const ModelManager: React.FC<ModelManagerProps> = ({ onStatusChange, onFeedback 
                 ...prev,
                 [modelKey]: {
                     active: false,
-                    progress: '正在取消...',
+                    progress: '下载已取消',
                     percent: prev[modelKey]?.percent,
                     phase: 'canceled'
                 }
@@ -464,9 +483,15 @@ const ModelManager: React.FC<ModelManagerProps> = ({ onStatusChange, onFeedback 
         const cardState = getCardState(loading, isInstalled);
         const statusLabel = getCardStateLabel(detail?.state, loading, isInstalled);
         const phaseLabel = getPhaseLabel(downloadTask?.phase, isDownloadingThis);
+        const isRuntimeItem = item.key === 'faster_whisper_runtime' || item.key === 'transformers5_asr_runtime' || item.key === 'funasr_runtime';
+        const actionLabel = downloadTask?.phase === 'canceled'
+            ? (isRuntimeItem ? '重新安装运行时' : '重新下载')
+            : (isRuntimeItem ? '安装运行时' : '下载并校验');
         const footerNote = isInstalled
             ? '目录和关键文件已通过当前状态检查。'
-            : '当前环境未发现该模型或运行时，请先完成下载与校验。';
+            : downloadTask?.phase === 'canceled'
+                ? '下载已取消，可重新发起下载。'
+                : '当前环境未发现该模型或运行时，请先完成下载与校验。';
 
         return (
             <article key={item.key} className={`model-card${cardState === 'ready' ? ' model-card--ready' : cardState === 'blocked' ? ' model-card--missing' : ''}`}>
@@ -534,7 +559,7 @@ const ModelManager: React.FC<ModelManagerProps> = ({ onStatusChange, onFeedback 
                                     className="primary-button"
                                     onClick={() => handleDownload(item.key)}
                                 >
-                                    {item.key === 'faster_whisper_runtime' || item.key === 'transformers5_asr_runtime' || item.key === 'funasr_runtime' ? '安装运行时' : '下载并校验'}
+                                    {actionLabel}
                                 </button>
                             )}
                         </div>

@@ -31,7 +31,7 @@ interface DesktopApi {
     runAsrDiagnostics(): Promise<import('./types/backend').AsrDiagnosticsResponse>;
     getDownloadTaskSnapshots(): Promise<import('./types/backend').DownloadTaskSnapshotsResponse>;
     downloadModel(payload: { key: string; model: string; localDir: string }): Promise<import('./types/backend').BackendResponseBase>;
-    downloadFile(payload: { key: string; url: string; targetDir: string; name: string; outputFileName?: string; baseDir?: 'models' | 'project' }): Promise<import('./types/backend').BackendResponseBase>;
+    downloadFile(payload: { key: string; url?: string; urls?: string[]; targetDir: string; name: string; outputFileName?: string; baseDir?: 'models' | 'project'; releaseAsset?: { owner: string; repo: string; tag: string; assetPattern: string } }): Promise<import('./types/backend').BackendResponseBase>;
     installTransformers5AsrRuntime(payload: { key: string }): Promise<import('./types/backend').BackendResponseBase>;
     cancelDownload(payload: { key: string }): Promise<import('./types/backend').BackendResponseBase>;
     cancelFileDownload(payload: { key: string }): Promise<import('./types/backend').BackendResponseBase>;
