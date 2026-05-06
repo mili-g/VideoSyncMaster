@@ -80,14 +80,21 @@ def get_app_runtime_dir(project_root: str) -> str:
 
 
 def get_runtime_overlay_dir(project_root: str, overlay_name: str) -> str:
-    return os.path.join(get_app_runtime_dir(project_root), "overlays", overlay_name)
+    candidates = [
+        os.path.join(get_storage_runtime_dir(project_root), "overlays", overlay_name),
+        os.path.join(get_app_runtime_dir(project_root), "overlays", overlay_name),
+    ]
+    return first_existing_path(candidates) or candidates[0]
 
 
 def get_runtime_python_dir(project_root: str) -> str:
-    candidate = os.path.join(project_root, "runtime", "python")
-    if os.path.isdir(candidate):
-        return candidate
-    return os.path.join(project_root, "python")
+    candidates = [
+        os.path.join(get_storage_runtime_dir(project_root), "python"),
+        os.path.join(project_root, "runtime", "python"),
+        os.path.join(project_root, "python"),
+    ]
+    existing = first_existing_path(candidate for candidate in candidates if os.path.isdir(candidate))
+    return existing or candidates[0]
 
 
 def resolve_portable_python(project_root: str) -> str:

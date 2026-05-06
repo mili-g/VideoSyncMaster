@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "appVersion": "1.0.0",
+  "runtimeVersion": "ffa00a5191a8",
+  "bundleFileName": "VideoSync-PythonRuntime-1.0.0-ffa00a5191a8.zip",
+  "bundleSha256": "ffa00a5191a85539f136c63b82290167d7c56fa7af8200ef6bd8cd482ac1a7fc",
+  "bundleSize": 10026198444,
+  "releaseTag": "v1.0.0",
+  "downloadUrl": "https://github.com/mili-g/VideoSyncMaster/releases/download/v1.0.0/VideoSync-PythonRuntime-1.0.0-ffa00a5191a8.zip",
+  "expectedFileCount": 59454,
+  "requiredPaths": [
+    "python/python.exe",
+    "python/Lib/site-packages/funasr/__init__.py",
+    "python/Lib/site-packages/qwen_asr/__init__.py",
+    "python/Lib/site-packages/qwen_omni_utils/__init__.py",
+    "python/Lib/site-packages/torch/__init__.py",
+    "overlays/transformers5_asr/transformers/__init__.py"
+  ],
+  "criticalFiles": [
+    {
+      "path": "python/python.exe",
+      "size": 103192,
+      "sha256": "5f7b89a612c9b8af1d6456cdfcd1dbe5ca630849e79aebced9bee9a6694952ec"
+    },
+    {
+      "path": "python/Lib/site-packages/funasr/__init__.py",
+      "size": 1306,
+      "sha256": "5100f1a66ff410f096ba0f42bc446f41a79c2de241c061aa4d00e8f3b427b97e"
+    },
+    {
+      "path": "python/Lib/site-packages/qwen_asr/__init__.py",
+      "size": 861,
+      "sha256": "26897071129fd175b1851cb3407be711f79b912efaefb9dc4a19fe3e88427e94"
+    },
+    {
+      "path": "python/Lib/site-packages/qwen_omni_utils/__init__.py",
+      "size": 20,
+      "sha256": "fec9038ed721999bc17bd1f7c0807f44b28a241beb131bf092ae945be8c3c06a"
+    },
+    {
+      "path": "python/Lib/site-packages/torch/__init__.py",
+      "size": 103670,
+      "sha256": "9e46616b9d27c3553ae7587381510cc5a42e8b6fa1c37694c7dc9ea829b11c9b"
+    },
+    {
+      "path": "overlays/transformers5_asr/transformers/__init__.py",
+      "size": 40505,
+      "sha256": "f9540fe5a11e5c8d8c23d932de6fbb78273b993f356c0223b6f544588b8f9788"
+    }
+  ]
+}

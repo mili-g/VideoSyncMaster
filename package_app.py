@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import zipfile
 import json
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -136,6 +137,14 @@ def format_size(bytes_size: int) -> str:
             return f"{bytes_size:.2f} {unit}"
         bytes_size /= 1024.0
     return f"{bytes_size:.2f} TB"
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def create_zip_with_progress(
@@ -386,6 +395,127 @@ def get_version(ui_dir: Path) -> str:
         return "1.0.0"
 
 
+def collect_runtime_file_stats(source_dirs: list[tuple[Path, Path]]) -> list[dict]:
+    entries: list[dict] = []
+    for src_path, archive_prefix in source_dirs:
+        for file_path in sorted(src_path.rglob("*")):
+            if not file_path.is_file():
+                continue
+            relative_path = (archive_prefix / file_path.relative_to(src_path)).as_posix()
+            entries.append({
+                "path": relative_path,
+                "size": file_path.stat().st_size,
+            })
+    return entries
+
+
+def get_zip_entry_count(zip_path: Path) -> int:
+    with zipfile.ZipFile(zip_path, "r") as zipf:
+        return len(zipf.infolist())
+
+
+def build_python_runtime_bundle(root_dir: Path) -> Optional[Path]:
+    """构建与当前本地运行环境严格对应的 Python Runtime Bundle。"""
+    layout = build_project_layout(root_dir)
+    version = get_version(layout.ui_dir)
+    runtime_root = root_dir / "runtime"
+    overlay_dir = runtime_root / "overlays" / "transformers5_asr"
+
+    if not layout.python_dir.exists():
+        print_error(f"找不到 Python 环境: {layout.python_dir}")
+        return None
+    if not overlay_dir.exists():
+        print_error(f"找不到 Transformers 5.x ASR overlay: {overlay_dir}")
+        return None
+
+    release_runtime_dir = root_dir / "release-assets" / "runtime"
+    release_runtime_dir.mkdir(parents=True, exist_ok=True)
+
+    manifest_path = root_dir / "resources" / "packaging" / "runtime" / "python-runtime-manifest.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+
+    source_dirs = [
+        (layout.python_dir, Path("python")),
+        (overlay_dir, Path("overlays") / "transformers5_asr"),
+    ]
+    file_entries = collect_runtime_file_stats(source_dirs)
+    if not file_entries:
+        print_error("运行时目录为空，无法生成 Runtime Bundle")
+        return None
+
+    temp_bundle_path = release_runtime_dir / f"VideoSync-PythonRuntime-{version}.tmp.zip"
+    if temp_bundle_path.exists():
+        temp_bundle_path.unlink()
+
+    print_header(f"构建 Python Runtime Bundle v{version}")
+    print_info("开始打包当前本地 Python 运行时与 Transformers 5.x ASR overlay...")
+    create_zip_with_progress(
+        temp_bundle_path,
+        source_dirs,
+        exclude_patterns=[".git"],
+        compression=zipfile.ZIP_STORED,
+        compresslevel=None,
+    )
+
+    bundle_sha256 = sha256_file(temp_bundle_path)
+    bundle_name = f"VideoSync-PythonRuntime-{version}-{bundle_sha256[:12]}.zip"
+    final_bundle_path = release_runtime_dir / bundle_name
+    if final_bundle_path.exists():
+        final_bundle_path.unlink()
+    temp_bundle_path.replace(final_bundle_path)
+
+    for stale_bundle in release_runtime_dir.glob(f"VideoSync-PythonRuntime-{version}-*.zip"):
+        if stale_bundle != final_bundle_path:
+            stale_bundle.unlink()
+
+    critical_paths = [
+        "python/python.exe",
+        "python/Lib/site-packages/funasr/__init__.py",
+        "python/Lib/site-packages/qwen_asr/__init__.py",
+        "python/Lib/site-packages/qwen_omni_utils/__init__.py",
+        "python/Lib/site-packages/torch/__init__.py",
+        "overlays/transformers5_asr/transformers/__init__.py",
+    ]
+    critical_files = []
+    for relative_path in critical_paths:
+        source_path = runtime_root / Path(relative_path)
+        if not source_path.exists():
+            print_error(f"关键运行时文件缺失: {source_path}")
+            return None
+        critical_files.append({
+            "path": relative_path,
+            "size": source_path.stat().st_size,
+            "sha256": sha256_file(source_path),
+        })
+
+    manifest = {
+        "schemaVersion": 1,
+        "appVersion": version,
+        "runtimeVersion": bundle_sha256[:12],
+        "bundleFileName": bundle_name,
+        "bundleSha256": bundle_sha256,
+        "bundleSize": final_bundle_path.stat().st_size,
+        "releaseTag": f"v{version}",
+        "downloadUrl": f"https://github.com/mili-g/VideoSyncMaster/releases/download/v{version}/{bundle_name}",
+        "expectedFileCount": get_zip_entry_count(final_bundle_path),
+        "requiredPaths": critical_paths,
+        "criticalFiles": critical_files,
+    }
+
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (release_runtime_dir / "python-runtime-manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    print_success(f"Runtime Bundle 已生成: {final_bundle_path}")
+    print_success(f"Runtime Manifest 已更新: {manifest_path}")
+    return final_bundle_path
+
+
 def build_full_portable(root_dir: Path):
     """构建全量便携包"""
     layout = build_project_layout(root_dir)
@@ -559,6 +689,11 @@ def build_installer(root_dir: Path):
     print_header("构建傻瓜式一键更新包")
     
     layout = build_project_layout(root_dir)
+
+    runtime_bundle = build_python_runtime_bundle(root_dir)
+    if not runtime_bundle:
+        print_error("运行时 Bundle 构建失败，已停止安装包构建")
+        return
     
     # 1. 构建
     win_unpacked = run_npm_build(layout.ui_dir, output_dir_name="release", dir_only=False)
@@ -684,14 +819,17 @@ def main():
         print("     [包含：仅程序逻辑，环境/模型需已有]")
         print()
         print("  5. 构建傻瓜式一键更新包 (~50MB EXE)")
-        print("     [需要电脑已安装 Inno Setup 6]")
+        print("     [会同步生成匹配当前版本的 Python Runtime Bundle，需一并上传到 Release 资产]")
         print()
-        print("  6. 清理构建产物 (Clean)")
-        print("  7. 退出")
+        print("  6. 单独构建 Python Runtime Bundle")
+        print("     [用于安装版首次启动自动下载的运行时资产]")
+        print()
+        print("  7. 清理构建产物 (Clean)")
+        print("  8. 退出")
         print()
         
         try:
-            choice = input("请输入选项 (1-7): ").strip()
+            choice = input("请输入选项 (1-8): ").strip()
             
             if choice == "1":
                 build_program_only(root_dir)
@@ -704,8 +842,10 @@ def main():
             elif choice == "5":
                 build_installer(root_dir)
             elif choice == "6":
-                clean_build_artifacts(root_dir)
+                build_python_runtime_bundle(root_dir)
             elif choice == "7":
+                clean_build_artifacts(root_dir)
+            elif choice == "8":
                 print_info("再见！")
                 break
             else:

@@ -90,6 +90,10 @@
       {
         "from": "../../../requirements.txt",
         "to": "services/media_pipeline/requirements.txt"
+      },
+      {
+        "from": "../../../resources/packaging/runtime/python-runtime-manifest.json",
+        "to": "python-runtime-manifest.json"
       }
     ]
   }
