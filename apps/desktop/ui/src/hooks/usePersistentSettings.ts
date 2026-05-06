@@ -53,7 +53,7 @@ export function usePersistentSettings({ setFeedback }: PersistentSettingsOptions
     });
     const [ttsService, setTtsService] = useState<'indextts' | 'qwen'>(() => {
         const saved = localStorage.getItem('ttsService');
-        return saved === 'indextts' || saved === 'qwen' ? (saved as 'indextts' | 'qwen') : 'qwen';
+        return saved === 'indextts' || saved === 'qwen' ? (saved as 'indextts' | 'qwen') : 'indextts';
     });
     const [asrModelProfiles, setAsrModelProfiles] = useState<Record<AsrService, string>>(() => ({
         bcut: getStoredAsrModelProfile('bcut'),
