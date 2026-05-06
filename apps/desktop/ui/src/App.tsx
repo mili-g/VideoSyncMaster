@@ -22,7 +22,7 @@ import LogsPage from './pages/LogsPage';
 import AboutPage from './pages/AboutPage';
 import BatchTasksPage from './pages/BatchTasksPage';
 import HomeWorkbenchPage from './pages/HomeWorkbenchPage';
-import type { FileDialogResult } from './types/backend';
+import type { DownloadTaskSnapshotsResponse, FileDialogResult, ModelDownloadProgressEvent } from './types/backend';
 import { buildOutputArtifacts } from './utils/outputArtifacts';
 import { resolveSubtitleArtifactLanguages } from './utils/languageTags';
 import { validateSegmentLanguageFit } from './utils/subtitleLanguageGuard';
@@ -30,6 +30,25 @@ import { validateSegmentLanguageFit } from './utils/subtitleLanguageGuard';
 const SIDEBAR_WIDTH = 96;
 const APP_SHELL_GAP = 18;
 const APP_SHELL_PADDING = 18;
+const PYTHON_RUNTIME_TRACKING_KEY = 'python_runtime';
+
+type RepairProgressState = {
+  active: boolean;
+  progress: string;
+  percent?: number;
+  phase?: ModelDownloadProgressEvent['phase'];
+};
+
+function getRepairPhaseLabel(phase: ModelDownloadProgressEvent['phase'] | undefined, active: boolean) {
+  if (phase === 'completed') return '已完成';
+  if (phase === 'failed') return '失败';
+  if (phase === 'canceled') return '已取消';
+  if (phase === 'extracting') return '解压中';
+  if (phase === 'installing') return '安装中';
+  if (phase === 'downloading') return '下载中';
+  if (phase === 'preparing') return '准备中';
+  return active ? '处理中' : '待命';
+}
 
 
 function App() {
@@ -159,6 +178,7 @@ function App() {
   const [repairResult, setRepairResult] = useState<{ success: boolean; message: string } | null>(null);
   const [runtimeDownloadUrl, setRuntimeDownloadUrl] = useState('');
   const [missingDeps, setMissingDeps] = useState<string[]>([]);
+  const [repairProgress, setRepairProgress] = useState<RepairProgressState | null>(null);
   const [currentView, setCurrentView] = useState<ViewId>(() => (localStorage.getItem('currentView') as ViewId) || 'home');
   const backendBusy = loading || dubbingLoading || generatingSegmentId !== null || isBatchQueueRunning;
   const consoleAttention = consoleEntries.some(entry => entry.level === 'error' || entry.level === 'warn');
@@ -266,6 +286,56 @@ function App() {
 
     return () => {
       active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const applyRepairEvent = (event: ModelDownloadProgressEvent) => {
+      if (!event?.key || event.key !== PYTHON_RUNTIME_TRACKING_KEY) {
+        return;
+      }
+
+      const percent = typeof event.percent === 'number'
+        ? Math.max(0, Math.min(100, Math.round(event.percent)))
+        : undefined;
+      const suffix = typeof percent === 'number' ? ` ${percent}%` : '';
+      const message = (event.message || '').trim();
+
+      setRepairProgress({
+        active: typeof event.active === 'boolean'
+          ? event.active
+          : event.phase !== 'completed' && event.phase !== 'failed' && event.phase !== 'canceled',
+        progress: message ? `${message}${message.includes('%') ? '' : suffix}` : `正在处理${suffix}`,
+        percent,
+        phase: event.phase
+      });
+    };
+
+    void window.api.getDownloadTaskSnapshots()
+      .then((result) => {
+        const snapshots = result as DownloadTaskSnapshotsResponse;
+        if (!snapshots?.success || !Array.isArray(snapshots.tasks)) {
+          return;
+        }
+        const runtimeTask = snapshots.tasks.find((task) => task.key === PYTHON_RUNTIME_TRACKING_KEY);
+        if (runtimeTask) {
+          applyRepairEvent(runtimeTask);
+        }
+      })
+      .catch((error) => {
+        logUiWarn('恢复运行时修复进度失败', {
+          domain: 'ui.environment',
+          action: 'getDownloadTaskSnapshots',
+          detail: error instanceof Error ? error.message : String(error)
+        });
+      });
+
+    const offProgress = window.api.onModelDownloadProgress((payload) => {
+      applyRepairEvent(payload as ModelDownloadProgressEvent);
+    });
+
+    return () => {
+      offProgress();
     };
   }, []);
 
@@ -671,7 +741,13 @@ function App() {
     // Continue with original logic
     setLoading(true);
     setInstallingDeps(true);
-    setDepsPackageName('正在修复运行环境 (pip install)...');
+    setDepsPackageName('正在准备运行时修复...');
+    setRepairProgress({
+      active: true,
+      progress: '正在准备运行时修复...',
+      percent: 0,
+      phase: 'preparing'
+    });
     // setIsIndeterminate(true); // Redundant with overlay
 
     try {
@@ -680,9 +756,21 @@ function App() {
         setStatus("环境修复完成！请重启软件以生效。");
         setRepairResult({ success: true, message: "修复完成！建议重启软件。" });
         setMissingDeps([]); // Clear flag
+        setRepairProgress({
+          active: false,
+          progress: '运行环境修复完成',
+          percent: 100,
+          phase: 'completed'
+        });
       } else {
         setStatus(`修复失败: ${result.error}`);
         setRepairResult({ success: false, message: String(result.error || '运行环境修复失败') });
+        setRepairProgress((prev) => ({
+          active: false,
+          progress: String(result.error || prev?.progress || '运行环境修复失败'),
+          percent: prev?.percent,
+          phase: 'failed'
+        }));
       }
     } catch (e: unknown) {
       setStatus(`修复请求异常: ${e instanceof Error ? e.message : String(e)}`);
@@ -691,6 +779,12 @@ function App() {
         action: 'fixPythonEnv',
         detail: e instanceof Error ? e.message : String(e)
       });
+      setRepairProgress((prev) => ({
+        active: false,
+        progress: e instanceof Error ? e.message : String(e),
+        percent: prev?.percent,
+        phase: 'failed'
+      }));
     } finally {
       setLoading(false);
       setInstallingDeps(false);
@@ -710,6 +804,10 @@ function App() {
   const qwenModeLabel = qwenModeLabelMap[localStorage.getItem('qwen_mode') || 'clone'] || '克隆';
   const currentViewMeta = getViewMeta(currentView);
   const isWorkbenchView = currentView === 'home';
+  const repairProgressPercent = typeof repairProgress?.percent === 'number'
+    ? Math.max(0, Math.min(100, repairProgress.percent))
+    : null;
+  const repairPhaseLabel = getRepairPhaseLabel(repairProgress?.phase, Boolean(repairProgress?.active));
   const currentViewContent = currentView === 'home' ? (
     <HomeWorkbenchPage
       leftWidth={leftWidth}
@@ -1110,10 +1208,33 @@ function App() {
       overlay={
         installingDeps ? (
           <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', zIndex: 10000, backdropFilter: 'blur(20px)' }}>
-            <div style={{ background: 'rgba(255,255,255,0.05)', padding: '40px', borderRadius: '24px', border: '1px solid rgba(255,255,255,0.1)', textAlign: 'center' }}>
+            <div style={{ background: 'rgba(255,255,255,0.05)', padding: '32px', borderRadius: '20px', border: '1px solid rgba(255,255,255,0.1)', width: 'min(560px, calc(100vw - 48px))', display: 'grid', gap: '18px' }}>
               <div className="spinner" style={{ width: '50px', height: '50px', border: '4px solid rgba(255,255,255,0.1)', borderTopColor: '#6366f1', borderRadius: '50%', animation: 'spin 1s linear infinite', margin: '0 auto 20px' }}></div>
-              <h2 style={{ color: '#fff' }}>正在同步 AI 运行环境</h2>
-              <p style={{ color: '#aaa' }}>安装核心组件: {depsPackageName || '...'}</p>
+              <div style={{ textAlign: 'center' }}>
+                <h2 style={{ color: '#fff', margin: 0 }}>正在同步 AI 运行环境</h2>
+                <p style={{ color: '#94a3b8', margin: '10px 0 0' }}>修复期间会依次下载、解压并安装 Python 运行时及依赖。</p>
+              </div>
+              <div className="download-progress-panel" aria-live="polite">
+                <div className="download-progress-panel__meta">
+                  <span>{repairProgress?.progress || depsPackageName || '正在准备运行时修复...'}</span>
+                  <strong>{repairProgressPercent !== null ? `${repairProgressPercent}%` : repairPhaseLabel}</strong>
+                </div>
+                <div className="download-progress-bar" aria-hidden="true">
+                  <span
+                    style={{
+                      width: `${repairProgressPercent ?? 100}%`,
+                      background: repairProgressPercent === null
+                        ? 'linear-gradient(90deg, rgba(99,102,241,0.18) 0%, rgba(129,140,248,0.95) 48%, rgba(99,102,241,0.18) 100%)'
+                        : undefined,
+                      backgroundSize: repairProgressPercent === null ? '200% 100%' : undefined,
+                      animation: repairProgressPercent === null ? 'indeterminate-progress 1.4s linear infinite' : undefined
+                    }}
+                  />
+                </div>
+                <div className="download-progress-panel__state">
+                  当前阶段: {repairPhaseLabel}
+                </div>
+              </div>
             </div>
           </div>
         ) : undefined
