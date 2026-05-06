@@ -5,6 +5,8 @@ import os
 import shutil
 import time
 
+from ffmpeg_utils import run_ffmpeg
+
 
 def extract_reference_audio(
     *,
@@ -37,9 +39,10 @@ def extract_reference_audio(
     raw_ref_path = os.path.join(raw_dir, f"ref_raw_{start_time}.wav")
 
     extract_started_at = time.perf_counter()
-    ffmpeg.input(video_path, ss=start_time, t=duration).output(
+    stream = ffmpeg.input(video_path, ss=start_time, t=duration).output(
         raw_ref_path, acodec="pcm_s16le", ac=1, ar=24000, loglevel="error"
-    ).run(overwrite_output=True)
+    )
+    run_ffmpeg(stream, overwrite_output=True)
     extract_elapsed_ms = (time.perf_counter() - extract_started_at) * 1000.0
 
     trim_started_at = time.perf_counter()
@@ -231,9 +234,10 @@ def build_batch_tts_tasks(
             try:
                 ref_total_started_at = time.perf_counter()
                 extract_started_at = time.perf_counter()
-                ffmpeg.input(video_path, ss=extract_start, t=extract_duration).output(
+                stream = ffmpeg.input(video_path, ss=extract_start, t=extract_duration).output(
                     raw_ref_path, acodec="pcm_s16le", ac=1, ar=24000, loglevel="error"
-                ).run(overwrite_output=True)
+                )
+                run_ffmpeg(stream, overwrite_output=True)
                 extract_elapsed_ms = (time.perf_counter() - extract_started_at) * 1000.0
 
                 try:

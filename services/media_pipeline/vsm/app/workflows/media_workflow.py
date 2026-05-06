@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from ffmpeg_utils import probe_media, run_ffmpeg
+
 
 def analyze_video_workflow(file_path, *, ffmpeg, exception_result):
     try:
-        probe = ffmpeg.probe(file_path)
+        probe = probe_media(file_path)
         video_stream = next((stream for stream in probe["streams"] if stream["codec_type"] == "video"), None)
         audio_stream = next((stream for stream in probe["streams"] if stream["codec_type"] == "audio"), None)
 
@@ -44,7 +46,7 @@ def transcode_video_workflow(
     try:
         stream = ffmpeg.input(input_path)
         stream = ffmpeg.output(stream, output_path, vcodec="libx264", acodec="aac", preset="fast", crf=23)
-        ffmpeg.run(stream, overwrite_output=True, quiet=False)
+        run_ffmpeg(stream, overwrite_output=True, quiet=False)
         return {"success": True, "output": output_path}
     except ffmpeg.Error as error:
         err = error.stderr.decode() if error.stderr else str(error)

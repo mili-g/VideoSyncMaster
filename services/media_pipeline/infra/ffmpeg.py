@@ -2,6 +2,8 @@ import os
 import sys
 from typing import Optional
 
+import ffmpeg as ffmpeg_python
+
 from bootstrap.path_layout import get_media_tool_bin_dir, get_project_root
 
 
@@ -26,6 +28,16 @@ def resolve_ffprobe_executable() -> str:
     ffmpeg_bin = get_ffmpeg_bin_dir()
     bundled = os.path.join(ffmpeg_bin, "ffprobe.exe" if os.name == "nt" else "ffprobe")
     return bundled if os.path.exists(bundled) else "ffprobe"
+
+
+def run_ffmpeg(stream, *args, **kwargs):
+    kwargs.setdefault("cmd", resolve_ffmpeg_executable())
+    return stream.run(*args, **kwargs)
+
+
+def probe_media(*args, **kwargs):
+    kwargs.setdefault("cmd", resolve_ffprobe_executable())
+    return ffmpeg_python.probe(*args, **kwargs)
 
 
 def ensure_portable_ffmpeg_in_path() -> Optional[str]:

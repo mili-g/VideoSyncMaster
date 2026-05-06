@@ -5,7 +5,7 @@ import logging
 
 from app_logging import get_logger, redirect_print
 from bootstrap.path_layout import get_project_root, get_storage_cache_dir
-from ffmpeg_utils import ensure_portable_ffmpeg_in_path
+from ffmpeg_utils import ensure_portable_ffmpeg_in_path, probe_media, run_ffmpeg
 from source_separation import prepare_background_stem
 
 TARGET_SAMPLE_RATE = 44100
@@ -17,7 +17,7 @@ print = redirect_print(logger, default_level=logging.DEBUG)
 
 def get_audio_duration(file_path):
     try:
-        probe = ffmpeg.probe(file_path)
+        probe = probe_media(file_path)
         audio_stream = next((stream for stream in probe['streams'] if stream['codec_type'] == 'audio'), None)
         if audio_stream:
             return float(audio_stream['duration'])
@@ -46,7 +46,7 @@ def _parse_ffmpeg_rate(rate_value):
 
 def get_video_frame_rate(video_path):
     try:
-        probe = ffmpeg.probe(video_path)
+        probe = probe_media(video_path)
         video_stream = next((stream for stream in probe['streams'] if stream.get('codec_type') == 'video'), None)
         if not video_stream:
             return None
@@ -99,7 +99,7 @@ def align_audio(input_path, output_path, target_duration_sec):
             stream = stream.filter('atempo', t)
             
         stream = ffmpeg.output(stream, output_path)
-        ffmpeg.run(stream, overwrite_output=True, quiet=True)
+        run_ffmpeg(stream, overwrite_output=True, quiet=True)
         print(f"Aligned audio saved to {output_path}")
         return True
     except ffmpeg.Error as e:
@@ -195,13 +195,14 @@ def _extract_audio_chunk(source_path, start_time, duration, sample_rate, label="
         fd, temp_audio_path = tempfile.mkstemp(suffix=".wav")
         os.close(fd)
 
-        ffmpeg.input(source_path, ss=start_time, t=duration).output(
+        stream = ffmpeg.input(source_path, ss=start_time, t=duration).output(
             temp_audio_path,
             acodec="pcm_s16le",
             ac=2,
             ar=sample_rate,
             loglevel="error"
-        ).run(overwrite_output=True, quiet=True)
+        )
+        run_ffmpeg(stream, overwrite_output=True, quiet=True)
 
         return _load_audio_file(temp_audio_path, sample_rate)
     except Exception as error:
@@ -221,13 +222,14 @@ def _extract_full_audio(source_path, sample_rate):
         fd, temp_audio_path = tempfile.mkstemp(suffix=".wav")
         os.close(fd)
 
-        ffmpeg.input(source_path).output(
+        stream = ffmpeg.input(source_path).output(
             temp_audio_path,
             acodec="pcm_s16le",
             ac=2,
             ar=sample_rate,
             loglevel="error"
-        ).run(overwrite_output=True, quiet=True)
+        )
+        run_ffmpeg(stream, overwrite_output=True, quiet=True)
 
         return _load_audio_file(temp_audio_path, sample_rate)
     finally:
@@ -326,7 +328,7 @@ def _mux_video_with_audio(video_source, audio_source, output_path):
     video_input = ffmpeg.input(video_source)
     audio_input = ffmpeg.input(audio_source)
     stream = ffmpeg.output(video_input["v"], audio_input["a"], output_path, vcodec="copy", acodec="aac", shortest=None)
-    ffmpeg.run(stream, overwrite_output=True, quiet=True)
+    run_ffmpeg(stream, overwrite_output=True, quiet=True)
 
 
 def _build_dubbed_audio_buffer(total_duration, audio_segments, sample_rate):
@@ -511,7 +513,7 @@ def merge_audios_to_video(video_path, audio_segments, output_path, strategy='aut
             return merge_video_advanced(video_path, audio_segments, output_path, strategy, audio_mix_mode=audio_mix_mode)
 
         try:
-            probe = ffmpeg.probe(video_path)
+            probe = probe_media(video_path)
             video_duration = float(probe['format']['duration'])
         except Exception as error:
             print(f"Error probing video duration: {error}")
@@ -589,7 +591,7 @@ def apply_rife_interpolation(input_path, output_path, target_duration):
         return False
         
     try:
-        probe = ffmpeg.probe(input_path)
+        probe = probe_media(input_path)
         video_stream = next((stream for stream in probe['streams'] if stream['codec_type'] == 'video'), None)
         orig_duration = float(probe['format']['duration'])
         if orig_duration < 0.01 and video_stream:
@@ -625,7 +627,7 @@ def apply_rife_interpolation(input_path, output_path, target_duration):
         
     # Get video info
     try:
-        probe = ffmpeg.probe(input_path)
+        probe = probe_media(input_path)
         video_stream = next((stream for stream in probe['streams'] if stream['codec_type'] == 'video'), None)
         
         # Get frame count and fps
@@ -688,12 +690,12 @@ def apply_rife_interpolation(input_path, output_path, target_duration):
     try:
         # 1. Extract Frames
         print(f"  [RIFE] Extracting frames to {frames_in}...")
-        (
+        stream = (
             ffmpeg
             .input(input_path)
             .output(os.path.join(frames_in, '%08d.png'), **{'q:v': 2}) # High quality JPG or PNG. PNG is default if extension is png
-            .run(quiet=True, overwrite_output=True)
         )
+        run_ffmpeg(stream, quiet=True, overwrite_output=True)
         
         # 2. Run RIFE
         cmd = [
@@ -727,12 +729,12 @@ def apply_rife_interpolation(input_path, output_path, target_duration):
         # Yes, keeping original FPS is correct for Slow Motion effect.
         
         print(f"  [RIFE] Encoding result to {output_path}...")
-        (
+        stream = (
             ffmpeg
             .input(os.path.join(frames_out, '%08d.png'), framerate=fps)
             .output(output_path, vcodec='libx264', pix_fmt='yuv420p', crf=18, r=fps) # crf 18 for high quality
-            .run(quiet=True, overwrite_output=True)
         )
+        run_ffmpeg(stream, quiet=True, overwrite_output=True)
         
         success = True
         
@@ -806,11 +808,11 @@ def merge_video_advanced(video_path, audio_segments, output_path, strategy, audi
                         input_v = ffmpeg.input(video_path, ss=source_cursor, t=gap_dur)['v']
                         input_a = ffmpeg.input(f"anullsrc=channel_layout=stereo:sample_rate=44100", f='lavfi', t=gap_dur)
                         
-                        (
+                        stream = (
                             ffmpeg
                             .output(input_v, input_a, v_chunk, vcodec='libx264', acodec='aac', ac=2, ar=44100, **chunk_output_args, preset='fast', shortest=None)
-                            .run(overwrite_output=True, quiet=True)
                         )
+                        run_ffmpeg(stream, overwrite_output=True, quiet=True)
                         clips_list.append(v_chunk)
                         background_specs.append({
                             "source_start": source_cursor,
@@ -853,12 +855,12 @@ def merge_video_advanced(video_path, audio_segments, output_path, strategy, audi
                      
                      rife_success = False
                      try:
-                         (
+                         stream = (
                             ffmpeg
                             .input(video_path, ss=effective_video_start, t=slot_dur)
                             .output(raw_chunk, vcodec='libx264', preset='fast', an=None)
-                            .run(overwrite_output=True, quiet=True)
                          )
+                         run_ffmpeg(stream, overwrite_output=True, quiet=True)
                          
                          if apply_rife_interpolation(raw_chunk, rife_out, seg_audio_dur):
                              rife_success = True
@@ -894,11 +896,11 @@ def merge_video_advanced(video_path, audio_segments, output_path, strategy, audi
                     out_stream = out_stream.filter(fname, *fargs, **fkwargs)
 
             try:
-                (
+                stream = (
                     ffmpeg
                     .output(out_stream, stream_a, v_chunk_seg, **output_args)
-                    .run(overwrite_output=True, quiet=True)
                 )
+                run_ffmpeg(stream, overwrite_output=True, quiet=True)
                 clips_list.append(v_chunk_seg)
                 seg['timeline_start'] = output_cursor
                 seg['timeline_duration'] = target_dur
@@ -914,7 +916,7 @@ def merge_video_advanced(video_path, audio_segments, output_path, strategy, audi
             
             source_cursor = effective_video_start + slot_dur
             
-        probe = ffmpeg.probe(video_path)
+        probe = probe_media(video_path)
         total_duration = float(probe['format']['duration'])
         
         if source_cursor < total_duration - 0.1:
@@ -924,11 +926,11 @@ def merge_video_advanced(video_path, audio_segments, output_path, strategy, audi
             try:
                 input_v = ffmpeg.input(video_path, ss=source_cursor, t=tail_dur)['v']
                 input_a = ffmpeg.input(f"anullsrc=channel_layout=stereo:sample_rate=44100", f='lavfi', t=tail_dur)
-                (
+                stream = (
                     ffmpeg
                     .output(input_v, input_a, v_chunk, vcodec='libx264', acodec='aac', ac=2, ar=44100, **chunk_output_args, preset='fast', shortest=None)
-                    .run(overwrite_output=True, quiet=True)
                 )
+                run_ffmpeg(stream, overwrite_output=True, quiet=True)
                 clips_list.append(v_chunk)
                 background_specs.append({
                     "source_start": source_cursor,
@@ -953,12 +955,12 @@ def merge_video_advanced(video_path, audio_segments, output_path, strategy, audi
                 f.write(f"file '{safe_path}'\n")
         
         try:
-            (
+            stream = (
                 ffmpeg
                 .input(concat_list_path, format='concat', safe=0)
                 .output(output_path, c='copy')
-                .run(overwrite_output=True, quiet=True)
             )
+            run_ffmpeg(stream, overwrite_output=True, quiet=True)
             print(f"Advanced merge complete: {output_path}")
         except ffmpeg.Error as e:
             print(f"Concat error: {e.stderr.decode() if e.stderr else str(e)}")

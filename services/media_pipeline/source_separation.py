@@ -5,6 +5,7 @@ from typing import Dict
 
 import ffmpeg
 from app_logging import get_logger, redirect_print
+from ffmpeg_utils import run_ffmpeg
 from path_layout import get_media_tool_bin_dir, get_project_root, get_storage_cache_dir
 
 
@@ -64,7 +65,7 @@ def _cache_dir(video_path: str, output_path: str) -> str:
 
 def _extract_video_audio(video_path: str, audio_path: str, sample_rate: int) -> None:
     os.makedirs(os.path.dirname(audio_path), exist_ok=True)
-    (
+    stream = (
         ffmpeg
         .input(video_path)
         .output(
@@ -74,8 +75,8 @@ def _extract_video_audio(video_path: str, audio_path: str, sample_rate: int) -> 
             ar=sample_rate,
             loglevel="error",
         )
-        .run(overwrite_output=True, quiet=True)
     )
+    run_ffmpeg(stream, overwrite_output=True, quiet=True)
 
 
 def _ensure_model_weights():
