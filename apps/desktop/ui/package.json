@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build && electron-builder",
+    "clean": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"if (Test-Path 'dist') { Remove-Item -LiteralPath 'dist' -Recurse -Force }; if (Test-Path 'dist-electron') { Remove-Item -LiteralPath 'dist-electron' -Recurse -Force }; if (Test-Path 'release') { Remove-Item -LiteralPath 'release' -Recurse -Force }\"",
+    "build": "npm run clean && tsc && vite build && electron-builder --win nsis",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview"
   },
@@ -46,7 +47,7 @@
       "output": "release"
     },
     "win": {
-      "target": "7z",
+      "target": "nsis",
       "icon": "dist/icon.ico"
     },
     "nsis": {
@@ -96,10 +97,6 @@
       {
         "from": "../../../requirements.txt",
         "to": "services/media_pipeline/requirements.txt"
-      },
-      {
-        "from": "../../../resources/packaging/runtime/python-runtime-manifest.json",
-        "to": "python-runtime-manifest.json"
       },
       {
         "from": "../../../runtime/python/Lib/site-packages/triton",
