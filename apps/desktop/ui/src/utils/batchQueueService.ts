@@ -32,14 +32,15 @@ import type { QueueResumeInfo } from '../types/workflow';
 export async function generateSubtitleForItem(
     item: BatchQueueItem,
     options: BatchSubtitleGenerationOptions,
-    retainSessionCache = false
+    retainSessionCache = false,
+    preparedPaths?: Awaited<ReturnType<typeof prepareBatchProjectPaths>>['projectPaths']
 ) {
-    const { projectPaths } = await prepareBatchProjectPaths(
+    const projectPaths = preparedPaths || (await prepareBatchProjectPaths(
         item.fileName,
         item.id,
         resolveItemOutputDir(item, options.outputDirOverride),
         resolveSubtitleArtifactLanguages(options.asrOriLang)
-    );
+    )).projectPaths;
     const asrService = options.asrService as AsrService;
     const sourceLanguageConstraint = getAsrSourceLanguageConstraint(asrService, options.asrOriLang);
     if (sourceLanguageConstraint) {
@@ -183,13 +184,18 @@ export async function prepareQueueItem(
 
         if (!sourceSubtitleContent) {
             applyStage(BATCH_QUEUE_STAGE.sourceSubtitleGenerating, '识别原字幕');
+            await updateSessionManifest(projectPaths, {
+                phase: 'preparing',
+                currentStage: '识别原字幕',
+                lastError: null
+            });
             const subtitleResult = await generateSubtitleForItem(item, {
                 outputDirOverride: options.outputDirOverride,
                 targetLang: options.targetLang,
                 asrService: options.asrService,
                 asrOriLang: options.asrOriLang,
                 setStatus: options.setStatus
-            }, true);
+            }, true, projectPaths);
             sourceSubtitleContent = subtitleResult.subtitleContent;
             sourceSegments = parseSRTContent(subtitleResult.subtitleContent);
             onItemPatch({

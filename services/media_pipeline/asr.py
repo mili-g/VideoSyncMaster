@@ -120,13 +120,13 @@ def _parse_bool_flag(value, default=True):
     return default
 
 
-def _get_faster_whisper_device():
-    try:
-        import torch
-
-        return "cuda" if torch.cuda.is_available() else "cpu"
-    except Exception:
+def _normalize_requested_device(requested_device):
+    normalized = str(requested_device or "auto").strip().lower()
+    if normalized in {"cuda", "gpu"}:
+        return "cuda"
+    if normalized == "cpu":
         return "cpu"
+    return "auto"
 
 
 def _build_sentence_segments_from_aligned_result(aligned_segments):
@@ -248,9 +248,7 @@ def _resolve_faster_whisper_program_path(program_name):
     return None
 
 
-def _resolve_faster_whisper_runtime():
-    device = _get_faster_whisper_device()
-
+def _resolve_faster_whisper_runtime(device):
     for program_name in _FASTER_WHISPER_BINARY_CANDIDATES[device]:
         program_path = _resolve_faster_whisper_program_path(program_name)
         if program_path:
@@ -268,14 +266,30 @@ def _resolve_faster_whisper_runtime():
     )
 
 
-def _resolve_faster_whisper_execution_plan():
-    runtime = _resolve_faster_whisper_runtime()
-    return {
-        "mode": "binary",
-        "source": "default",
-        "runtime": runtime,
-        "detail": f"binary:{runtime['program_name']} device={runtime['device']}",
-    }
+def _resolve_faster_whisper_execution_plans(requested_device="auto"):
+    normalized_device = _normalize_requested_device(requested_device)
+    device_order = ["cuda", "cpu"] if normalized_device == "auto" else [normalized_device]
+    plans = []
+    errors = []
+
+    for device in device_order:
+        try:
+            runtime = _resolve_faster_whisper_runtime(device)
+            plans.append({
+                "mode": "binary",
+                "source": "default",
+                "runtime": runtime,
+                "detail": f"binary:{runtime['program_name']} device={runtime['device']}",
+            })
+        except Exception as error:
+            errors.append(f"{device}: {error}")
+
+    if plans:
+        return plans
+
+    raise FileNotFoundError(
+        "Required faster-whisper runtime not found. " + " | ".join(errors)
+    )
 
 
 def _build_faster_whisper_output_path(output_dir, audio_path):
@@ -565,6 +579,7 @@ def _run_faster_whisper_local(
     optimize_output=True,
     faster_whisper_vad_filter=True,
     faster_whisper_vad_threshold=0.4,
+    device="auto",
 ):
     model_config = _resolve_faster_whisper_model_config(model_profile)
     model_dir = model_config["model_dir"]
@@ -574,11 +589,7 @@ def _run_faster_whisper_local(
             f"Expected one of: {', '.join(model_config['candidates'])}"
         )
 
-    execution_plan = _resolve_faster_whisper_execution_plan()
-    runtime = execution_plan["runtime"]
-    print(f"[FasterWhisper] Using binary: {runtime['program_path']}")
-    print(f"[FasterWhisper] Device: {runtime['device']}")
-    print(f"[FasterWhisper] Model dir: {model_dir}")
+    execution_plans = _resolve_faster_whisper_execution_plans(device)
 
     source_ext = os.path.splitext(audio_path)[1] or ".wav"
     with tempfile.TemporaryDirectory(prefix="vsm_fw_") as temp_dir:
@@ -590,57 +601,77 @@ def _run_faster_whisper_local(
             model_dir,
             _resolve_faster_whisper_model_name(model_dir),
         )
-        cmd = _build_faster_whisper_command(
-            audio_path=temp_audio_path,
-            model_path=model_name,
-            model_dir=model_dir,
-            runtime=runtime,
-            language=language,
-            need_word_timestamps=apply_splitter,
-            vad_filter=_parse_bool_flag(faster_whisper_vad_filter, default=True),
-            vad_threshold=faster_whisper_vad_threshold,
-        )
-        try:
-            _run_faster_whisper_command(cmd, output_path, expected_duration_sec=expected_duration_sec)
-            raw_segments = _load_segments_from_srt(output_path)
-
-            return _finalize_local_segments(
-                raw_segments,
-                splitter_kwargs=splitter_kwargs,
-                apply_splitter=apply_splitter,
-                optimize_enabled=optimize_output,
-            )
-        except Exception as primary_error:
-            _discard_partial_faster_whisper_output(output_path)
+        runtime_errors = []
+        requested_device = _normalize_requested_device(device)
+        for execution_index, execution_plan in enumerate(execution_plans, start=1):
+            runtime = execution_plan["runtime"]
+            print(f"[FasterWhisper] Using binary: {runtime['program_path']}")
+            print(f"[FasterWhisper] Device: {runtime['device']}")
+            print(f"[FasterWhisper] Model dir: {model_dir}")
             print(
-                "[FasterWhisper] Primary transcription attempt failed. "
-                "Retrying once with conservative sentence mode."
+                f"[FasterWhisper] Runtime attempt {execution_index}/{len(execution_plans)} "
+                f"(requested={requested_device})"
             )
-            retry_cmd = _build_faster_whisper_command(
+
+            cmd = _build_faster_whisper_command(
                 audio_path=temp_audio_path,
                 model_path=model_name,
                 model_dir=model_dir,
                 runtime=runtime,
                 language=language,
-                need_word_timestamps=False,
+                need_word_timestamps=apply_splitter,
                 vad_filter=_parse_bool_flag(faster_whisper_vad_filter, default=True),
                 vad_threshold=faster_whisper_vad_threshold,
             )
             try:
-                _run_faster_whisper_command(retry_cmd, output_path, expected_duration_sec=expected_duration_sec)
+                _run_faster_whisper_command(cmd, output_path, expected_duration_sec=expected_duration_sec)
                 raw_segments = _load_segments_from_srt(output_path)
+
                 return _finalize_local_segments(
                     raw_segments,
                     splitter_kwargs=splitter_kwargs,
-                    apply_splitter=False,
+                    apply_splitter=apply_splitter,
                     optimize_enabled=optimize_output,
                 )
-            except Exception as retry_error:
+            except Exception as primary_error:
                 _discard_partial_faster_whisper_output(output_path)
-                raise RuntimeError(
-                    "faster-whisper failed in both primary and conservative retry modes. "
-                    f"Primary error: {primary_error} | Retry error: {retry_error}"
-                ) from retry_error
+                print(
+                    "[FasterWhisper] Primary transcription attempt failed. "
+                    "Retrying once with conservative sentence mode."
+                )
+                retry_cmd = _build_faster_whisper_command(
+                    audio_path=temp_audio_path,
+                    model_path=model_name,
+                    model_dir=model_dir,
+                    runtime=runtime,
+                    language=language,
+                    need_word_timestamps=False,
+                    vad_filter=_parse_bool_flag(faster_whisper_vad_filter, default=True),
+                    vad_threshold=faster_whisper_vad_threshold,
+                )
+                try:
+                    _run_faster_whisper_command(retry_cmd, output_path, expected_duration_sec=expected_duration_sec)
+                    raw_segments = _load_segments_from_srt(output_path)
+                    return _finalize_local_segments(
+                        raw_segments,
+                        splitter_kwargs=splitter_kwargs,
+                        apply_splitter=False,
+                        optimize_enabled=optimize_output,
+                    )
+                except Exception as retry_error:
+                    _discard_partial_faster_whisper_output(output_path)
+                    runtime_errors.append(
+                        f"device={runtime['device']} primary={primary_error} retry={retry_error}"
+                    )
+                    if execution_index < len(execution_plans):
+                        print(
+                            f"[FasterWhisper] Runtime attempt on {runtime['device']} failed. "
+                            "Trying next available device."
+                        )
+
+        raise RuntimeError(
+            "faster-whisper failed across all runtime attempts. " + " | ".join(runtime_errors)
+        )
 
 
 
@@ -871,6 +902,7 @@ def run_asr(
                 optimize_output=not chunking_in_progress,
                 faster_whisper_vad_filter=faster_whisper_vad_filter,
                 faster_whisper_vad_threshold=faster_whisper_vad_threshold,
+                device=effective_local_asr_device,
             )
         except Exception as e:
             print(f"faster-whisper execution failed: {e}")

@@ -834,6 +834,8 @@ const OFFICIAL_PYTHON_ARCHIVE_NAME = `python-${OFFICIAL_PYTHON_VERSION}-embed-am
 const OFFICIAL_PYTHON_DOWNLOAD_URL = `https://www.python.org/ftp/python/${OFFICIAL_PYTHON_VERSION}/${OFFICIAL_PYTHON_ARCHIVE_NAME}`
 const OFFICIAL_GET_PIP_URL = 'https://bootstrap.pypa.io/get-pip.py'
 const OFFICIAL_GET_PIP_FILE_NAME = 'get-pip.py'
+const OFFICIAL_PYTORCH_CUDA_INDEX_URL = 'https://download.pytorch.org/whl/cu128'
+const OFFICIAL_PYTORCH_CUDA_VARIANT = 'cu128'
 const MANAGED_RUNTIME_STATE_FILE = '.videosync-runtime-bootstrap.json'
 const MANAGED_RUNTIME_PATCH_SIGNATURE = 'triton-3.1.0|flash_attn-2.8.1'
 const MANAGED_RUNTIME_PATCH_NAMES = [
@@ -864,6 +866,22 @@ function getRequirementsHash(projectRoot = getProjectRoot()) {
   return sha256File(requirementsPath)
 }
 
+function readPinnedRequirementVersion(projectRoot: string, packageName: string) {
+  const requirementsPath = path.join(projectRoot, 'requirements.txt')
+  const raw = fs.readFileSync(requirementsPath, 'utf-8')
+  const normalizedName = packageName.trim().toLowerCase()
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#')) continue
+    const packageMatch = trimmed.match(/^([A-Za-z0-9_.-]+)==([^\s;#]+)$/)
+    if (!packageMatch) continue
+    if (packageMatch[1].trim().toLowerCase() === normalizedName) {
+      return packageMatch[2].trim()
+    }
+  }
+  throw new Error(`requirements.txt 中缺少固定版本依赖：${packageName}`)
+}
+
 function readManagedRuntimeState(projectRoot = getProjectRoot()) {
   const statePath = getManagedRuntimeStatePath(projectRoot)
   if (!fs.existsSync(statePath)) {
@@ -876,10 +894,25 @@ function readManagedRuntimeState(projectRoot = getProjectRoot()) {
       pythonVersion?: string
       requirementsHash?: string
       patchSignature?: string
+      torchVariant?: string
       installedAt?: string
     }
   } catch {
     return null
+  }
+}
+
+function isManagedTorchCudaBuildReady(projectRoot = getProjectRoot()) {
+  const versionPyPath = path.join(getManagedRuntimePythonRoot(projectRoot), 'Lib', 'site-packages', 'torch', 'version.py')
+  if (!fs.existsSync(versionPyPath)) {
+    return false
+  }
+  try {
+    const raw = fs.readFileSync(versionPyPath, 'utf-8')
+    return raw.includes(`__version__ = '2.7.1+${OFFICIAL_PYTORCH_CUDA_VARIANT}'`)
+      || raw.includes(`cuda: Optional[str] = '12.8'`)
+  } catch {
+    return false
   }
 }
 
@@ -898,6 +931,8 @@ function isManagedPythonRuntimeReady(projectRoot = getProjectRoot()) {
     return state.pythonVersion === OFFICIAL_PYTHON_VERSION
       && state.requirementsHash === getRequirementsHash(projectRoot)
       && state.patchSignature === MANAGED_RUNTIME_PATCH_SIGNATURE
+      && state.torchVariant === OFFICIAL_PYTORCH_CUDA_VARIANT
+      && isManagedTorchCudaBuildReady(projectRoot)
   } catch {
     return false
   }
@@ -1059,9 +1094,18 @@ function getPackagedRuntimePatchRoot(projectRoot = getProjectRoot()) {
 function createBootstrapRequirementsFile(projectRoot: string, cacheRoot: string) {
   const requirementsPath = path.join(projectRoot, 'requirements.txt')
   const raw = fs.readFileSync(requirementsPath, 'utf-8')
+  const skippedPackages = new Set(['triton', 'torch', 'torchvision', 'torchaudio'])
   const filtered = raw
     .split(/\r?\n/)
-    .filter((line) => line.trim().toLowerCase() !== 'triton')
+    .filter((line) => {
+      const trimmed = line.trim()
+      if (!trimmed) return true
+      const normalized = trimmed.toLowerCase()
+      if (normalized === 'triton') return false
+      const packageMatch = trimmed.match(/^([A-Za-z0-9_.-]+)/)
+      if (!packageMatch) return true
+      return !skippedPackages.has(packageMatch[1].trim().toLowerCase())
+    })
     .join('\n')
   const bootstrapRequirementsPath = path.join(cacheRoot, 'requirements.bootstrap.txt')
   fs.writeFileSync(bootstrapRequirementsPath, `${filtered.trimEnd()}\n`, 'utf-8')
@@ -1239,6 +1283,28 @@ async function installManagedPythonRuntime() {
       percent: 65
     })
 
+    const torchVersion = readPinnedRequirementVersion(projectRoot, 'torch')
+    const torchvisionVersion = readPinnedRequirementVersion(projectRoot, 'torchvision')
+    const torchaudioVersion = readPinnedRequirementVersion(projectRoot, 'torchaudio')
+
+    await runProcessWithLogs(stagingPythonExe, [
+      '-m', 'pip', 'install',
+      '--index-url', OFFICIAL_PYTORCH_CUDA_INDEX_URL,
+      `torch==${torchVersion}`,
+      `torchvision==${torchvisionVersion}`,
+      `torchaudio==${torchaudioVersion}`
+    ], {
+      env: bootstrapEnv,
+      progressMessage: '正在安装 CUDA 版 PyTorch 运行时',
+      percent: 72
+    })
+
+    await runProcessWithLogs(stagingPythonExe, ['-c', 'import torch; print(torch.__version__); print(torch.version.cuda or "none")'], {
+      env: bootstrapEnv,
+      progressMessage: '正在校验 CUDA 版 PyTorch 运行时',
+      percent: 75
+    })
+
     await runProcessWithLogs(stagingPythonExe, ['-m', 'pip', 'install', '-r', bootstrapRequirementsPath], {
       env: bootstrapEnv,
       progressMessage: '正在从官方依赖源安装运行时依赖',
@@ -1270,6 +1336,7 @@ async function installManagedPythonRuntime() {
         pythonVersion: OFFICIAL_PYTHON_VERSION,
         requirementsHash: getRequirementsHash(projectRoot),
         patchSignature: MANAGED_RUNTIME_PATCH_SIGNATURE,
+        torchVariant: OFFICIAL_PYTORCH_CUDA_VARIANT,
         installedAt: new Date().toISOString()
       }, null, 2),
       'utf-8'
