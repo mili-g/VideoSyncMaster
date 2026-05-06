@@ -983,13 +983,25 @@ function ensureEmbeddedPythonSiteEnabled(pythonRoot: string) {
     return
   }
 
-  const raw = fs.readFileSync(pthPath, 'utf-8')
-  if (/^\s*import site\s*$/m.test(raw)) {
-    return
-  }
+  const requiredEntries = ['python311.zip', '.', 'Lib', 'Lib\\site-packages', 'import site']
+  const existingLines = fs.readFileSync(pthPath, 'utf-8')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
 
-  const updated = raw.replace(/^\s*#?\s*import site\s*$/m, 'import site')
-  fs.writeFileSync(pthPath, `${updated.trimEnd()}\n`, 'utf-8')
+  const preservedLines = existingLines.filter((line) => {
+    const normalized = line.replace(/\//g, '\\')
+    return normalized !== 'Lib'
+      && normalized !== 'Lib\\site-packages'
+      && !/^#?\s*import site\s*$/i.test(line)
+  })
+
+  const finalLines = [
+    ...requiredEntries.filter((entry) => preservedLines.every((line) => line.replace(/\//g, '\\') !== entry)),
+    ...preservedLines
+  ]
+
+  fs.writeFileSync(pthPath, `${finalLines.join('\n').trimEnd()}\n`, 'utf-8')
 }
 
 function getBootstrapPythonEnv(projectRoot = getProjectRoot()): NodeJS.ProcessEnv {
@@ -1145,6 +1157,12 @@ async function installManagedPythonRuntime() {
     env: bootstrapEnv,
     progressMessage: '正在安装 pip',
     percent: 55
+  })
+
+  await runProcessWithLogs(stagingPythonExe, ['-c', 'import pip, setuptools, wheel; print(pip.__version__)'], {
+    env: bootstrapEnv,
+    progressMessage: '正在校验 pip 运行环境',
+    percent: 60
   })
 
   await runProcessWithLogs(stagingPythonExe, ['-m', 'pip', 'install', '--upgrade', 'pip', 'setuptools', 'wheel'], {
