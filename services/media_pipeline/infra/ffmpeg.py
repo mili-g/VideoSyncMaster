@@ -42,11 +42,29 @@ def probe_media(*args, **kwargs):
 
 def ensure_portable_ffmpeg_in_path() -> Optional[str]:
     ffmpeg_bin = get_ffmpeg_bin_dir()
-    if not os.path.exists(resolve_ffmpeg_executable()):
+    ffmpeg_executable = resolve_ffmpeg_executable()
+    if not os.path.exists(ffmpeg_executable):
         return None
 
     current_path = os.environ.get("PATH", "")
     path_entries = current_path.split(os.pathsep) if current_path else []
     if ffmpeg_bin not in path_entries:
         os.environ["PATH"] = ffmpeg_bin + os.pathsep + current_path if current_path else ffmpeg_bin
+    _configure_pydub_audio_tools()
     return ffmpeg_bin
+
+
+def _configure_pydub_audio_tools() -> None:
+    try:
+        from pydub import AudioSegment
+    except Exception:
+        return
+
+    ffmpeg_executable = resolve_ffmpeg_executable()
+    ffprobe_executable = resolve_ffprobe_executable()
+
+    if os.path.exists(ffmpeg_executable):
+        AudioSegment.converter = ffmpeg_executable
+        AudioSegment.ffmpeg = ffmpeg_executable
+    if os.path.exists(ffprobe_executable):
+        AudioSegment.ffprobe = ffprobe_executable

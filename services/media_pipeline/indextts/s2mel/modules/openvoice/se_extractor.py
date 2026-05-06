@@ -8,10 +8,13 @@ from glob import glob
 import numpy as np
 from pydub import AudioSegment
 from faster_whisper import WhisperModel
+from infra.ffmpeg import ensure_portable_ffmpeg_in_path
 import hashlib
 import base64
 import librosa
 # from whisper_timestamped.transcribe import get_audio_tensor, get_vad_segments
+
+ensure_portable_ffmpeg_in_path()
 
 model_size = "medium"
 # Run on GPU with FP16

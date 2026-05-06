@@ -4,6 +4,9 @@ import tempfile
 from typing import List, Optional, Tuple
 
 from pydub import AudioSegment
+from infra.ffmpeg import ensure_portable_ffmpeg_in_path
+
+ensure_portable_ffmpeg_in_path()
 
 DEFAULT_CHUNK_LENGTH_SEC = 60 * 20
 DEFAULT_CHUNK_OVERLAP_SEC = 10

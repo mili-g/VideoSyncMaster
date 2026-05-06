@@ -7,6 +7,9 @@ from io import BytesIO
 from typing import Callable, Optional, Union, cast
 
 from pydub import AudioSegment
+from infra.ffmpeg import ensure_portable_ffmpeg_in_path
+
+ensure_portable_ffmpeg_in_path()
 
 # from app.core.utils.cache import get_asr_cache, is_cache_enabled
 # from app.core.utils.logger import setup_logger
