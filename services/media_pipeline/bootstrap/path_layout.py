@@ -133,6 +133,7 @@ def get_faster_whisper_runtime_search_roots(
 ) -> list[str]:
     candidates = [
         extra_root,
+        os.path.join(get_storage_root(project_root), "models", "faster_whisper_runtime"),
         os.path.join(project_root, "models", "faster_whisper_runtime"),
         os.path.join(project_root, "resources", "media_tools", "faster_whisper"),
         os.path.join(project_root, "resources", "media_tools"),

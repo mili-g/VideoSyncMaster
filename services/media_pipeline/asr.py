@@ -12,8 +12,10 @@ if os.path.exists(site_packages) and site_packages not in sys.path:
 
 from bootstrap.runtime_env import setup_gpu_paths
 from bootstrap.path_layout import get_faster_whisper_runtime_search_roots, get_storage_cache_dir, get_project_root
+from infra.ffmpeg import ensure_portable_ffmpeg_in_path
 
 setup_gpu_paths(logging.getLogger("asr.runtime"))
+ensure_portable_ffmpeg_in_path()
 
 # Lazy Imports
 import re
