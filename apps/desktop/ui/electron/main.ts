@@ -257,6 +257,28 @@ function extractModelDownloadProgress(message: string) {
     }
   }
 
+  const huggingFaceFetchMatch = message.match(/Fetching\s+(\d+)\s+files:\s+(\d{1,3})%\|[^\r\n]*?(\d+)\/(\d+)/i)
+  if (huggingFaceFetchMatch) {
+    const totalFiles = Number(huggingFaceFetchMatch[1])
+    const percent = Number(huggingFaceFetchMatch[2])
+    const completedFiles = Number(huggingFaceFetchMatch[3])
+    return {
+      percent,
+      phase: 'downloading' as const,
+      message: `Hugging Face 官方下载中 ${percent}%（${completedFiles}/${totalFiles} 个文件）`
+    }
+  }
+
+  const huggingFaceFetchStartedMatch = message.match(/Fetching\s+(\d+)\s+files:\s+0%\|/i)
+  if (huggingFaceFetchStartedMatch) {
+    const totalFiles = Number(huggingFaceFetchStartedMatch[1])
+    return {
+      percent: 1,
+      phase: 'downloading' as const,
+      message: `Hugging Face 官方下载已开始（0/${totalFiles} 个文件）`
+    }
+  }
+
   return null
 }
 
@@ -3248,14 +3270,6 @@ app.whenReady().then(async () => {
           detail: modelsRoot
         })
 
-        const checkDir = (subpath: string[]) => {
-          for (const p of subpath) {
-            const fullPath = path.join(modelsRoot, p);
-            if (fs.existsSync(fullPath)) return true;
-          }
-          return false;
-        };
-
         const checkModelArtifacts = (subpaths: string[], requiredFiles: string[]) => {
           for (const p of subpaths) {
             const basePath = path.join(modelsRoot, p);
@@ -3544,6 +3558,35 @@ app.whenReady().then(async () => {
           return createStatusDetail(true, 'ready', `${label} 模型文件已就绪。`);
         };
 
+        const getQwenTextModelStatusDetail = () => {
+          const directDir = path.join(modelsRoot, 'Qwen2.5-7B-Instruct');
+          const nestedDir = path.join(modelsRoot, 'Qwen', 'Qwen2.5-7B-Instruct');
+          const modelDir = [directDir, nestedDir].find((candidate) => fs.existsSync(candidate));
+          if (!modelDir) {
+            return createStatusDetail(false, 'missing', '未找到 Qwen2.5-7B-Instruct 本地翻译模型目录。', true);
+          }
+          const configReady = fs.existsSync(path.join(modelDir, 'config.json'));
+          const tokenizerReady = [
+            path.join(modelDir, 'tokenizer.json'),
+            path.join(modelDir, 'tokenizer_config.json'),
+          ].some((candidate) => fs.existsSync(candidate));
+          const hasWeights = [
+            path.join(modelDir, 'model.safetensors'),
+            path.join(modelDir, 'model.safetensors.index.json'),
+            path.join(modelDir, 'pytorch_model.bin'),
+            path.join(modelDir, 'pytorch_model.bin.index.json'),
+          ].some((candidate) => fs.existsSync(candidate));
+          if (!configReady || !tokenizerReady || !hasWeights) {
+            return createStatusDetail(
+              false,
+              'incomplete',
+              'Qwen2.5-7B-Instruct 目录存在，但缺少 config.json、tokenizer 配置或主权重文件，当前无法作为本地翻译模型加载。',
+              true
+            );
+          }
+          return createStatusDetail(true, 'ready', 'Qwen2.5-7B-Instruct 本地翻译模型已就绪。');
+        };
+
         const getIndexTtsStatusDetail = () => {
           const modelDir = path.join(modelsRoot, 'index-tts');
           if (!fs.existsSync(modelDir)) {
@@ -3697,6 +3740,7 @@ app.whenReady().then(async () => {
           );
         };
         const qwenAlignerDetail = getQwenAlignerStatusDetail();
+        const qwenTextDetail = getQwenTextModelStatusDetail();
         const indexTtsDetail = getIndexTtsStatusDetail();
         const qwenTokenizerDetail = getQwenTokenizerStatusDetail();
         const qwen17BBaseDetail = getQwenTtsModelStatusDetail('Qwen3-TTS-12Hz-1.7B-Base', 'Qwen3-TTS 1.7B Base');
@@ -3720,7 +3764,7 @@ app.whenReady().then(async () => {
           vibevoice_asr_standard: vibeVoiceAsrDetail.installed,
           index_tts: indexTtsDetail.installed,
           source_separation: sourceSeparationDetail.installed,
-          qwen: checkDir(['Qwen2.5-7B-Instruct']),
+          qwen: qwenTextDetail.installed,
           qwen_tokenizer: qwenTokenizerDetail.installed,
           qwen_17b_base: qwen17BBaseDetail.installed,
           qwen_17b_design: qwen17BDesignDetail.installed,
@@ -3750,6 +3794,7 @@ app.whenReady().then(async () => {
           funasr_standard: funAsrDetail,
           funasr_vad: funAsrVadDetail,
           funasr_punc: funAsrPuncDetail,
+          qwen: qwenTextDetail,
           qwen_asr_06b: qwenAsr06BDetail,
           qwen_asr_17b: qwenAsr17BDetail,
           qwen_asr_aligner: qwenAlignerDetail,
@@ -4454,116 +4499,49 @@ print("SUCCESS", flush=True)
         const safeTarget = targetPath.replace(/\\/g, '\\\\');
         const script = `
 try:
+    import sys
+    import time
     model_id = '${model}'
     target_dir = '${safeTarget}'
     print(f"Downloading {model_id} to {target_dir}...")
     if model_id.startswith('hf://'):
         import os
-        import time
-        import requests
-        from huggingface_hub import HfApi, hf_hub_url
-        from huggingface_hub.utils import build_hf_headers
+        from huggingface_hub import snapshot_download
         repo_id = model_id[len('hf://'):]
-        api = HfApi()
-        info = api.model_info(repo_id=repo_id, files_metadata=True)
-        siblings = [item for item in (info.siblings or []) if getattr(item, 'rfilename', None)]
-        total_bytes = 0
-        for item in siblings:
+        os.environ['HF_HUB_DISABLE_XET'] = '1'
+        os.environ['HF_HUB_ENABLE_HF_TRANSFER'] = '0'
+        max_attempts = 4
+        last_error = None
+        for attempt in range(1, max_attempts + 1):
             try:
-                total_bytes += int(getattr(item, 'size', 0) or 0)
-            except Exception:
-                pass
-        downloaded_bytes = 0
-        file_count = max(len(siblings), 1)
-        progress_state = {'last_percent': -1}
-
-        def format_bytes(num_bytes):
-            value = float(max(num_bytes, 0))
-            units = ['B', 'KB', 'MB', 'GB', 'TB']
-            unit_index = 0
-            while value >= 1024 and unit_index < len(units) - 1:
-                value /= 1024.0
-                unit_index += 1
-            return f"{value:.1f}{units[unit_index]}"
-
-        def emit_progress(current_file, status_text):
-            if total_bytes > 0:
-                percent = min(100, int(downloaded_bytes * 100 / total_bytes))
-                summary = f"{current_file} | {status_text} | {format_bytes(downloaded_bytes)}/{format_bytes(total_bytes)}"
-            else:
-                percent = min(100, int(file_index * 100 / file_count))
-                summary = f"{current_file} | {status_text}"
-            if percent != progress_state['last_percent'] or status_text.startswith('准备') or status_text.startswith('完成') or status_text.startswith('跳过'):
-                print(f"PROGRESS:{percent}:{summary}", flush=True)
-                progress_state['last_percent'] = percent
-
-        headers = build_hf_headers()
-        for index, item in enumerate(siblings, start=1):
-            filename = item.rfilename
-            file_size = int(getattr(item, 'size', 0) or 0)
-            file_index = index
-            final_path = os.path.join(target_dir, filename.replace('/', os.sep))
-            os.makedirs(os.path.dirname(final_path), exist_ok=True)
-
-            if file_size > 0 and os.path.exists(final_path) and os.path.getsize(final_path) == file_size:
-                downloaded_bytes += file_size
-                emit_progress(filename, '跳过已存在文件')
-                continue
-
-            temp_path = final_path + '.part'
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-
-            file_downloaded = 0
-            emit_progress(filename, '准备下载')
-            download_url = hf_hub_url(repo_id=repo_id, filename=filename)
-            last_file_percent = -1
-            max_attempts = 3
-            for attempt in range(1, max_attempts + 1):
-                try:
-                    with requests.get(download_url, headers=headers, stream=True, timeout=(20, 120), allow_redirects=True) as response:
-                        response.raise_for_status()
-                        expected_size = int(response.headers.get('Content-Length', '0') or 0) or file_size
-                        file_downloaded = 0
-                        with open(temp_path, 'wb') as handle:
-                            for chunk in response.iter_content(chunk_size=1024 * 1024):
-                                if not chunk:
-                                    continue
-                                handle.write(chunk)
-                                chunk_len = len(chunk)
-                                file_downloaded += chunk_len
-                                downloaded_bytes += chunk_len
-                                current_file_percent = int(file_downloaded * 100 / expected_size) if expected_size > 0 else -1
-                                if current_file_percent != last_file_percent:
-                                    emit_progress(filename, f'下载中 {max(current_file_percent, 0)}%')
-                                    last_file_percent = current_file_percent
-                        if expected_size > 0 and file_downloaded != expected_size:
-                            raise RuntimeError(f'incomplete file: expected {expected_size} bytes, got {file_downloaded} bytes')
-                    os.replace(temp_path, final_path)
-                    if file_size > 0 and file_downloaded != file_size:
-                        downloaded_bytes += max(file_size - file_downloaded, 0)
-                    emit_progress(filename, '完成')
-                    break
-                except Exception as download_error:
-                    downloaded_bytes -= file_downloaded
-                    file_downloaded = 0
-                    if os.path.exists(temp_path):
-                        try:
-                            os.remove(temp_path)
-                        except OSError:
-                            pass
-                    if attempt >= max_attempts:
-                        raise RuntimeError(f'{filename} 下载失败，已重试 {max_attempts} 次：{download_error}') from download_error
-                    emit_progress(filename, f'重试 {attempt}/{max_attempts}')
-                    time.sleep(min(5 * attempt, 10))
+                print(f"PROGRESS:{min(90, 10 + attempt * 15)}:连接 Hugging Face 官方下载器（第 {attempt}/{max_attempts} 次）", flush=True)
+                snapshot_download(
+                    repo_id=repo_id,
+                    local_dir=target_dir,
+                    local_dir_use_symlinks=False,
+                    resume_download=True,
+                    max_workers=4,
+                )
+                print("PROGRESS:100:Hugging Face 官方下载完成", flush=True)
+                last_error = None
+                break
+            except Exception as download_error:
+                last_error = download_error
+                if attempt >= max_attempts:
+                    raise RuntimeError(f"Hugging Face 官方下载失败，已重试 {max_attempts} 次：{download_error}") from download_error
+                print(f"PROGRESS:{min(95, 10 + attempt * 15)}:下载失败，准备重试 {attempt}/{max_attempts}：{download_error}", flush=True)
+                time.sleep(min(5 * attempt, 12))
     else:
         from modelscope.hub.snapshot_download import snapshot_download
         print("PROGRESS:0:准备连接 ModelScope", flush=True)
         snapshot_download(model_id, local_dir=target_dir)
         print("PROGRESS:100:ModelScope 下载完成", flush=True)
-    print("SUCCESS")
+    print("SUCCESS", flush=True)
 except Exception as e:
-    print(f"ERROR: {e}")
+    import traceback
+    print(f"ERROR: {e}", flush=True)
+    traceback.print_exc()
+    sys.exit(1)
 `;
 
         // Log to logs/backend_debug.log

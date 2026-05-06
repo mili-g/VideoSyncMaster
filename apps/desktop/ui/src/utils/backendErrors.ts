@@ -105,6 +105,9 @@ export function buildUserFacingErrorMessage(error?: StructuredErrorInfo) {
         friendlyError.category === 'asr'
         && friendlyError.code === 'ASR_FAILED'
         && Boolean(friendlyError.detail)
+    ) || (
+        (friendlyError.category === 'translation' || friendlyError.code === 'TRANSLATE_FAILED')
+        && Boolean(friendlyError.detail)
     );
 
     if (shouldAppendDetail && friendlyError.detail) {

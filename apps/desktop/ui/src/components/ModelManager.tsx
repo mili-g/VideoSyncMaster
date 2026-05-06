@@ -14,6 +14,7 @@ interface ModelStatus {
     vibevoice_asr_standard: boolean;
     index_tts: boolean;
     source_separation: boolean;
+    qwen: boolean;
     qwen_tokenizer: boolean;
     qwen_17b_base: boolean;
     qwen_17b_design: boolean;
@@ -94,6 +95,7 @@ const modelCatalog: ModelItem[] = [
     { key: 'qwen_asr_06b', name: 'Qwen3-ASR 0.6B', desc: '轻量级多语种识别模型。', link: 'Models/Qwen3-ASR-0.6B', group: 'asr', usage: '轻量识别', requiredBy: 'Qwen3-ASR / Fast' },
     { key: 'qwen_asr_aligner', name: 'Qwen3 Forced Aligner', desc: '字幕时间轴对齐模型。', link: 'Models/Qwen3-ForcedAligner-0.6B', group: 'asr', usage: '后对齐 / 时间轴恢复' },
     { key: 'vibevoice_asr_standard', name: 'VibeVoice-ASR HF', desc: '长音频与多说话人识别模型。', link: 'Models/VibeVoice-ASR-HF', group: 'asr', usage: '长音频 / 多说话人', requiredBy: 'VibeVoice-ASR' },
+    { key: 'qwen', name: 'Qwen2.5-7B-Instruct', desc: '本地字幕翻译模型。', link: 'Models/Qwen2.5-7B-Instruct', group: 'tts', usage: '本地翻译', requiredBy: '单条/批量字幕翻译' },
     { key: 'index_tts', name: 'Index-TTS', desc: '语音克隆合成引擎。', link: 'Models/index-tts', group: 'tts', usage: '语音克隆', requiredBy: 'Index-TTS' },
     { key: 'qwen_tokenizer', name: 'Qwen3 Tokenizer', desc: 'Qwen3-TTS 共享分词器。', link: 'Models/Qwen3-TTS-Tokenizer-12Hz', group: 'tts', usage: 'TTS 基础依赖', requiredBy: 'Qwen3-TTS 全部档位' },
     { key: 'qwen_17b_base', name: 'Qwen3-TTS 1.7B Base', desc: '正式生成优先档位。', link: 'Models/Qwen3-TTS-12Hz-1.7B-Base', group: 'tts', usage: '高质量配音', requiredBy: 'Qwen3-TTS / Quality' },
@@ -158,6 +160,10 @@ const downloadSpecs: Record<string, DownloadSpec> = {
     vibevoice_asr_standard: {
         modelId: 'hf://microsoft/VibeVoice-ASR-HF',
         localDir: 'models/VibeVoice-ASR-HF'
+    },
+    qwen: {
+        modelId: 'hf://Qwen/Qwen2.5-7B-Instruct',
+        localDir: 'models/Qwen2.5-7B-Instruct'
     },
     qwen_tokenizer: {
         modelId: 'Qwen/Qwen3-TTS-Tokenizer-12Hz',

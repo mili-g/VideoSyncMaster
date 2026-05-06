@@ -1,6 +1,9 @@
 import importlib.util
+import json
 import os
+import re
 import sys
+import ast
 
 from model_profiles import MODELS_ROOT
 
@@ -15,7 +18,9 @@ class LLMTranslator:
         self.model = None
         self.tokenizer = None
 
-        if self.api_key:
+        has_external_config = bool(str(self.api_key or "").strip()) and bool(str(self.base_url or "").strip()) and bool(str(self.model_name or "").strip())
+
+        if has_external_config:
             print(f"[LLMTranslator] Using External API: {self.base_url} (Model: {self.model_name})")
             self.use_external = True
             
@@ -28,8 +33,10 @@ class LLMTranslator:
                 "Content-Type": "application/json"
             })
         else:
-            # Fallback to Local Qwen
-            print("[LLMTranslator] No API Key provided. Using Local Qwen Model.")
+            if self.api_key and not has_external_config:
+                print("[LLMTranslator] External translation config is incomplete. Falling back to Local Qwen Model.")
+            else:
+                print("[LLMTranslator] No API Key provided. Using Local Qwen Model.")
             self._init_local_model(model_dir)
 
     def _init_local_model(self, model_dir=None):
@@ -232,7 +239,6 @@ class LLMTranslator:
         return data["choices"][0]["message"]["content"].strip()
 
     def _clean_response(self, text):
-        import re
         # 1. Remove DeepSeek R1 style <think>...</think>
         text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
         
@@ -272,29 +278,46 @@ class LLMTranslator:
     def translate_batch(self, texts, target_lang="English"):
         """
         Translates a list of texts in batches.
-        Only implemented for External API for now to speed up network requests.
         """
-        if not self.use_external:
-            # Fallback to loop for local model (or implement batch inference later)
-            results = []
-            for t in texts:
-                results.append(self._translate_local(t, target_lang))
-            return results
+        if not texts:
+            return []
+        if self.use_external:
+            return self._translate_batch_external(texts, target_lang)
+        return self._translate_batch_local(texts, target_lang)
 
-        import json
-        import re
-        import ast
-        
+    def _extract_json_list_from_text(self, raw_content):
+        cleaned = self._clean_response(raw_content or "")
+        candidate = cleaned.strip()
+        if candidate.startswith('```'):
+            candidate = re.sub(r'^```(json)?\s*', '', candidate)
+            candidate = re.sub(r'\s*```$', '', candidate)
+
+        json_match = re.search(r'\[.*\]', candidate, flags=re.DOTALL)
+        if json_match:
+            candidate = json_match.group(0)
+
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            try:
+                parsed = ast.literal_eval(candidate)
+            except Exception:
+                parsed = None
+
+        if not isinstance(parsed, list):
+            raise RuntimeError(f"Batch translation response parse failed: {candidate[:200]}")
+
+        return [str(item).strip() for item in parsed]
+
+    def _translate_batch_external(self, texts, target_lang):
         results = []
-        batch_size = 10 # Smaller batch for stability
+        batch_size = 10
         total = len(texts)
-        
+
         for i in range(0, total, batch_size):
-            chunk = texts[i:i+batch_size]
-            
-            # Construct Prompt
+            chunk = texts[i:i + batch_size]
             json_input = json.dumps(chunk, ensure_ascii=False)
-            
+
             prompt = f"""You are a professional translator. Translate the following list of sentences into {target_lang}.
 Input is a JSON list of strings. Output ONLY a valid JSON list of translated strings.
 Maintain the same order and length. Do not output original text. Do not explain.
@@ -322,51 +345,54 @@ Input:
                 data = response.json()
                 if "choices" in data and len(data["choices"]) > 0:
                     raw_content = data["choices"][0]["message"]["content"].strip()
-                    
-                    # 1. Pre-clean raw content (remove thoughts, citations, etc.)
-                    # This helps avoid greedy regex capturing footer citations like [1]
-                    raw_content = self._clean_response(raw_content)
-
-                    # 2. Extract JSON candidates
-                    # Try to find the largest [...] block, but since we cleaned footer citations, greedy matching is safer now.
-                    # Also handle markdown code blocks wrap
-                    if raw_content.startswith('```'):
-                         raw_content = re.sub(r'^```(json)?\s*', '', raw_content)
-                         raw_content = re.sub(r'\s*```$', '', raw_content)
-
-                    json_match = re.search(r'\[.*\]', raw_content, flags=re.DOTALL)
-                    if json_match:
-                         raw_content = json_match.group(0)
-                    
-                    batch_results = None
-                    # 3. Try parsing
-                    try:
-                        batch_results = json.loads(raw_content)
-                    except json.JSONDecodeError:
-                        # Fallback: Try AST (Python literal) parsing for loose syntax (single quotes, trailing commas)
-                        try:
-                            batch_results = ast.literal_eval(raw_content)
-                        except:
-                            pass
-                    
-                    if isinstance(batch_results, list):
-                        if len(batch_results) != len(chunk):
-                            raise RuntimeError(
-                                f"Batch translation length mismatch. Expected {len(chunk)}, got {len(batch_results)}."
-                            )
-                        
-                        # 4. Final clean of items (just in case)
-                        cleaned_results = [str(txt).strip() for txt in batch_results]
-                        results.extend(cleaned_results)
-                    else:
-                        raise RuntimeError(f"Batch translation response parse failed: {raw_content[:200]}")
+                    batch_results = self._extract_json_list_from_text(raw_content)
+                    if len(batch_results) != len(chunk):
+                        raise RuntimeError(
+                            f"Batch translation length mismatch. Expected {len(chunk)}, got {len(batch_results)}."
+                        )
+                    results.extend(batch_results)
                 else:
                     raise RuntimeError("Batch translation response missing choices.")
 
             except Exception as e:
                 print(f"[BatchTranslation] Exception: {e}")
                 raise
-                
+
+        return results
+
+    def _translate_batch_local(self, texts, target_lang):
+        if not self.model or not self.tokenizer:
+            raise RuntimeError(
+                f"Local LLM is not available. Expected local translation model under {os.path.join(MODELS_ROOT, 'Qwen2.5-7B-Instruct')}"
+            )
+
+        results = []
+        batch_size = 8
+        total = len(texts)
+
+        for index in range(0, total, batch_size):
+            chunk = texts[index:index + batch_size]
+            json_input = json.dumps(chunk, ensure_ascii=False)
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        f"You are a professional translator. Translate each sentence into {target_lang}. "
+                        "Output ONLY a valid JSON array of translated strings. "
+                        "Keep the same order and same number of items. "
+                        "Do not output the original text. Do not explain."
+                    ),
+                },
+                {"role": "user", "content": json_input},
+            ]
+            raw_content = self._chat_complete_local(messages, temperature=0.1, max_new_tokens=1024)
+            batch_results = self._extract_json_list_from_text(raw_content)
+            if len(batch_results) != len(chunk):
+                raise RuntimeError(
+                    f"Local batch translation length mismatch. Expected {len(chunk)}, got {len(batch_results)}."
+                )
+            results.extend(batch_results)
+
         return results
 
     def _translate_local(self, text, target_lang):
@@ -388,6 +414,7 @@ Input:
         
         generated_ids = self.model.generate(
             model_inputs.input_ids,
+            attention_mask=model_inputs.attention_mask,
             max_new_tokens=512,
             do_sample=True,       
             temperature=0.7,      
@@ -404,7 +431,9 @@ Input:
 
     def _chat_complete_local(self, messages, temperature, max_new_tokens):
         if not self.model or not self.tokenizer:
-            raise RuntimeError("Local LLM is not available.")
+            raise RuntimeError(
+                f"Local LLM is not available. Expected local translation model under {os.path.join(MODELS_ROOT, 'Qwen2.5-7B-Instruct')}"
+            )
 
         text_input = self.tokenizer.apply_chat_template(
             messages,
@@ -415,6 +444,7 @@ Input:
         model_inputs = self.tokenizer([text_input], return_tensors="pt").to(self.model.device)
         generated_ids = self.model.generate(
             model_inputs.input_ids,
+            attention_mask=model_inputs.attention_mask,
             max_new_tokens=max_new_tokens,
             do_sample=temperature > 0,
             temperature=max(temperature, 0.01),

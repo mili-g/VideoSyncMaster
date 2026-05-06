@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import ConfirmDialog from './ConfirmDialog';
 import { FieldBlock } from '../features/asr/shared';
+import { getStoredTranslationApiSettings, isTranslationApiSettingsComplete } from '../utils/runtimeSettings';
 
 const DEFAULT_TRANSLATION_URL = 'https://api.openai.com/v1/chat/completions';
 
@@ -11,11 +12,15 @@ const TranslationConfig: React.FC = () => {
     const [isLightMode, setIsLightMode] = useState(false);
     const [showSaveConfirm, setShowSaveConfirm] = useState(false);
     const [showClearConfirm, setShowClearConfirm] = useState(false);
+    const currentSettings = { apiKey, baseUrl, model };
+    const externalReady = isTranslationApiSettingsComplete(currentSettings);
+    const hasPartialExternalConfig = Boolean(apiKey.trim() || model.trim() || (baseUrl.trim() && baseUrl.trim() !== DEFAULT_TRANSLATION_URL));
 
     useEffect(() => {
-        setBaseUrl(localStorage.getItem('trans_api_base_url') || DEFAULT_TRANSLATION_URL);
-        setApiKey(localStorage.getItem('trans_api_key') || '');
-        setModel(localStorage.getItem('trans_api_model') || '');
+        const settings = getStoredTranslationApiSettings();
+        setBaseUrl(settings.baseUrl || DEFAULT_TRANSLATION_URL);
+        setApiKey(settings.apiKey || '');
+        setModel(settings.model || '');
 
         const checkTheme = () => {
             setIsLightMode(document.body.classList.contains('light-mode'));
@@ -52,14 +57,18 @@ const TranslationConfig: React.FC = () => {
                         <p>配置兼容 OpenAI 协议的翻译接口，用于接管字幕翻译任务。</p>
                     </div>
                     <div className="status-inline">
-                        {apiKey ? '外部接口' : '本地链路'}
+                        {externalReady ? '外部接口' : hasPartialExternalConfig ? '配置未完成' : '本地链路'}
                     </div>
                 </div>
 
                 <div className="tool-banner">
                     <div className="tool-banner__title">接口规则</div>
                     <div className="tool-banner__body">
-                        请填写完整接口地址。配置 API Key 后，翻译任务将优先使用该接口。
+                        {externalReady
+                            ? '当前将优先使用外部翻译接口。'
+                            : hasPartialExternalConfig
+                                ? '当前外部翻译配置未填写完整，翻译任务会自动回退到本地翻译链路。'
+                                : '留空即可使用本地翻译链路。填写完整的接口地址、API Key、模型名后才会切换到外部接口。'}
                     </div>
                 </div>
 

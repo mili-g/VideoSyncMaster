@@ -79,6 +79,10 @@ export function getStoredTranslationApiSettings(): TranslationApiSettings {
     };
 }
 
+export function isTranslationApiSettingsComplete(settings: TranslationApiSettings) {
+    return Boolean(settings.apiKey.trim() && settings.baseUrl.trim() && settings.model.trim());
+}
+
 function resolveArgList(target: string[] | { args?: string[] }): string[] {
     if (Array.isArray(target)) {
         return target;
@@ -92,13 +96,13 @@ function resolveArgList(target: string[] | { args?: string[] }): string[] {
 export function appendStoredTranslationArgs(args: string[] | { args?: string[] }) {
     const argList = resolveArgList(args);
     const settings = getStoredTranslationApiSettings();
-    if (!settings.apiKey) {
+    if (!isTranslationApiSettingsComplete(settings)) {
         return settings;
     }
 
     argList.push('--api_key', settings.apiKey);
-    if (settings.baseUrl) argList.push('--base_url', settings.baseUrl);
-    if (settings.model) argList.push('--model', settings.model);
+    argList.push('--base_url', settings.baseUrl);
+    argList.push('--model', settings.model);
     return settings;
 }
 
