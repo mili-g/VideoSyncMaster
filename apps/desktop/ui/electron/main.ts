@@ -878,18 +878,31 @@ function getDefaultOutputDir() {
 
 ensureElectronStoragePaths()
 
+function bringWindowToFront(targetWindow: BrowserWindow | null) {
+  if (!targetWindow) {
+    return
+  }
+
+  if (targetWindow.isMinimized()) {
+    targetWindow.restore()
+  }
+
+  if (!targetWindow.isVisible()) {
+    targetWindow.show()
+  }
+
+  targetWindow.setAlwaysOnTop(true, 'screen-saver')
+  targetWindow.moveTop()
+  targetWindow.focus()
+  targetWindow.setAlwaysOnTop(false)
+}
+
 const singleInstanceLock = app.requestSingleInstanceLock()
 if (!singleInstanceLock) {
   app.quit()
 } else {
   app.on('second-instance', () => {
-    if (!win) {
-      return
-    }
-    if (win.isMinimized()) {
-      win.restore()
-    }
-    win.focus()
+    bringWindowToFront(win)
   })
 }
 
@@ -1625,6 +1638,52 @@ function terminateProcessTree(proc: ChildProcess | null): Promise<boolean> {
   })
 }
 
+async function terminateTrackedChildProcesses() {
+  const workerProcesses = (Object.keys(backendWorkers) as BackendLane[])
+    .map((lane) => {
+      const workerState = getBackendWorkerState(lane)
+      const processToKill = workerState.process
+      if (workerState.activeCancellation) {
+        workerState.activeCancellation.requested = true
+      }
+      workerState.process = null
+      return processToKill
+    })
+    .filter((proc): proc is ChildProcess => Boolean(proc))
+
+  const downloadProcesses = Array.from(activeDownloads.values())
+  activeDownloads.clear()
+
+  const trackedProcesses = [...workerProcesses, ...downloadProcesses].filter(
+    (proc, index, list) => Boolean(proc?.pid) && list.findIndex((candidate) => candidate.pid === proc.pid) === index
+  )
+
+  if (trackedProcesses.length === 0) {
+    return true
+  }
+
+  try {
+    const results = await Promise.all(
+      trackedProcesses.map(async (proc) => {
+        logMainSecurity('终止退出阶段子进程', {
+          domain: 'process.control',
+          action: 'terminateTrackedChildProcesses',
+          detail: `pid=${proc.pid}`
+        })
+        return terminateProcessTree(proc)
+      })
+    )
+    return results.every(Boolean)
+  } catch (error) {
+    logMainError('退出阶段停止子进程失败', {
+      domain: 'process.control',
+      action: 'terminateTrackedChildProcesses',
+      detail: error instanceof Error ? error.message : String(error)
+    })
+    return false
+  }
+}
+
 
   function createWindow() {
     logMainBusiness('创建主窗口', { domain: 'window.lifecycle', action: 'createWindow' })
@@ -1704,11 +1763,14 @@ app.on('before-quit', (event) => {
   }
 
   shutdownCleanupState = 'running'
-  void removePureCacheDirectoriesOnQuit()
+  void Promise.all([
+    terminateTrackedChildProcesses(),
+    removePureCacheDirectoriesOnQuit()
+  ])
     .catch((error) => {
-      logMainError('关闭应用时清理中间产物失败', {
-        domain: 'cache.lifecycle',
-        action: 'removePureCacheDirectoriesOnQuit',
+      logMainError('关闭应用时退出清理失败', {
+        domain: 'app.lifecycle',
+        action: 'before-quit',
         detail: error instanceof Error ? error.message : String(error)
       })
     })
@@ -2067,40 +2129,7 @@ app.whenReady().then(async () => {
 
   // IPC Handler to kill backend
   ipcMain.handle('kill-backend', async () => {
-    const processesToKill = (Object.keys(backendWorkers) as BackendLane[])
-      .map((lane) => {
-        const workerState = getBackendWorkerState(lane)
-        const processToKill = workerState.process
-        if (workerState.activeCancellation) {
-          workerState.activeCancellation.requested = true
-        }
-        workerState.process = null
-        return processToKill
-      })
-      .filter((proc): proc is ChildProcess => Boolean(proc))
-
-    if (processesToKill.length === 0) {
-      return true
-    }
-
-    try {
-      const results = await Promise.all(processesToKill.map(async (proc) => {
-        logMainSecurity('终止后端进程', {
-          domain: 'process.control',
-          action: 'kill-backend',
-          detail: `pid=${proc.pid}`
-        })
-        return terminateProcessTree(proc)
-      }))
-      return results.every(Boolean)
-    } catch (e) {
-      logMainError('停止全部后端进程失败', {
-        domain: 'process.control',
-        action: 'kill-backend',
-        detail: e instanceof Error ? e.message : String(e)
-      })
-      return false
-    }
+    return terminateTrackedChildProcesses()
   })
   // IPC Handler to open backend log
   ipcMain.handle('open-backend-log', async () => {
