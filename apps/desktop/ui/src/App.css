@@ -385,7 +385,13 @@
 }
 
 .workspace-topbar .workspace-utility-row {
-  align-items: stretch;
+  align-items: center;
+}
+
+.workspace-topbar .workflow-summary-row {
+  flex: 0 0 auto;
+  align-items: center;
+  align-self: center;
 }
 
 .top-engine-chip {
@@ -877,6 +883,10 @@
 
 .provider-list--dense {
   grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.model-grid--single {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .provider-tab-row {

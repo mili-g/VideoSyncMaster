@@ -377,15 +377,17 @@ export default function DiagnosticsPage({
                             </div>
                         </div>
                         {!asrDiagnostics && (
-                            <article className="model-card">
-                                <div className="model-card__header">
-                                    <div>
-                                        <h4>尚未运行 ASR 诊断</h4>
-                                        <p>按需手动触发识别通道诊断。</p>
+                            <div className="model-grid model-grid--single">
+                                <article className="empty-state-card">
+                                    <div className="model-card__header">
+                                        <div>
+                                            <h4>尚未运行 ASR 诊断</h4>
+                                            <p>按需手动触发识别通道诊断。</p>
+                                        </div>
+                                        <span className="model-status-pill">idle</span>
                                     </div>
-                                    <span className="model-status-pill">idle</span>
-                                </div>
-                            </article>
+                                </article>
+                            </div>
                         )}
                         <div className="model-grid">
                             {(asrDiagnostics?.checks || []).map((check) => {
