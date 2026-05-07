@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import ConfirmDialog from './ConfirmDialog';
-import type { BackendResponseBase, ModelDownloadProgressEvent, ModelStatusResponse } from '../types/backend';
+import type { BackendResponseBase, ModelDownloadProgressEvent, ModelRootSettingsResponse, ModelStatusResponse } from '../types/backend';
 
 interface ModelStatus {
     faster_whisper_runtime: boolean;
@@ -261,6 +261,13 @@ const ModelManager: React.FC<ModelManagerProps> = ({ onStatusChange, onFeedback 
     const [status, setStatus] = useState<ModelStatus | null>(null);
     const [statusDetails, setStatusDetails] = useState<Record<string, ModelStatusDetail>>({});
     const [modelsRoot, setModelsRoot] = useState('');
+    const [defaultModelsRoot, setDefaultModelsRoot] = useState('');
+    const [configuredModelsRoot, setConfiguredModelsRoot] = useState('');
+    const [managedModelsRoot, setManagedModelsRoot] = useState('');
+    const [usingCustomModelsRoot, setUsingCustomModelsRoot] = useState(false);
+    const [protectedDefaultModelsRoot, setProtectedDefaultModelsRoot] = useState(false);
+    const [pendingModelsRoot, setPendingModelsRoot] = useState('');
+    const [applyingModelsRoot, setApplyingModelsRoot] = useState(false);
     const [loading, setLoading] = useState(true);
     const [downloadTasks, setDownloadTasks] = useState<Record<string, DownloadTaskState>>({});
     const [localFeedback, setLocalFeedback] = useState<{ title: string; message: string; type: 'success' | 'error' } | null>(null);
@@ -271,6 +278,30 @@ const ModelManager: React.FC<ModelManagerProps> = ({ onStatusChange, onFeedback 
             return;
         }
         setLocalFeedback(feedback);
+    };
+
+    const applyModelRootSettings = (result: ModelRootSettingsResponse | null | undefined) => {
+        if (!result?.success) {
+            return;
+        }
+        const resolvedRoot = result.root || '';
+        const configuredRoot = result.configuredRoot || '';
+        setModelsRoot(resolvedRoot);
+        setDefaultModelsRoot(result.defaultRoot || '');
+        setConfiguredModelsRoot(configuredRoot);
+        setManagedModelsRoot(result.managedRoot || '');
+        setUsingCustomModelsRoot(Boolean(result.usingCustomRoot));
+        setProtectedDefaultModelsRoot(Boolean(result.protectedDefaultRoot));
+        setPendingModelsRoot(configuredRoot || resolvedRoot);
+    };
+
+    const loadModelRootSettings = async () => {
+        try {
+            const result = await window.api.getModelRootSettings() as ModelRootSettingsResponse;
+            applyModelRootSettings(result);
+        } catch (error) {
+            console.error(error);
+        }
     };
 
     const checkStatus = async () => {
@@ -316,6 +347,7 @@ const ModelManager: React.FC<ModelManagerProps> = ({ onStatusChange, onFeedback 
 
     useEffect(() => {
         void checkStatus();
+        void loadModelRootSettings();
     }, []);
 
     useEffect(() => {
@@ -462,6 +494,101 @@ const ModelManager: React.FC<ModelManagerProps> = ({ onStatusChange, onFeedback 
             }));
         } catch (error) {
             console.error('Cancel failed', error);
+        }
+    };
+
+    const handlePickModelsRoot = async () => {
+        try {
+            const result = await window.api.openFileDialog({
+                properties: ['openDirectory'],
+                title: '选择模型根目录'
+            });
+            if (!result.canceled && result.filePaths && result.filePaths.length > 0) {
+                setPendingModelsRoot(result.filePaths[0]);
+            }
+        } catch (error) {
+            console.error(error);
+        }
+    };
+
+    const handleApplyModelsRoot = async (migrateExisting: boolean) => {
+        const targetRoot = pendingModelsRoot.trim();
+        if (!targetRoot) {
+            notify({
+                title: '目录无效',
+                message: '请先选择或输入一个可写的模型根目录。',
+                type: 'error'
+            });
+            return;
+        }
+
+        setApplyingModelsRoot(true);
+        try {
+            const result = await window.api.setModelRootSettings({
+                modelsRoot: targetRoot,
+                migrateExisting
+            }) as ModelRootSettingsResponse;
+
+            if (!result.success) {
+                notify({
+                    title: '模型目录切换失败',
+                    message: result.error || '未知错误',
+                    type: 'error'
+                });
+                return;
+            }
+
+            applyModelRootSettings(result);
+            await checkStatus();
+            notify({
+                title: migrateExisting ? '迁移完成' : '目录已更新',
+                message: migrateExisting
+                    ? '模型根目录已切换，并已将旧目录内容迁移到新目录。'
+                    : '模型根目录已切换，后续下载和状态检测将使用新目录。',
+                type: 'success'
+            });
+        } catch (error) {
+            notify({
+                title: '模型目录切换失败',
+                message: error instanceof Error ? error.message : String(error),
+                type: 'error'
+            });
+        } finally {
+            setApplyingModelsRoot(false);
+        }
+    };
+
+    const handleResetModelsRoot = async () => {
+        setApplyingModelsRoot(true);
+        try {
+            const result = await window.api.setModelRootSettings({
+                useDefault: true
+            }) as ModelRootSettingsResponse;
+
+            if (!result.success) {
+                notify({
+                    title: '恢复默认目录失败',
+                    message: result.error || '未知错误',
+                    type: 'error'
+                });
+                return;
+            }
+
+            applyModelRootSettings(result);
+            await checkStatus();
+            notify({
+                title: '已恢复默认目录',
+                message: '模型目录已恢复为默认解析位置。',
+                type: 'success'
+            });
+        } catch (error) {
+            notify({
+                title: '恢复默认目录失败',
+                message: error instanceof Error ? error.message : String(error),
+                type: 'error'
+            });
+        } finally {
+            setApplyingModelsRoot(false);
         }
     };
 
@@ -617,6 +744,64 @@ const ModelManager: React.FC<ModelManagerProps> = ({ onStatusChange, onFeedback 
                     刷新状态
                 </button>
             </div>
+
+            <section className="config-section">
+                <div className="config-section__head">
+                    <div>
+                        <h3>模型目录管理</h3>
+                        <p>安装版和仓库版统一通过同一套模型根目录解析逻辑工作。切换目录后，下载、状态检查和后端调用都会立即使用新位置。</p>
+                    </div>
+                </div>
+                <div className="field-grid">
+                    <div className="field-block">
+                        <span>当前生效目录</span>
+                        <input className="field-control" value={modelsRoot} readOnly />
+                        <small>{usingCustomModelsRoot ? '当前正在使用自定义模型目录。' : '当前正在使用默认模型目录。'}</small>
+                    </div>
+                    <div className="field-block">
+                        <span>默认目录</span>
+                        <input className="field-control" value={defaultModelsRoot} readOnly />
+                        <small>
+                            {protectedDefaultModelsRoot
+                                ? '默认目录位于受保护位置，直接写入通常需要管理员权限。'
+                                : '未设置自定义目录时，应用会回退到这里。'}
+                        </small>
+                    </div>
+                    <div className="field-block">
+                        <span>自定义目录</span>
+                        <input
+                            className="field-control"
+                            value={pendingModelsRoot}
+                            onChange={(event) => setPendingModelsRoot(event.target.value)}
+                            placeholder="选择一个用户可写的目录"
+                        />
+                        <small>
+                            {configuredModelsRoot
+                                ? `已配置自定义目录：${configuredModelsRoot}`
+                                : '建议使用非 Program Files 的本地磁盘目录，便于安装版和仓库版共用。'}
+                        </small>
+                    </div>
+                    <div className="field-block">
+                        <span>兼容兜底目录</span>
+                        <input className="field-control" value={managedModelsRoot} readOnly />
+                        <small>这是安装版原先的托管模型目录，迁移时会从当前生效目录搬运到新目录。</small>
+                    </div>
+                </div>
+                <div className="form-actions">
+                    <button type="button" className="secondary-button" onClick={() => void handlePickModelsRoot()} disabled={applyingModelsRoot || hasActiveDownloads}>
+                        选择目录
+                    </button>
+                    <button type="button" className="secondary-button" onClick={() => void handleApplyModelsRoot(false)} disabled={applyingModelsRoot || hasActiveDownloads}>
+                        仅切换目录
+                    </button>
+                    <button type="button" className="primary-button" onClick={() => void handleApplyModelsRoot(true)} disabled={applyingModelsRoot || hasActiveDownloads}>
+                        迁移并切换
+                    </button>
+                    <button type="button" className="secondary-button" onClick={() => void handleResetModelsRoot()} disabled={applyingModelsRoot || hasActiveDownloads}>
+                        恢复默认
+                    </button>
+                </div>
+            </section>
 
             {(['asr', 'tts', 'aux'] as ModelGroup[]).map((group) => (
                 <section key={group} className="config-section">

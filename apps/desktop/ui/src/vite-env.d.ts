@@ -13,7 +13,9 @@ interface DesktopApi {
     cleanupSessionCache(payload: { sessionCacheDir: string; mode: 'success' | 'failed' | 'interrupted' }): Promise<{ success: boolean; removed: boolean; preservedResumeFiles: number }>;
     checkFileExists(filePath: string): Promise<boolean>;
     listDirFiles(dirPath: string): Promise<string[]>;
-    getPaths(): Promise<{ projectRoot: string; outputDir: string; cacheDir: string; logsDir: string; backendLogPath: string }>;
+    getPaths(): Promise<{ projectRoot: string; outputDir: string; cacheDir: string; logsDir: string; backendLogPath: string; modelsRoot: string; defaultModelsRoot: string; configuredModelsRoot: string | null; usingCustomModelsRoot: boolean; protectedDefaultModelsRoot: boolean }>;
+    getModelRootSettings(): Promise<import('./types/backend').ModelRootSettingsResponse>;
+    setModelRootSettings(payload: { modelsRoot?: string | null; useDefault?: boolean; migrateExisting?: boolean }): Promise<import('./types/backend').ModelRootSettingsResponse>;
     getRuntimeDownloadInfo(): Promise<{ success: boolean; bundleFileName?: string; downloadUrl?: string; downloadPageUrl?: string; error?: string }>;
     runBackend<T = import('./types/backend').BackendResponseBase>(args: string[], options?: { lane?: BackendLane }): Promise<T>;
     analyzeVideoMetadata(filePath: string): Promise<import('./types/backend').AnalyzeVideoMetadataResponse>;

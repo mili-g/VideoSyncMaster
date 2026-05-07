@@ -87,6 +87,15 @@ export interface ModelStatusResponse extends BackendResponseBase {
     root?: string;
 }
 
+export interface ModelRootSettingsResponse extends BackendResponseBase {
+    root?: string;
+    defaultRoot?: string;
+    managedRoot?: string;
+    configuredRoot?: string | null;
+    usingCustomRoot?: boolean;
+    protectedDefaultRoot?: boolean;
+}
+
 export interface ModelDownloadProgressEvent {
     key: string;
     active?: boolean;

@@ -133,8 +133,10 @@ def get_faster_whisper_runtime_search_roots(
     backend_dir: str | None = None,
     extra_root: str | None = None,
 ) -> list[str]:
+    models_root = get_models_root(project_root)
     candidates = [
         extra_root,
+        os.path.join(models_root, "faster_whisper_runtime"),
         os.path.join(get_storage_root(project_root), "models", "faster_whisper_runtime"),
         os.path.join(project_root, "models", "faster_whisper_runtime"),
         os.path.join(project_root, "resources", "media_tools", "faster_whisper"),

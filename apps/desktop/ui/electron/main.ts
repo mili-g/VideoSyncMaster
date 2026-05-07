@@ -25,6 +25,20 @@ interface GitHubReleaseAssetSpec {
   assetPattern: string
 }
 
+interface ModelRootSettingsRecord {
+  customModelsRoot?: string
+}
+
+interface ResolvedModelsRootInfo {
+  projectRoot: string
+  modelsRoot: string
+  defaultModelsRoot: string
+  managedModelsRoot: string
+  configuredModelsRoot: string | null
+  usingCustomRoot: boolean
+  protectedDefaultRoot: boolean
+}
+
 const downloadTaskSnapshots = new Map<string, DownloadTaskSnapshot>()
 const PYTHON_RUNTIME_TRACKING_KEY = 'python_runtime'
 let pythonRuntimeInstallPromise: Promise<{ success: boolean; installed: boolean; error?: string }> | null = null
@@ -400,8 +414,9 @@ function findFileInRoots(searchRoots: string[], candidateNames: string[]) {
   return null
 }
 
-function getFasterWhisperRuntimeSearchRoots(projectRoot: string) {
+function getFasterWhisperRuntimeSearchRoots(projectRoot: string, modelsRoot = resolveModelsRoot(projectRoot).modelsRoot) {
   const candidates = [
+    path.join(modelsRoot, 'faster_whisper_runtime'),
     path.join(getStorageRoot(projectRoot), 'models', 'faster_whisper_runtime'),
     path.join(projectRoot, 'models', 'faster_whisper_runtime'),
     path.join(projectRoot, 'resources', 'media_tools', 'faster_whisper'),
@@ -672,7 +687,7 @@ function restartBackendWorkerAfterFatalCuda(lane: BackendLane, message: string) 
 function getPythonProcessEnv() {
   const projectRoot = getProjectRoot()
   const storageRoot = getStorageRoot(projectRoot)
-  const modelsRoot = app.isPackaged ? getManagedModelsRoot(projectRoot) : path.join(projectRoot, 'models')
+  const { modelsRoot } = resolveModelsRoot(projectRoot)
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     PYTHONUTF8: '1',
@@ -818,6 +833,152 @@ function getManagedRuntimeRoot(projectRoot = getProjectRoot()) {
 
 function getManagedModelsRoot(projectRoot = getProjectRoot()) {
   return path.join(getStorageRoot(projectRoot), 'models')
+}
+
+function getModelRootSettingsPath(projectRoot = getProjectRoot()) {
+  return path.join(getStorageRoot(projectRoot), 'config', 'model-root-settings.json')
+}
+
+function readModelRootSettings(projectRoot = getProjectRoot()): ModelRootSettingsRecord {
+  const settingsPath = getModelRootSettingsPath(projectRoot)
+  if (!fs.existsSync(settingsPath)) {
+    return {}
+  }
+
+  try {
+    const raw = fs.readFileSync(settingsPath, 'utf-8')
+    const parsed = JSON.parse(raw) as ModelRootSettingsRecord
+    return typeof parsed?.customModelsRoot === 'string'
+      ? { customModelsRoot: parsed.customModelsRoot }
+      : {}
+  } catch (error) {
+    logMainWarn('读取模型目录配置失败，回退默认目录', {
+      domain: 'model.lifecycle',
+      action: 'readModelRootSettings',
+      detail: error instanceof Error ? error.message : String(error)
+    })
+    return {}
+  }
+}
+
+function writeModelRootSettings(settings: ModelRootSettingsRecord, projectRoot = getProjectRoot()) {
+  const settingsPath = getModelRootSettingsPath(projectRoot)
+  fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+  fs.writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, 'utf-8')
+}
+
+function normalizeConfiguredModelsRoot(candidate: string | null | undefined) {
+  const normalized = String(candidate || '').trim()
+  if (!normalized) {
+    return null
+  }
+  return path.resolve(normalized)
+}
+
+function isPathInside(parentPath: string, childPath: string) {
+  const parent = path.resolve(parentPath)
+  const child = path.resolve(childPath)
+  const relative = path.relative(parent, child)
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
+}
+
+function isProtectedInstallLocation(targetPath: string) {
+  if (process.platform !== 'win32') {
+    return false
+  }
+
+  const normalizedTarget = path.resolve(targetPath).toLowerCase()
+  const protectedRoots = [
+    process.env['ProgramFiles'],
+    process.env['ProgramFiles(x86)'],
+    process.env['ProgramW6432']
+  ]
+    .filter((value): value is string => Boolean(value))
+    .map((value) => path.resolve(value).toLowerCase())
+
+  return protectedRoots.some((root) => isPathInside(root, normalizedTarget))
+}
+
+function getDefaultModelsRoot(projectRoot = getProjectRoot()) {
+  if (app.isPackaged && process.env.PORTABLE_EXECUTABLE_DIR) {
+    return path.join(process.env.PORTABLE_EXECUTABLE_DIR, 'models')
+  }
+
+  const repoLikeRoot = path.join(projectRoot, 'models')
+  if (app.isPackaged && isProtectedInstallLocation(repoLikeRoot)) {
+    return getManagedModelsRoot(projectRoot)
+  }
+  return repoLikeRoot
+}
+
+function resolveModelsRoot(projectRoot = getProjectRoot()): ResolvedModelsRootInfo {
+  const managedModelsRoot = getManagedModelsRoot(projectRoot)
+  const defaultModelsRoot = getDefaultModelsRoot(projectRoot)
+  const configuredModelsRoot = normalizeConfiguredModelsRoot(
+    readModelRootSettings(projectRoot).customModelsRoot
+  )
+  const modelsRoot = configuredModelsRoot || defaultModelsRoot
+
+  return {
+    projectRoot,
+    modelsRoot,
+    defaultModelsRoot,
+    managedModelsRoot,
+    configuredModelsRoot,
+    usingCustomRoot: Boolean(configuredModelsRoot),
+    protectedDefaultRoot: isProtectedInstallLocation(defaultModelsRoot)
+  }
+}
+
+function movePathSync(sourcePath: string, targetPath: string) {
+  if (!fs.existsSync(sourcePath)) {
+    return
+  }
+
+  if (fs.existsSync(targetPath)) {
+    const sourceStat = fs.statSync(sourcePath)
+    const targetStat = fs.statSync(targetPath)
+    if (sourceStat.isDirectory() && targetStat.isDirectory()) {
+      for (const entry of fs.readdirSync(sourcePath, { withFileTypes: true })) {
+        movePathSync(path.join(sourcePath, entry.name), path.join(targetPath, entry.name))
+      }
+      const remaining = fs.readdirSync(sourcePath)
+      if (remaining.length === 0) {
+        fs.rmSync(sourcePath, { recursive: true, force: true })
+      }
+      return
+    }
+    throw new Error(`目标已存在：${targetPath}`)
+  }
+
+  fs.mkdirSync(path.dirname(targetPath), { recursive: true })
+  try {
+    fs.renameSync(sourcePath, targetPath)
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code
+    if (code !== 'EXDEV') {
+      throw error
+    }
+    fs.cpSync(sourcePath, targetPath, { recursive: true })
+    fs.rmSync(sourcePath, { recursive: true, force: true })
+  }
+}
+
+function migrateModelsRootContents(sourceRoot: string, targetRoot: string) {
+  const fromRoot = path.resolve(sourceRoot)
+  const toRoot = path.resolve(targetRoot)
+
+  if (fromRoot === toRoot || !fs.existsSync(fromRoot)) {
+    return { movedEntries: 0 }
+  }
+
+  fs.mkdirSync(toRoot, { recursive: true })
+  let movedEntries = 0
+  for (const entry of fs.readdirSync(fromRoot, { withFileTypes: true })) {
+    movePathSync(path.join(fromRoot, entry.name), path.join(toRoot, entry.name))
+    movedEntries += 1
+  }
+  return { movedEntries }
 }
 
 function getRuntimeOverlayRoot(overlayName: string, projectRoot = getProjectRoot()) {
@@ -1101,7 +1262,7 @@ function ensureEmbeddedPythonSiteEnabled(pythonRoot: string) {
 }
 
 function getBootstrapPythonEnv(projectRoot = getProjectRoot()): NodeJS.ProcessEnv {
-  const modelsRoot = app.isPackaged ? getManagedModelsRoot(projectRoot) : path.join(projectRoot, 'models')
+  const { modelsRoot } = resolveModelsRoot(projectRoot)
   return {
     ...process.env,
     PYTHONUTF8: '1',
@@ -1653,12 +1814,18 @@ if (!singleInstanceLock) {
 
 function getAppPaths() {
   const projectRoot = getProjectRoot()
+  const modelsInfo = resolveModelsRoot(projectRoot)
   return {
     projectRoot,
     outputDir: getDefaultOutputDir(),
     cacheDir: getCacheRoot(projectRoot),
     logsDir: getLogsDir(projectRoot),
-    backendLogPath: getBackendLogPath(projectRoot)
+    backendLogPath: getBackendLogPath(projectRoot),
+    modelsRoot: modelsInfo.modelsRoot,
+    defaultModelsRoot: modelsInfo.defaultModelsRoot,
+    configuredModelsRoot: modelsInfo.configuredModelsRoot,
+    usingCustomModelsRoot: modelsInfo.usingCustomRoot,
+    protectedDefaultModelsRoot: modelsInfo.protectedDefaultRoot
   }
 }
 
@@ -1996,18 +2163,15 @@ function consumeBackendProcessChunk(lane: BackendLane, chunk: ProcessChunk, sour
 }
 
 function getBackendLaunchConfig() {
-  const { projectRoot } = getAppPaths()
+  const { projectRoot, modelsRoot } = getAppPaths()
   const pythonExe = path.join(getPythonRoot(projectRoot), 'python.exe')
   const scriptPath = path.join(getBackendRoot(projectRoot), 'main.py')
-  const modelsDir = app.isPackaged
-    ? getManagedModelsRoot(projectRoot)
-    : path.join(projectRoot, 'models', 'index-tts', 'hub')
   const finalPythonExe = (app.isPackaged || fs.existsSync(pythonExe)) ? pythonExe : 'python'
 
   return {
     projectRoot,
     scriptPath,
-    modelsDir,
+    modelsDir: modelsRoot,
     finalPythonExe
   }
 }
@@ -2737,6 +2901,70 @@ app.whenReady().then(async () => {
     return getAppPaths();
   })
 
+  ipcMain.handle('get-model-root-settings', async () => {
+    const resolved = resolveModelsRoot()
+    return {
+      success: true,
+      root: resolved.modelsRoot,
+      defaultRoot: resolved.defaultModelsRoot,
+      managedRoot: resolved.managedModelsRoot,
+      configuredRoot: resolved.configuredModelsRoot,
+      usingCustomRoot: resolved.usingCustomRoot,
+      protectedDefaultRoot: resolved.protectedDefaultRoot
+    }
+  })
+
+  ipcMain.handle('set-model-root-settings', async (_event, payload) => {
+    void _event
+    try {
+      const projectRoot = getProjectRoot()
+      const current = resolveModelsRoot(projectRoot)
+      const requestedRoot = normalizeConfiguredModelsRoot(payload?.modelsRoot)
+      const useDefault = payload?.useDefault === true || !requestedRoot
+      const nextConfiguredRoot = useDefault ? null : requestedRoot
+      const nextResolvedRoot = nextConfiguredRoot || current.defaultModelsRoot
+
+      if (nextConfiguredRoot && !path.isAbsolute(nextConfiguredRoot)) {
+        return { success: false, error: '模型目录必须是绝对路径。' }
+      }
+
+      if (isProtectedInstallLocation(nextResolvedRoot)) {
+        return { success: false, error: '目标目录位于 Program Files 等受保护位置，无法直接写入。请选择用户可写目录。' }
+      }
+
+      if (current.modelsRoot !== nextResolvedRoot) {
+        await terminateTrackedChildProcesses()
+      }
+
+      fs.mkdirSync(nextResolvedRoot, { recursive: true })
+
+      if (payload?.migrateExisting === true) {
+        migrateModelsRootContents(current.modelsRoot, nextResolvedRoot)
+      }
+
+      writeModelRootSettings(
+        nextConfiguredRoot ? { customModelsRoot: nextConfiguredRoot } : {},
+        projectRoot
+      )
+
+      const updated = resolveModelsRoot(projectRoot)
+      return {
+        success: true,
+        root: updated.modelsRoot,
+        defaultRoot: updated.defaultModelsRoot,
+        managedRoot: updated.managedModelsRoot,
+        configuredRoot: updated.configuredModelsRoot,
+        usingCustomRoot: updated.usingCustomRoot,
+        protectedDefaultRoot: updated.protectedDefaultRoot
+      }
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error)
+      }
+    }
+  })
+
   ipcMain.handle('get-runtime-download-info', async () => {
     return getRuntimeDownloadInfo();
   })
@@ -3239,23 +3467,6 @@ app.whenReady().then(async () => {
       activeAsrDiagnosticsPromise = null
     }
   })
-
-  // Helper function to resolve Models Root
-  const resolveModelsRoot = () => {
-    let modelsRoot = '';
-    const projectRoot = getProjectRoot()
-
-    if (app.isPackaged) {
-      if (process.env.PORTABLE_EXECUTABLE_DIR) {
-        modelsRoot = path.join(process.env.PORTABLE_EXECUTABLE_DIR, 'models');
-      } else {
-        modelsRoot = getManagedModelsRoot(projectRoot);
-      }
-    } else {
-      modelsRoot = path.join(projectRoot, 'models');
-    }
-    return { modelsRoot, projectRoot };
-  };
 
   // IPC Handler to check model status
   ipcMain.handle('check-model-status', async (_event) => {

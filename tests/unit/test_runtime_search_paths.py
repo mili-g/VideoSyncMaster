@@ -1,6 +1,7 @@
 import pathlib
 import sys
 import unittest
+from unittest import mock
 
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -13,16 +14,18 @@ from bootstrap.path_layout import get_faster_whisper_runtime_search_roots
 
 class RuntimeSearchPathTests(unittest.TestCase):
     def test_faster_whisper_runtime_roots_prioritize_current_layout(self) -> None:
-        roots = get_faster_whisper_runtime_search_roots(
-            "C:/repo",
-            backend_dir="C:/repo/services/media_pipeline",
-            extra_root="C:/custom/fw",
-        )
+        with mock.patch("bootstrap.path_layout.get_models_root", return_value="D:/shared/models"):
+            roots = get_faster_whisper_runtime_search_roots(
+                "C:/repo",
+                backend_dir="C:/repo/services/media_pipeline",
+                extra_root="C:/custom/fw",
+            )
 
         normalized = [path.replace("\\", "/") for path in roots]
         self.assertEqual("C:/custom/fw", normalized[0])
-        self.assertEqual("C:/repo/models/faster_whisper_runtime", normalized[1])
-        self.assertEqual("C:/repo/resources/media_tools/faster_whisper", normalized[2])
+        self.assertEqual("D:/shared/models/faster_whisper_runtime", normalized[1])
+        self.assertEqual("C:/repo/models/faster_whisper_runtime", normalized[2])
+        self.assertEqual("C:/repo/resources/media_tools/faster_whisper", normalized[3])
         self.assertIn("C:/repo/services/resources/media_tools/faster_whisper", normalized)
         self.assertEqual(len(normalized), len(set(normalized)))
 

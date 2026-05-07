@@ -51,6 +51,12 @@ contextBridge.exposeInMainWorld('api', {
   getPaths() {
     return ipcRenderer.invoke('get-paths')
   },
+  getModelRootSettings() {
+    return ipcRenderer.invoke('get-model-root-settings')
+  },
+  setModelRootSettings(payload: { modelsRoot?: string | null; useDefault?: boolean; migrateExisting?: boolean }) {
+    return ipcRenderer.invoke('set-model-root-settings', payload)
+  },
   getRuntimeDownloadInfo() {
     return ipcRenderer.invoke('get-runtime-download-info')
   },
