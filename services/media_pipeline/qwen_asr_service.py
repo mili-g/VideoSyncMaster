@@ -5,6 +5,7 @@ import torch
 import traceback
 import re
 import logging
+import threading
 from asr_data import ASRData, ASRDataSeg
 from app_logging import get_logger, redirect_print
 from bootstrap.triton_windows_compat import patch_triton_winsdk_registry_bug
@@ -95,6 +96,10 @@ try:
 except ImportError as e:
     print(f"[QwenASR] Warning: Could not import qwen_asr: {e}")
     Qwen3ASRModel = None
+
+_QWEN_ASR_INSTANCE = None
+_QWEN_ASR_INSTANCE_KEY = None
+_QWEN_ASR_INSTANCE_LOCK = threading.Lock()
 
 _QWEN_LANGUAGE_MAP = {
     None: None,
@@ -391,6 +396,102 @@ def _resolve_qwen_runtime_device(requested):
     return "cuda" if torch.cuda.is_available() else "cpu"
 
 
+def _build_qwen_asr_instance_key(
+    model_path,
+    aligner_path,
+    device,
+    max_inference_batch_size,
+    max_new_tokens,
+):
+    return (
+        os.path.abspath(model_path),
+        os.path.abspath(aligner_path),
+        str(device),
+        max(1, int(max_inference_batch_size or 32)),
+        max(32, int(max_new_tokens or 256)),
+    )
+
+
+def cleanup_qwen_asr_runtime():
+    global _QWEN_ASR_INSTANCE, _QWEN_ASR_INSTANCE_KEY
+
+    with _QWEN_ASR_INSTANCE_LOCK:
+        if _QWEN_ASR_INSTANCE is not None:
+            try:
+                del _QWEN_ASR_INSTANCE
+            except Exception:
+                pass
+        _QWEN_ASR_INSTANCE = None
+        _QWEN_ASR_INSTANCE_KEY = None
+
+    try:
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
+def _get_qwen_asr_instance(
+    *,
+    model_path,
+    aligner_path,
+    device,
+    max_inference_batch_size,
+    max_new_tokens,
+):
+    global _QWEN_ASR_INSTANCE, _QWEN_ASR_INSTANCE_KEY
+
+    if not Qwen3ASRModel:
+        raise ImportError(
+            "Qwen3ASRModel not available. Please ensure the local Qwen3-ASR runtime package is present under models/asr/qwen3."
+        )
+
+    instance_key = _build_qwen_asr_instance_key(
+        model_path,
+        aligner_path,
+        device,
+        max_inference_batch_size,
+        max_new_tokens,
+    )
+
+    with _QWEN_ASR_INSTANCE_LOCK:
+        if _QWEN_ASR_INSTANCE is not None and _QWEN_ASR_INSTANCE_KEY == instance_key:
+            print(f"[QwenASR] Reusing cached model for: {model_path}")
+            return _QWEN_ASR_INSTANCE
+
+        if _QWEN_ASR_INSTANCE is not None and _QWEN_ASR_INSTANCE_KEY != instance_key:
+            print("[QwenASR] Runtime config changed. Releasing previous cached model...")
+            try:
+                del _QWEN_ASR_INSTANCE
+            except Exception:
+                pass
+            _QWEN_ASR_INSTANCE = None
+            _QWEN_ASR_INSTANCE_KEY = None
+            try:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
+
+        model_dtype = torch.bfloat16 if device == "cuda" else torch.float32
+        print(f"[QwenASR] Initializing cached model from: {model_path}")
+        asr = Qwen3ASRModel.from_pretrained(
+            model_path,
+            dtype=model_dtype,
+            device_map=device,
+            max_inference_batch_size=max(1, int(max_inference_batch_size or 32)),
+            max_new_tokens=max(32, int(max_new_tokens or 256)),
+            forced_aligner=aligner_path,
+            forced_aligner_kwargs=dict(
+                dtype=model_dtype,
+                device_map=device,
+            ),
+        )
+        _QWEN_ASR_INSTANCE = asr
+        _QWEN_ASR_INSTANCE_KEY = instance_key
+        return _QWEN_ASR_INSTANCE
+
+
 def run_qwen_asr_inference(
     audio_path,
     model_name="Qwen3-ASR-1.7B",
@@ -400,11 +501,6 @@ def run_qwen_asr_inference(
     max_inference_batch_size=32,
     max_new_tokens=256
 ):
-    if not Qwen3ASRModel:
-        raise ImportError(
-            "Qwen3ASRModel not available. Please ensure the local Qwen3-ASR runtime package is present under models/asr/qwen3."
-        )
-
     try:
         import soynlp  # noqa: F401
     except ImportError as error:
@@ -430,25 +526,15 @@ def run_qwen_asr_inference(
             + ", ".join(_get_qwen_aligner_candidates(aligner_name))
         )
 
-    asr = None
     try:
         device = _resolve_qwen_runtime_device(device)
         print(f"[QwenASR] Device: {device}")
-
-        # Initialize Model
-        # Using simple transformers loading as per example
-        model_dtype = torch.bfloat16 if device == "cuda" else torch.float32
-        asr = Qwen3ASRModel.from_pretrained(
-            model_path,
-            dtype=model_dtype,
-            device_map=device,
-            max_inference_batch_size=max(1, int(max_inference_batch_size or 32)),
-            max_new_tokens=max(32, int(max_new_tokens or 256)),
-            forced_aligner=aligner_path,
-            forced_aligner_kwargs=dict(
-                dtype=model_dtype,
-                device_map=device,
-            ),
+        asr = _get_qwen_asr_instance(
+            model_path=model_path,
+            aligner_path=aligner_path,
+            device=device,
+            max_inference_batch_size=max_inference_batch_size,
+            max_new_tokens=max_new_tokens,
         )
 
         print(f"[QwenASR] Transcribing: {audio_path}")
@@ -485,18 +571,8 @@ def run_qwen_asr_inference(
     except Exception as e:
         print(f"[QwenASR] Inference failed: {e}")
         traceback.print_exc()
+        cleanup_qwen_asr_runtime()
         raise RuntimeError(f"Qwen ASR inference failed: {e}") from e
-    finally:
-        if asr is not None:
-            try:
-                del asr
-            except Exception:
-                pass
-        try:
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception:
-            pass
 
 if __name__ == "__main__":
     # Test

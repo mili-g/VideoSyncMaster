@@ -13,6 +13,20 @@ _run_batch_tts = None
 _loaded_tts_service = None
 
 
+def _cleanup_tts_service_runtime(service: str) -> None:
+    try:
+        if service == "qwen":
+            from qwen_tts_service import cleanup_qwen_tts_models
+
+            cleanup_qwen_tts_models()
+        else:
+            from tts import cleanup_indextts_runtime
+
+            cleanup_indextts_runtime()
+    except Exception:
+        pass
+
+
 def get_tts_runner(
     service: str,
     *,
@@ -28,6 +42,9 @@ def get_tts_runner(
 
     if _loaded_tts_service == service and _run_tts and _run_batch_tts:
         return _run_tts, _run_batch_tts
+
+    if _loaded_tts_service and _loaded_tts_service != service:
+        _cleanup_tts_service_runtime(_loaded_tts_service)
 
     if check_deps:
         if service == "qwen":

@@ -102,18 +102,45 @@ def _run_dub_asr_stage(config, cache_dir, *, run_asr, log_business, logger, logg
     return segments
 
 
-def _run_dub_translation_stage(translator, segments, target_lang, *, log_business, logger, logging, emit_stage):
+def _run_dub_translation_stage(
+    translator,
+    segments,
+    target_lang,
+    *,
+    log_business,
+    logger,
+    logging,
+    emit_stage,
+    emit_progress,
+    emit_partial_result,
+):
     log_business(logger, logging.INFO, "Starting dub translation stage", event="dub_step", stage="translate", detail=f"segments={len(segments)}")
     emit_stage("dub_video", "translate", f"正在翻译 {len(segments)} 个片段", stage_label="正在翻译字幕")
 
-    source_texts = [seg.get("text", "") for seg in segments]
-    translated_texts = translator.translate_batch(source_texts, target_lang)
-    if len(translated_texts) != len(source_texts):
-        raise RuntimeError(f"Translation batch length mismatch. Expected {len(source_texts)}, got {len(translated_texts)}")
+    translated_texts = []
+    total = len(segments)
 
-    for idx, translated_text in enumerate(translated_texts):
+    for idx, segment in enumerate(segments):
+        source_text = str(segment.get("text", "") or "")
+        if not source_text:
+            translated_texts.append(source_text)
+            continue
+
+        emit_progress(
+            "dub_video",
+            "translate",
+            int((idx + 1) / total * 100) if total else 100,
+            f"第 {idx + 1}/{total} 条翻译中",
+            stage_label="正在翻译字幕",
+            item_index=idx + 1,
+            item_total=total,
+        )
+        translated_text = translator.translate(source_text, target_lang)
         if not isinstance(translated_text, str) or not translated_text.strip():
             raise RuntimeError(f"Translation failed for segment {idx + 1}: empty translated text")
+        emit_partial_result("dub_video", {"index": idx, "text": translated_text})
+        translated_texts.append(translated_text)
+
     return translated_texts
 
 
@@ -284,7 +311,10 @@ def run_dub_video_workflow(
     logging,
     log_business,
     emit_stage,
-    get_llm_translator_class,
+    emit_progress,
+    emit_partial_result,
+    translator_factory,
+    cleanup_translator,
     get_tts_runner,
     run_asr,
     get_audio_duration,
@@ -337,8 +367,7 @@ def run_dub_video_workflow(
     print(f"DEBUG: Input Path: {config.input_path}")
 
     emit_stage("dub_video", "translate_prepare", "正在加载翻译模型", stage_label="正在准备翻译")
-    llm_translator = get_llm_translator_class()
-    translator = llm_translator(**config.translation.to_translator_kwargs())
+    translator = translator_factory(**config.translation.to_translator_kwargs())
     try:
         translated_texts = _run_dub_translation_stage(
             translator,
@@ -348,12 +377,16 @@ def run_dub_video_workflow(
             logger=logger,
             logging=logging,
             emit_stage=emit_stage,
+            emit_progress=emit_progress,
+            emit_partial_result=emit_partial_result,
         )
         tts_tasks = _build_dub_tts_tasks(segments, translated_texts)
     finally:
-        print("Translation done. Releasing LLM VRAM...", flush=True)
-        translator.cleanup()
-        del translator
+        print("Translation stage complete.", flush=True)
+        if callable(cleanup_translator):
+            cleanup_translator(translator)
+        else:
+            translator.cleanup()
 
     emit_stage("dub_video", "tts_prepare", f"正在初始化 {config.tts_service} 配音引擎", stage_label="正在准备配音")
     run_tts_func, _ = get_tts_runner(config.tts_service)

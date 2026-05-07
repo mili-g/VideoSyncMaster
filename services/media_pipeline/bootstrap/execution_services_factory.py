@@ -59,6 +59,8 @@ def build_execution_services(context: ExecutionServiceFactoryContext) -> Executi
     lazy_state: dict[str, Any] = {
         "basic_action_handlers": None,
         "llm_translator_class": None,
+        "llm_translator_instance": None,
+        "llm_translator_signature": None,
         "asr_runner": None,
         "alignment_module": None,
         "librosa_module": None,
@@ -118,6 +120,31 @@ def build_execution_services(context: ExecutionServiceFactoryContext) -> Executi
 
             lazy_state["translation_workflow"] = imported_translate_text_workflow
         return lazy_state["translation_workflow"]
+
+    def build_translator_signature(kwargs: dict[str, Any]) -> tuple[tuple[str, Any], ...]:
+        return tuple(sorted(kwargs.items(), key=lambda item: item[0]))
+
+    def get_shared_translator(**kwargs):
+        signature = build_translator_signature(kwargs)
+        cached_signature = lazy_state["llm_translator_signature"]
+        cached_translator = lazy_state["llm_translator_instance"]
+
+        if cached_translator is not None and cached_signature == signature:
+            return cached_translator
+
+        if cached_translator is not None:
+            try:
+                cached_translator.cleanup()
+            except Exception:
+                pass
+
+        translator = get_llm_translator_class()(**kwargs)
+        lazy_state["llm_translator_instance"] = translator
+        lazy_state["llm_translator_signature"] = signature
+        return translator
+
+    def preserve_translator_runtime(_translator):
+        return None
 
     def get_media_workflows():
         if lazy_state["media_workflows"] is None:
@@ -245,7 +272,8 @@ def build_execution_services(context: ExecutionServiceFactoryContext) -> Executi
         return get_translation_workflow()(
             input_text_or_json,
             target_lang,
-            translator_factory=get_llm_translator_class(),
+            translator_factory=get_shared_translator,
+            cleanup_translator=preserve_translator_runtime,
             exception_result=context.observability.exception_result,
             emit_stage=context.observability.emit_stage,
             emit_progress=context.observability.emit_progress,
@@ -277,7 +305,10 @@ def build_execution_services(context: ExecutionServiceFactoryContext) -> Executi
             logging=context.runtime.logging_module,
             log_business=context.observability.log_business,
             emit_stage=context.observability.emit_stage,
-            get_llm_translator_class=get_llm_translator_class,
+            emit_progress=context.observability.emit_progress,
+            emit_partial_result=context.observability.emit_partial_result,
+            translator_factory=get_shared_translator,
+            cleanup_translator=preserve_translator_runtime,
             get_tts_runner=get_tts_runner,
             run_asr=run_asr,
             get_audio_duration=get_audio_duration,

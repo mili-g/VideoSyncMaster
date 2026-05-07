@@ -80,7 +80,10 @@ _INDEXTTS_INSTANCE_LOCK = threading.Lock()
 
 
 def _should_keep_indextts_instance():
-    return os.getenv("INDEXTTS_KEEP_INSTANCE", "").strip() == "1"
+    configured = os.getenv("INDEXTTS_KEEP_INSTANCE", "").strip().lower()
+    if configured in {"0", "false", "no", "off"}:
+        return False
+    return True
 
 
 def get_indextts_runtime_status():
@@ -881,6 +884,10 @@ def _cleanup_indextts_instance():
             log_error(logger, "Failed to clear IndexTTS VRAM cache", event="vram_clear_failed", stage="cleanup", detail=str(cleanup_error))
 
 
+def cleanup_indextts_runtime():
+    _cleanup_indextts_instance()
+
+
 def _get_indextts_instance(model_dir=None, config_path=None):
     global _INDEXTTS_INSTANCE, _INDEXTTS_INSTANCE_KEY
 
@@ -1125,103 +1132,16 @@ def run_batch_tts(tasks, model_dir=None, config_path=None, language="English", *
                 item_total=progress_total
             )
 
-        dynamic_buckets = _build_dynamic_batch_buckets(batchable_tasks, adaptive_batch_size)
-
-        if dynamic_buckets and not _should_use_indextts_true_batch(adaptive_batch_size):
-            log_business(logger, logging.WARNING, "True batch disabled due to CUDA instability; falling back to sequential mode", event="true_batch_disabled", stage="batch_tts")
-            sequential_tasks = [entry["task"] for bucket in dynamic_buckets for entry in bucket] + sequential_tasks
-            dynamic_buckets = []
-
-        if dynamic_buckets and _should_use_indextts_true_batch(adaptive_batch_size):
-            for batch_entries in dynamic_buckets:
-                batch_start_position = processed + 1
-                batch_end_position = min(processed + len(batch_entries), total)
-                display_start_position = min(progress_completed_offset + batch_start_position, progress_total) if progress_total else batch_start_position
-                display_end_position = min(progress_completed_offset + batch_end_position, progress_total) if progress_total else batch_end_position
-                token_counts = [entry["token_count"] for entry in batch_entries]
-                frame_counts = [entry["estimated_frames"] for entry in batch_entries]
-                emit_progress(
-                    "generate_batch_tts",
-                    "tts_generate",
-                    int((progress_completed_offset + processed) / progress_total * 100) if progress_total else 0,
-                    f"第 {display_start_position}-{display_end_position}/{progress_total} 条批量生成中",
-                    stage_label="正在生成配音",
-                    item_index=display_start_position,
-                    item_total=progress_total,
-                    detail=(
-                        f"IndexTTS bucket x{len(batch_entries)} | "
-                        f"tokens {min(token_counts)}-{max(token_counts)} | "
-                        f"frames {min(frame_counts)}-{max(frame_counts)} | "
-                        f"batch {adaptive_batch_size}"
-                    )
+        if batchable_tasks:
+            sequential_tasks = [entry["task"] for entry in batchable_tasks] + sequential_tasks
+            if requested_batch_size > 1:
+                log_business(
+                    logger,
+                    logging.INFO,
+                    "IndexTTS true batch is disabled; using sequential mode on the active GPU",
+                    event="true_batch_disabled",
+                    stage="batch_tts"
                 )
-                try:
-                    batch_started_at = time.perf_counter()
-                    batch_results = _run_indextts_true_batch(tts, batch_entries, runtime_kwargs, reference_cache)
-                    batch_elapsed_ms = (time.perf_counter() - batch_started_at) * 1000.0
-                    success_count = sum(1 for result in batch_results if result.get("success"))
-                    output_duration_total = sum(float(result.get("duration") or 0.0) for result in batch_results if result.get("success"))
-                    bucket_rtf = (batch_elapsed_ms / 1000.0) / max(output_duration_total, 0.001)
-                    print(
-                        f"[TTSTiming] mode=true_batch size={len(batch_entries)} success={success_count}/{len(batch_entries)} "
-                        f"total={batch_elapsed_ms:.0f}ms audio={output_duration_total:.2f}s rtf={bucket_rtf:.3f}"
-                    )
-                except Exception as batch_error:
-                    _handle_fatal_indextts_cuda_error(batch_error, "true_batch")
-                    log_error(logger, "True batch execution failed; falling back to single inference", event="true_batch_failed", stage="batch_tts", detail=str(batch_error))
-                    batch_results = []
-                    for entry in batch_entries:
-                        task = entry["task"]
-                        normalized_text = entry.get("normalized_text") or _normalize_indextts_text(task["text"])
-                        try:
-                            duration, retry_mode = _run_indextts_with_safe_retry(
-                                tts,
-                                ref_audio_path=task["ref_audio_path"],
-                                text=task["text"],
-                                normalized_text=normalized_text,
-                                output_path=task["output_path"],
-                                kwargs=runtime_kwargs,
-                                target_duration=task.get("duration"),
-                                verbose=False
-                            )
-                            batch_results.append({
-                                "index": task.get("index"),
-                                "success": True,
-                                "audio_path": task["output_path"],
-                                "duration": duration,
-                                "retry_mode": retry_mode
-                            })
-                        except Exception as single_error:
-                            _handle_fatal_indextts_cuda_error(single_error, "true_batch_fallback_single")
-                            error_result = {
-                                "index": task.get("index"),
-                                "success": False,
-                                "error": str(single_error)
-                            }
-                            if os.path.exists(task["output_path"]):
-                                error_result["audio_path"] = task["output_path"]
-                                try:
-                                    error_result["duration"] = sf.info(task["output_path"]).duration
-                                except Exception:
-                                    pass
-                            batch_results.append(error_result)
-
-                for result in batch_results:
-                    item_position = processed + 1
-                    if not result.get("success"):
-                        emit_issue(
-                            "generate_batch_tts",
-                            "tts_generate",
-                            "warn",
-                            "TTS_SEGMENT_FAILED",
-                            f"第 {item_position} 条配音生成失败",
-                            item_index=item_position,
-                            item_total=total,
-                            detail=str(result.get("error") or "Unknown batch failure"),
-                            suggestion="系统会继续处理后续片段，可稍后重试失败片段"
-                        )
-                    emit_task_result(result, item_position=item_position)
-                    yield result
 
         for task in sequential_tasks:
             text = task['text']

@@ -206,6 +206,25 @@ def get_qwen_tts_runtime_status():
 # { 'model_type': model_instance }
 # types: 'VoiceDesign', 'Base', 'CustomVoice'
 _loaded_models = {}
+
+
+def cleanup_qwen_tts_models():
+    global _loaded_models
+
+    for cache_key, model in list(_loaded_models.items()):
+        try:
+            del model
+        except Exception:
+            pass
+        _loaded_models.pop(cache_key, None)
+
+    if torch.cuda.is_available():
+        try:
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+
 QWEN_ALLOWED_GENERATION_KWARGS = {
     "pad_token_id",
     "max_new_tokens",

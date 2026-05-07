@@ -9,36 +9,6 @@ class TranslationStrategy(Protocol):
         ...
 
 
-class ExternalBatchTranslationStrategy:
-    def __init__(self, translator) -> None:
-        self._translator = translator
-
-    def translate(self, payload: list[dict[str, Any]] | str, target_lang: str) -> dict[str, Any]:
-        if isinstance(payload, str):
-            text = self._translator.translate(payload, target_lang)
-            _ensure_text(text, "Translation failed: empty translated text")
-            return {"success": True, "text": text}
-
-        print(f"Batch Translating {len(payload)} segments via External API to {target_lang}...")
-        texts_to_translate = [item.get("text", "") for item in payload]
-        translated_texts = self._translator.translate_batch(texts_to_translate, target_lang)
-        if len(translated_texts) != len(texts_to_translate):
-            raise RuntimeError(
-                f"Batch translation length mismatch. Expected {len(texts_to_translate)}, got {len(translated_texts)}"
-            )
-
-        translated_segments = []
-        for index, item in enumerate(payload):
-            translated_text = translated_texts[index]
-            _ensure_text(translated_text, f"Batch translation failed for segment {index + 1}: empty translated text")
-            new_item = item.copy()
-            new_item["text"] = translated_text
-            translated_segments.append(new_item)
-
-        print(f"Batch translation complete. Processed {len(translated_segments)} segments.")
-        return {"success": True, "segments": translated_segments}
-
-
 class SequentialTranslationStrategy:
     def __init__(self, translator, *, emit_stage, emit_progress, emit_partial_result) -> None:
         self._translator = translator
@@ -89,58 +59,6 @@ class SequentialTranslationStrategy:
         return {"success": True, "segments": translated_segments}
 
 
-class ChunkedBatchTranslationStrategy:
-    def __init__(self, translator, *, emit_stage, emit_progress, emit_partial_result) -> None:
-        self._translator = translator
-        self._emit_stage = emit_stage
-        self._emit_progress = emit_progress
-        self._emit_partial_result = emit_partial_result
-
-    def translate(self, payload: list[dict[str, Any]] | str, target_lang: str) -> dict[str, Any]:
-        if isinstance(payload, str):
-            text = self._translator.translate(payload, target_lang)
-            _ensure_text(text, "Translation failed: empty translated text")
-            return {"success": True, "text": text}
-
-        action_name = "translate_text"
-        print(f"Batch translating {len(payload)} segments to {target_lang}...")
-        self._emit_stage(
-            action_name,
-            "translate",
-            f"正在翻译 {len(payload)} 个片段到 {target_lang}",
-            stage_label="正在翻译字幕",
-        )
-
-        translated_segments = [item.copy() for item in payload]
-        pending_indexes = [index for index, item in enumerate(payload) if item.get("text", "")]
-        if not pending_indexes:
-            return {"success": True, "segments": translated_segments}
-
-        texts_to_translate = [str(payload[index].get("text", "")) for index in pending_indexes]
-        translated_texts = self._translator.translate_batch(texts_to_translate, target_lang)
-        if len(translated_texts) != len(texts_to_translate):
-            raise RuntimeError(
-                f"Batch translation length mismatch. Expected {len(texts_to_translate)}, got {len(translated_texts)}"
-            )
-
-        for translated_offset, item_index in enumerate(pending_indexes):
-            translated_text = translated_texts[translated_offset]
-            _ensure_text(translated_text, f"Translation failed for segment {item_index + 1}: empty translated text")
-            translated_segments[item_index]["text"] = translated_text
-            self._emit_partial_result(action_name, {"index": item_index, "text": translated_text})
-            self._emit_progress(
-                action_name,
-                "translate",
-                int((translated_offset + 1) / len(pending_indexes) * 100),
-                f"第 {translated_offset + 1}/{len(pending_indexes)} 条翻译中",
-                stage_label="正在翻译字幕",
-                item_index=translated_offset + 1,
-                item_total=len(pending_indexes),
-            )
-
-        return {"success": True, "segments": translated_segments}
-
-
 def _ensure_text(value: Any, message: str) -> None:
     if not isinstance(value, str) or not value.strip():
         raise RuntimeError(message)
@@ -151,12 +69,20 @@ def translate_text_workflow(
     target_lang,
     *,
     translator_factory,
+    cleanup_translator=None,
     exception_result,
     emit_stage,
     emit_progress,
     emit_partial_result,
     **translator_kwargs,
 ):
+    action_name = "translate_text"
+    emit_stage(
+        action_name,
+        "translate_init",
+        f"正在初始化翻译器并准备翻译到 {target_lang}",
+        stage_label="正在准备翻译",
+    )
     translator = translator_factory(**translator_kwargs)
     try:
         try:
@@ -164,21 +90,12 @@ def translate_text_workflow(
         except json.JSONDecodeError:
             payload = input_text_or_json
 
-        strategy: TranslationStrategy
-        if isinstance(payload, list):
-            strategy = SequentialTranslationStrategy(
-                translator,
-                emit_stage=emit_stage,
-                emit_progress=emit_progress,
-                emit_partial_result=emit_partial_result,
-            )
-        else:
-            strategy = SequentialTranslationStrategy(
-                translator,
-                emit_stage=emit_stage,
-                emit_progress=emit_progress,
-                emit_partial_result=emit_partial_result,
-            )
+        strategy = SequentialTranslationStrategy(
+            translator,
+            emit_stage=emit_stage,
+            emit_progress=emit_progress,
+            emit_partial_result=emit_partial_result,
+        )
         return strategy.translate(payload, target_lang)
     except Exception as error:
         return exception_result(
@@ -190,4 +107,7 @@ def translate_text_workflow(
             retryable=True,
         )
     finally:
-        translator.cleanup()
+        if callable(cleanup_translator):
+            cleanup_translator(translator)
+        else:
+            translator.cleanup()
