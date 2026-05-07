@@ -557,7 +557,7 @@ def merge_audios_to_video(video_path, audio_segments, output_path, strategy='aut
                 pass
 
 def get_rife_executable():
-    """Locate rife-ncnn-vulkan executable."""
+    """Locate rife-ncnn-vulkan executable and its model directory."""
     app_root = get_project_root(os.path.dirname(os.path.abspath(__file__)))
     models_root = get_models_root(app_root)
 
@@ -565,15 +565,17 @@ def get_rife_executable():
     
     rife_exe = None
     rife_model_path = None
+    executable_names = {"rife-ncnn-vulkan.exe", "rife-ncnn-vulkan"}
     
     for root in candidates:
         if os.path.exists(root):
             for dirpath, dirnames, filenames in os.walk(root):
                 for f in filenames:
-                    if f.lower() == 'rife-ncnn-vulkan.exe':
+                    if f.lower() in executable_names:
                         rife_exe = os.path.join(dirpath, f)
-                        if os.path.exists(os.path.join(dirpath, 'rife-v4.6')):
-                             rife_model_path = 'rife-v4.6'
+                        model_candidate = os.path.join(dirpath, 'rife-v4.6')
+                        if os.path.exists(model_candidate):
+                             rife_model_path = model_candidate
                         break
                 if rife_exe: break
         if rife_exe: break
@@ -589,6 +591,9 @@ def apply_rife_interpolation(input_path, output_path, target_duration):
     rife_exe, rife_model = get_rife_executable()
     if not rife_exe:
         print("[RIFE] Executable not found. Please download RIFE in Model Manager.")
+        return False
+    if not rife_model:
+        print("[RIFE] Model directory not found. Expected rife-v4.6 beside the executable.")
         return False
         
     try:
@@ -614,17 +619,9 @@ def apply_rife_interpolation(input_path, output_path, target_duration):
     
     print(f"[RIFE] Interpolating {input_path} ({orig_duration:.2f}s) to ~{target_duration:.2f}s. Factor={raw_factor:.2f}. Passes={pass_count}")
     
-    current_in = input_path
-    
-    import math
     import shutil
     import subprocess
     import uuid
-
-    rife_exe, rife_model = get_rife_executable()
-    if not rife_exe:
-        print("[RIFE] Executable not found. Please download RIFE in Model Manager.")
-        return False
         
     # Get video info
     try:
@@ -687,9 +684,11 @@ def apply_rife_interpolation(input_path, output_path, target_duration):
     os.makedirs(frames_out, exist_ok=True)
     
     success = False
+    rife_cwd = os.path.dirname(rife_exe)
     
     try:
         # 1. Extract Frames
+        print("[PROGRESS] 20", flush=True)
         print(f"  [RIFE] Extracting frames to {frames_in}...")
         stream = (
             ffmpeg
@@ -709,6 +708,7 @@ def apply_rife_interpolation(input_path, output_path, target_duration):
         if rife_model:
             cmd.extend(['-m', rife_model])
             
+        print("[PROGRESS] 35", flush=True)
         print(f"  [RIFE] Running interpolation (Target: {target_frames} frames)...")
         
         res = subprocess.run(
@@ -718,9 +718,13 @@ def apply_rife_interpolation(input_path, output_path, target_duration):
             stderr=subprocess.PIPE,
             text=True,
             encoding='utf-8', 
-            errors='replace'
+            errors='replace',
+            cwd=rife_cwd
         )
-        # print(res.stdout) 
+        generated_frames = [name for name in os.listdir(frames_out) if name.lower().endswith('.png')]
+        if not generated_frames:
+            print(f"  [RIFE] Process completed but generated no frames. stdout={res.stdout.strip()} stderr={res.stderr.strip()}")
+            return False
         
         # 3. Assemble Video
         # Input: Interpolated frames. 
@@ -729,6 +733,7 @@ def apply_rife_interpolation(input_path, output_path, target_duration):
         # Wait, if we keep 'fps', duration = target_frames / fps = (orig * scale) / fps = (time * fps * scale) / fps = time * scale = target_time.
         # Yes, keeping original FPS is correct for Slow Motion effect.
         
+        print("[PROGRESS] 75", flush=True)
         print(f"  [RIFE] Encoding result to {output_path}...")
         stream = (
             ffmpeg
@@ -737,6 +742,7 @@ def apply_rife_interpolation(input_path, output_path, target_duration):
         )
         run_ffmpeg(stream, quiet=True, overwrite_output=True)
         
+        print("[PROGRESS] 90", flush=True)
         success = True
         
     except subprocess.CalledProcessError as e:
@@ -856,6 +862,8 @@ def merge_video_advanced(video_path, audio_segments, output_path, strategy, audi
                      
                      rife_success = False
                      try:
+                         segment_progress = min(95, max(5, int((i / max(1, len(sorted_segments))) * 100)))
+                         print(f"[PROGRESS] {segment_progress}", flush=True)
                          stream = (
                             ffmpeg
                             .input(video_path, ss=effective_video_start, t=slot_dur)
@@ -872,6 +880,7 @@ def merge_video_advanced(video_path, audio_segments, output_path, strategy, audi
                          print(f"  [Seg {i}] RIFE prep failed: {e}")
                      
                      if not rife_success:
+                         print(f"  [Seg {i}] RIFE interpolation failed, falling back to setpts slow-down.")
                          v_filters.append(('setpts', [f"{scale_factor}*PTS"], {}))
             
             elif abs(scale_factor - 1.0) > 0.02:
