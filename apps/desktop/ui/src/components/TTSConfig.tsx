@@ -419,18 +419,18 @@ const TTSConfig: React.FC<TTSConfigProps> = ({ themeMode, activeService, onServi
                             desc="控制生成长度偏好。"
                         />
 
-                        <div style={{ marginBottom: '20px' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-                                <label style={{ fontWeight: 'bold' }}>Max Mel Tokens</label>
-                                <span style={{ fontWeight: 'bold', color: '#6366f1' }}>{maxMelTokens}</span>
+                        <div className="slider-row">
+                            <div className="slider-row__head">
+                                <label>Max Mel Tokens</label>
+                                <span>{maxMelTokens}</span>
                             </div>
                             <input
+                                className="field-control"
                                 type="number"
                                 value={maxMelTokens}
                                 onChange={(e) => setMaxMelTokens(parseInt(e.target.value))}
-                                style={{ width: '100%', padding: '8px', borderRadius: '4px', border: '1px solid #ccc', background: isLightMode ? '#fff' : '#333', color: isLightMode ? '#000' : '#fff' }}
                             />
-                            <p style={{ fontSize: '0.8em', color: isLightMode ? '#666' : '#aaa', margin: '5px 0 0 0' }}>控制单段生成长度上限。</p>
+                            <p className="control-hint">控制单段生成长度上限。</p>
                         </div>
 
                         <div className="form-actions" style={{ marginTop: '20px' }}>

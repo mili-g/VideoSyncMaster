@@ -278,14 +278,17 @@
 
 .status-chip,
 .status-kpi {
+  flex: 1 1 120px;
   min-width: 120px;
   padding: 10px 12px;
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(148, 163, 184, 0.14);
+  overflow-wrap: anywhere;
 }
 
 .status-chip--compact {
+  flex: 1 1 96px;
   min-width: 96px;
   padding: 8px 10px;
   border-radius: 10px;
@@ -306,8 +309,12 @@
 .status-chip strong,
 .status-kpi strong,
 .top-engine-chip strong {
+  display: block;
   color: #f8fbff;
   font-size: 14px;
+  line-height: 1.4;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .status-chip--accent {
@@ -388,6 +395,8 @@
 .output-dir-toolbar {
   justify-content: space-between;
   gap: 12px;
+  align-items: flex-start;
+  flex-wrap: wrap;
   padding: 12px 14px;
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.03);
@@ -415,24 +424,49 @@
 
 .output-dir-toolbar__value {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
   color: #f8fbff;
   font-size: 13px;
   font-weight: 600;
+  line-height: 1.5;
 }
 
 .output-dir-toolbar__actions {
+  display: flex;
   gap: 8px;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.output-dir-toolbar__actions .primary-button,
+.output-dir-toolbar__actions .secondary-button,
+.form-actions .primary-button,
+.form-actions .secondary-button,
+.readonly-input-row .primary-button,
+.readonly-input-row .secondary-button {
+  flex: 1 1 140px;
 }
 
 .primary-button,
 .secondary-button,
 .execution-console__button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
   border-radius: 10px;
   font-size: 13px;
   font-weight: 600;
+  line-height: 1.35;
+  text-align: center;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   cursor: pointer;
   transition: background 0.18s ease, border-color 0.18s ease, opacity 0.18s ease;
 }
@@ -773,6 +807,15 @@
   justify-content: space-between;
   gap: 16px;
   align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.config-section__head > * {
+  min-width: 0;
+}
+
+.config-section__head p {
+  overflow-wrap: anywhere;
 }
 
 .config-section h3,
@@ -793,6 +836,7 @@
   margin: 0;
   color: rgba(203, 213, 225, 0.76);
   line-height: 1.6;
+  overflow-wrap: anywhere;
 }
 
 .provider-list,
@@ -816,9 +860,11 @@
   display: inline-flex;
   flex-direction: column;
   align-items: flex-start;
+  justify-content: flex-start;
   gap: 3px;
   padding: 10px 12px;
-  min-width: 112px;
+  min-width: 0;
+  flex: 1 1 180px;
   border-radius: 12px;
   border: 1px solid rgba(148, 163, 184, 0.12);
   background: rgba(255, 255, 255, 0.03);
@@ -831,11 +877,17 @@
   color: #f8fbff;
   font-size: 13px;
   font-weight: 600;
+  line-height: 1.45;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .provider-tab small {
   color: rgba(148, 163, 184, 0.82);
   font-size: 11px;
+  line-height: 1.45;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .provider-tab--active {
@@ -868,8 +920,14 @@
 .provider-card__header {
   justify-content: space-between;
   gap: 12px;
-  align-items: center;
+  align-items: flex-start;
+  flex-wrap: wrap;
   margin-bottom: 8px;
+}
+
+.provider-card__header > *:first-child {
+  min-width: 0;
+  flex: 1 1 220px;
 }
 
 .provider-card__tag,
@@ -926,22 +984,27 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-width: 0;
 }
 
 .field-block span {
   color: #f8fbff;
   font-size: 14px;
   font-weight: 600;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .field-control {
   width: 100%;
+  min-width: 0;
   padding: 11px 12px;
   border-radius: 12px;
   border: 1px solid rgba(148, 163, 184, 0.16);
   background: rgba(2, 6, 23, 0.52);
   color: #f8fbff;
   outline: none;
+  box-sizing: border-box;
 }
 
 .tool-panel {
@@ -957,12 +1020,15 @@
   justify-content: space-between;
   gap: 14px;
   align-items: center;
+  flex-wrap: wrap;
 }
 
 .tool-toolbar__title {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  min-width: 0;
+  flex: 1 1 280px;
 }
 
 .tool-toolbar__title h2,
@@ -976,11 +1042,15 @@
   color: rgba(203, 213, 225, 0.72);
   font-size: 13px;
   line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .segmented-control {
   display: inline-flex;
   gap: 4px;
+  flex-wrap: wrap;
+  min-width: 0;
+  max-width: 100%;
   padding: 4px;
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.04);
@@ -994,7 +1064,11 @@
 .segmented-control__button {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  flex: 1 1 120px;
   padding: 8px 12px;
   border: none;
   border-radius: 9px;
@@ -1003,6 +1077,10 @@
   cursor: pointer;
   font-size: 13px;
   font-weight: 600;
+  line-height: 1.4;
+  text-align: center;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .segmented-control__button--active {
@@ -1036,6 +1114,7 @@
   color: rgba(203, 213, 225, 0.76);
   font-size: 13px;
   line-height: 1.55;
+  overflow-wrap: anywhere;
 }
 
 .dense-grid {
@@ -1053,12 +1132,14 @@
   gap: 10px;
   justify-content: flex-end;
   flex-wrap: wrap;
+  align-items: stretch;
 }
 
 .readonly-input-row {
   display: flex;
   gap: 10px;
   align-items: center;
+  flex-wrap: wrap;
 }
 
 .readonly-input-row__field {
@@ -1069,12 +1150,15 @@
 
 .readonly-input {
   width: 100%;
+  min-width: 0;
   padding: 11px 34px 11px 12px;
   border-radius: 12px;
   border: 1px solid rgba(148, 163, 184, 0.16);
   background: rgba(2, 6, 23, 0.35);
   color: rgba(241, 245, 249, 0.92);
   box-sizing: border-box;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .inline-clear {
@@ -1093,12 +1177,16 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  max-width: 100%;
   padding: 6px 10px;
   border-radius: 999px;
   background: rgba(16, 185, 129, 0.12);
   color: #bbf7d0;
   font-size: 12px;
   font-weight: 600;
+  line-height: 1.45;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .status-inline--warn {
@@ -1134,6 +1222,7 @@
   justify-content: space-between;
   gap: 10px;
   align-items: center;
+  flex-wrap: wrap;
 }
 
 .slider-row__head label,
@@ -1141,6 +1230,8 @@
   color: #f8fbff;
   font-size: 13px;
   font-weight: 600;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .tool-textarea {
@@ -1193,6 +1284,7 @@
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.03);
   border: 1px dashed rgba(148, 163, 184, 0.18);
+  overflow-wrap: anywhere;
 }
 
 .config-page__footer {
@@ -1204,10 +1296,12 @@
   justify-content: space-between;
   gap: 14px;
   align-items: center;
+  flex-wrap: wrap;
 }
 
 .model-root-card {
   flex: 1;
+  min-width: 0;
 }
 
 .model-root-card__label {
@@ -1255,6 +1349,16 @@
   flex-wrap: wrap;
 }
 
+.model-card__header > *:first-child {
+  min-width: 0;
+  flex: 1 1 220px;
+}
+
+.model-card__header h4,
+.model-card__header p {
+  overflow-wrap: anywhere;
+}
+
 .model-meta-list {
   display: grid;
   gap: 10px;
@@ -1269,16 +1373,25 @@
   font-size: 13px;
 }
 
+.model-meta-item span {
+  flex: 0 0 72px;
+  min-width: 0;
+  line-height: 1.5;
+}
+
 .model-meta-item strong {
   color: #f8fbff;
   font-size: 13px;
   font-weight: 600;
+  flex: 1 1 auto;
   text-align: right;
   min-width: 0;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .model-meta-item--path strong {
-  max-width: 65%;
+  max-width: none;
   overflow-wrap: anywhere;
   white-space: normal;
 }
@@ -1371,9 +1484,11 @@
 }
 
 .model-status-pill {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
   max-width: 100%;
-  white-space: nowrap;
+  white-space: normal;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .delivery-panel {

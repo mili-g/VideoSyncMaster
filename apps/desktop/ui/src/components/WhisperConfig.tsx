@@ -52,10 +52,10 @@ const WhisperConfig: React.FC<WhisperConfigProps> = ({ themeMode }) => {
     };
 
     const SliderControl = ({ label, value, setValue, min, max, step, desc }: SliderControlProps) => (
-        <div style={{ marginBottom: '20px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-                <label style={{ fontWeight: 'bold' }}>{label}</label>
-                <span style={{ fontWeight: 'bold', color: '#6366f1' }}>{value.toFixed(3)}</span>
+        <div className="slider-row">
+            <div className="slider-row__head">
+                <label>{label}</label>
+                <span>{value.toFixed(3)}</span>
             </div>
             <input
                 type="range"
@@ -66,19 +66,23 @@ const WhisperConfig: React.FC<WhisperConfigProps> = ({ themeMode }) => {
                 onChange={(e) => setValue(parseFloat(e.target.value))}
                 style={{ width: '100%', cursor: 'pointer' }}
             />
-            {desc && <p style={{ fontSize: '0.8em', color: isLightMode ? '#666' : '#aaa', margin: '5px 0 0 0' }}>{desc}</p>}
+            {desc && <p className="control-hint">{desc}</p>}
         </div>
     );
 
     return (
-        <div style={{ padding: '20px', height: '100%', overflowY: 'auto', color: isLightMode ? '#333' : '#fff' }}>
-            <h2 style={{ marginBottom: '20px', color: isLightMode ? '#000' : '#fff' }}>🎙️ Whisper VAD 配置</h2>
+        <div className="tool-panel" style={{ padding: '20px', height: '100%', overflowY: 'auto', color: isLightMode ? '#333' : '#fff' }}>
+            <div className="tool-toolbar">
+                <div className="tool-toolbar__title">
+                    <h3>Whisper VAD 配置</h3>
+                    <p>调整语音活动检测灵敏度，控制语音与静音的切分方式。</p>
+                </div>
+            </div>
 
-            <p style={{ marginBottom: '20px', fontSize: '0.9em', color: isLightMode ? '#666' : '#aaa' }}>
-                调整语音活动检测（VAD）的灵敏度。这些设置决定了 Whisper 如何在音频中分割语音和静音。
-            </p>
-
-            <div className="glass-panel" style={{ padding: '20px', marginBottom: '20px', background: isLightMode ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.05)' }}>
+            <div
+                className="config-section"
+                style={{ background: isLightMode ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.05)' }}
+            >
                 <SliderControl
                     label="VAD Onset (开始阈值)"
                     value={vadOnset}
@@ -99,34 +103,18 @@ const WhisperConfig: React.FC<WhisperConfigProps> = ({ themeMode }) => {
                 />
             </div>
 
-            <div style={{ marginTop: '30px', display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+            <div className="form-actions" style={{ marginTop: '8px' }}>
                 <button
                     onClick={handleReset}
-                    style={{
-                        padding: '10px 24px',
-                        background: '#ef4444',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '4px',
-                        cursor: 'pointer',
-                        fontWeight: 'bold'
-                    }}
+                    className="secondary-button secondary-button--danger"
                 >
-                    ↺ 恢复默认
+                    恢复默认
                 </button>
                 <button
                     onClick={handleSave}
-                    style={{
-                        padding: '10px 24px',
-                        background: '#10b981',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '4px',
-                        cursor: 'pointer',
-                        fontWeight: 'bold'
-                    }}
+                    className="primary-button"
                 >
-                    💾 保存配置
+                    保存配置
                 </button>
             </div>
 
