@@ -253,12 +253,19 @@
 
 .workspace-command-strip__engines {
   gap: 8px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   justify-content: flex-end;
+  align-items: stretch;
+  flex: 0 1 auto;
 }
 
 .workspace-command-strip__action {
   flex: 0 0 auto;
+}
+
+.workspace-topbar .workspace-command-strip__engines .status-chip {
+  flex: 0 0 auto;
+  min-width: 112px;
 }
 
 .workspace-topbar h1,
@@ -377,6 +384,10 @@
   align-items: center;
 }
 
+.workspace-topbar .workspace-utility-row {
+  align-items: stretch;
+}
+
 .top-engine-chip {
   align-items: center;
   gap: 14px;
@@ -407,6 +418,10 @@
   padding: 8px 10px;
   border-radius: 12px;
   flex: 1 1 420px;
+}
+
+.workspace-topbar .output-dir-toolbar--compact {
+  flex: 1 1 auto;
 }
 
 .output-dir-toolbar__path {
@@ -441,6 +456,12 @@
   min-width: 0;
 }
 
+.workspace-topbar .output-dir-toolbar__actions {
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  align-items: center;
+}
+
 .output-dir-toolbar__actions .primary-button,
 .output-dir-toolbar__actions .secondary-button,
 .form-actions .primary-button,
@@ -448,6 +469,14 @@
 .readonly-input-row .primary-button,
 .readonly-input-row .secondary-button {
   flex: 1 1 140px;
+}
+
+.workspace-topbar .output-dir-toolbar__actions .primary-button,
+.workspace-topbar .output-dir-toolbar__actions .secondary-button,
+.workspace-topbar .workspace-command-strip__action .primary-button,
+.workspace-topbar .workspace-command-strip__action .secondary-button {
+  flex: 0 0 auto;
+  min-width: 136px;
 }
 
 .primary-button,
