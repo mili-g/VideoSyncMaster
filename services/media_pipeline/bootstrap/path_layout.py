@@ -77,6 +77,21 @@ def get_storage_runtime_dir(project_root: str) -> str:
     return os.path.join(get_storage_root(project_root), "runtime")
 
 
+def get_runtime_root(project_root: str) -> str:
+    runtime_override = os.environ.get("VSM_RUNTIME_ROOT")
+    if runtime_override:
+        return os.path.abspath(runtime_override)
+
+    storage_runtime_dir = get_storage_runtime_dir(project_root)
+    project_runtime_dir = os.path.join(project_root, "runtime")
+    existing = first_existing_path(
+        candidate
+        for candidate in (storage_runtime_dir, project_runtime_dir)
+        if os.path.isdir(candidate)
+    )
+    return existing or storage_runtime_dir
+
+
 def get_models_root(project_root: str) -> str:
     models_override = os.environ.get("VSM_MODELS_ROOT")
     if models_override:
@@ -97,7 +112,9 @@ def get_app_runtime_dir(project_root: str) -> str:
 
 
 def get_runtime_overlay_dir(project_root: str, overlay_name: str) -> str:
+    runtime_root = get_runtime_root(project_root)
     candidates = [
+        os.path.join(runtime_root, "overlays", overlay_name),
         os.path.join(get_storage_runtime_dir(project_root), "overlays", overlay_name),
         os.path.join(get_app_runtime_dir(project_root), "overlays", overlay_name),
     ]
@@ -105,7 +122,9 @@ def get_runtime_overlay_dir(project_root: str, overlay_name: str) -> str:
 
 
 def get_runtime_python_dir(project_root: str) -> str:
+    runtime_root = get_runtime_root(project_root)
     candidates = [
+        os.path.join(runtime_root, "python"),
         os.path.join(get_storage_runtime_dir(project_root), "python"),
         os.path.join(project_root, "runtime", "python"),
         os.path.join(project_root, "python"),

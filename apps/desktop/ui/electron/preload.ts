@@ -57,6 +57,12 @@ contextBridge.exposeInMainWorld('api', {
   setModelRootSettings(payload: { modelsRoot?: string | null; useDefault?: boolean; migrateExisting?: boolean }) {
     return ipcRenderer.invoke('set-model-root-settings', payload)
   },
+  getRuntimeRootSettings() {
+    return ipcRenderer.invoke('get-runtime-root-settings')
+  },
+  setRuntimeRootSettings(payload: { runtimeRoot?: string | null; useDefault?: boolean; migrateExisting?: boolean }) {
+    return ipcRenderer.invoke('set-runtime-root-settings', payload)
+  },
   getRuntimeDownloadInfo() {
     return ipcRenderer.invoke('get-runtime-download-info')
   },

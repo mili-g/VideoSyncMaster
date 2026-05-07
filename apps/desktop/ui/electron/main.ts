@@ -29,12 +29,26 @@ interface ModelRootSettingsRecord {
   customModelsRoot?: string
 }
 
+interface RuntimeRootSettingsRecord {
+  customRuntimeRoot?: string
+}
+
 interface ResolvedModelsRootInfo {
   projectRoot: string
   modelsRoot: string
   defaultModelsRoot: string
   managedModelsRoot: string
   configuredModelsRoot: string | null
+  usingCustomRoot: boolean
+  protectedDefaultRoot: boolean
+}
+
+interface ResolvedRuntimeRootInfo {
+  projectRoot: string
+  runtimeRoot: string
+  defaultRuntimeRoot: string
+  managedRuntimeRoot: string
+  configuredRuntimeRoot: string | null
   usingCustomRoot: boolean
   protectedDefaultRoot: boolean
 }
@@ -688,6 +702,7 @@ function getPythonProcessEnv() {
   const projectRoot = getProjectRoot()
   const storageRoot = getStorageRoot(projectRoot)
   const { modelsRoot } = resolveModelsRoot(projectRoot)
+  const { runtimeRoot } = resolveRuntimeRoot(projectRoot)
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     PYTHONUTF8: '1',
@@ -698,7 +713,8 @@ function getPythonProcessEnv() {
     NUMBA_DISABLE_INTEL_SVML: '1',
     NUMBA_CPU_NAME: 'generic',
     VSM_STORAGE_ROOT: storageRoot,
-    VSM_MODELS_ROOT: modelsRoot
+    VSM_MODELS_ROOT: modelsRoot,
+    VSM_RUNTIME_ROOT: runtimeRoot
   }
 
   try {
@@ -839,6 +855,10 @@ function getModelRootSettingsPath(projectRoot = getProjectRoot()) {
   return path.join(getStorageRoot(projectRoot), 'config', 'model-root-settings.json')
 }
 
+function getRuntimeRootSettingsPath(projectRoot = getProjectRoot()) {
+  return path.join(getStorageRoot(projectRoot), 'config', 'runtime-root-settings.json')
+}
+
 function readModelRootSettings(projectRoot = getProjectRoot()): ModelRootSettingsRecord {
   const settingsPath = getModelRootSettingsPath(projectRoot)
   if (!fs.existsSync(settingsPath)) {
@@ -867,7 +887,43 @@ function writeModelRootSettings(settings: ModelRootSettingsRecord, projectRoot =
   fs.writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, 'utf-8')
 }
 
+function readRuntimeRootSettings(projectRoot = getProjectRoot()): RuntimeRootSettingsRecord {
+  const settingsPath = getRuntimeRootSettingsPath(projectRoot)
+  if (!fs.existsSync(settingsPath)) {
+    return {}
+  }
+
+  try {
+    const raw = fs.readFileSync(settingsPath, 'utf-8')
+    const parsed = JSON.parse(raw) as RuntimeRootSettingsRecord
+    return typeof parsed?.customRuntimeRoot === 'string'
+      ? { customRuntimeRoot: parsed.customRuntimeRoot }
+      : {}
+  } catch (error) {
+    logMainWarn('读取运行环境目录配置失败，回退默认目录', {
+      domain: 'runtime.env',
+      action: 'readRuntimeRootSettings',
+      detail: error instanceof Error ? error.message : String(error)
+    })
+    return {}
+  }
+}
+
+function writeRuntimeRootSettings(settings: RuntimeRootSettingsRecord, projectRoot = getProjectRoot()) {
+  const settingsPath = getRuntimeRootSettingsPath(projectRoot)
+  fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+  fs.writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, 'utf-8')
+}
+
 function normalizeConfiguredModelsRoot(candidate: string | null | undefined) {
+  const normalized = String(candidate || '').trim()
+  if (!normalized) {
+    return null
+  }
+  return path.resolve(normalized)
+}
+
+function normalizeConfiguredRuntimeRoot(candidate: string | null | undefined) {
   const normalized = String(candidate || '').trim()
   if (!normalized) {
     return null
@@ -930,6 +986,37 @@ function resolveModelsRoot(projectRoot = getProjectRoot()): ResolvedModelsRootIn
   }
 }
 
+function getDefaultRuntimeRoot(projectRoot = getProjectRoot()) {
+  if (app.isPackaged && process.env.PORTABLE_EXECUTABLE_DIR) {
+    return path.join(process.env.PORTABLE_EXECUTABLE_DIR, 'runtime')
+  }
+
+  const repoLikeRoot = path.join(projectRoot, 'runtime')
+  if (app.isPackaged && isProtectedInstallLocation(repoLikeRoot)) {
+    return getManagedRuntimeRoot(projectRoot)
+  }
+  return repoLikeRoot
+}
+
+function resolveRuntimeRoot(projectRoot = getProjectRoot()): ResolvedRuntimeRootInfo {
+  const managedRuntimeRoot = getManagedRuntimeRoot(projectRoot)
+  const defaultRuntimeRoot = getDefaultRuntimeRoot(projectRoot)
+  const configuredRuntimeRoot = normalizeConfiguredRuntimeRoot(
+    readRuntimeRootSettings(projectRoot).customRuntimeRoot
+  )
+  const runtimeRoot = configuredRuntimeRoot || defaultRuntimeRoot
+
+  return {
+    projectRoot,
+    runtimeRoot,
+    defaultRuntimeRoot,
+    managedRuntimeRoot,
+    configuredRuntimeRoot,
+    usingCustomRoot: Boolean(configuredRuntimeRoot),
+    protectedDefaultRoot: isProtectedInstallLocation(defaultRuntimeRoot)
+  }
+}
+
 function movePathSync(sourcePath: string, targetPath: string) {
   if (!fs.existsSync(sourcePath)) {
     return
@@ -982,14 +1069,18 @@ function migrateModelsRootContents(sourceRoot: string, targetRoot: string) {
 }
 
 function getRuntimeOverlayRoot(overlayName: string, projectRoot = getProjectRoot()) {
+  const { runtimeRoot } = resolveRuntimeRoot(projectRoot)
   return resolveFirstExistingPath([
+    path.join(runtimeRoot, 'overlays', overlayName),
     path.join(getManagedRuntimeRoot(projectRoot), 'overlays', overlayName),
     path.join(projectRoot, 'runtime', 'overlays', overlayName)
   ])
 }
 
 function getPythonRoot(projectRoot = getProjectRoot()) {
+  const { runtimeRoot } = resolveRuntimeRoot(projectRoot)
   return resolveFirstExistingPath([
+    path.join(runtimeRoot, 'python'),
     path.join(getManagedRuntimeRoot(projectRoot), 'python'),
     path.join(projectRoot, 'runtime', 'python'),
     path.join(projectRoot, 'python')
@@ -997,10 +1088,11 @@ function getPythonRoot(projectRoot = getProjectRoot()) {
 }
 
 function getManagedPythonLocationHint(projectRoot = getProjectRoot()) {
-  return [
+  return Array.from(new Set([
+    path.join(resolveRuntimeRoot(projectRoot).runtimeRoot, 'python'),
     path.join(getManagedRuntimeRoot(projectRoot), 'python'),
     getPythonLocationHint(projectRoot)
-  ].join(' 或 ')
+  ])).join(' 或 ')
 }
 
 function getPythonLocationHint(projectRoot = getProjectRoot()) {
@@ -1032,11 +1124,11 @@ const MANAGED_RUNTIME_PATCH_NAMES = [
 ]
 
 function getManagedRuntimeStatePath(projectRoot = getProjectRoot()) {
-  return path.join(getManagedRuntimeRoot(projectRoot), MANAGED_RUNTIME_STATE_FILE)
+  return path.join(resolveRuntimeRoot(projectRoot).runtimeRoot, MANAGED_RUNTIME_STATE_FILE)
 }
 
 function getManagedRuntimePythonRoot(projectRoot = getProjectRoot()) {
-  return path.join(getManagedRuntimeRoot(projectRoot), 'python')
+  return path.join(resolveRuntimeRoot(projectRoot).runtimeRoot, 'python')
 }
 
 function getManagedRuntimePythonExe(projectRoot = getProjectRoot()) {
@@ -1263,6 +1355,7 @@ function ensureEmbeddedPythonSiteEnabled(pythonRoot: string) {
 
 function getBootstrapPythonEnv(projectRoot = getProjectRoot()): NodeJS.ProcessEnv {
   const { modelsRoot } = resolveModelsRoot(projectRoot)
+  const { runtimeRoot } = resolveRuntimeRoot(projectRoot)
   return {
     ...process.env,
     PYTHONUTF8: '1',
@@ -1270,7 +1363,8 @@ function getBootstrapPythonEnv(projectRoot = getProjectRoot()): NodeJS.ProcessEn
     PYTHONIOENCODING: 'utf-8',
     SETUPTOOLS_USE_DISTUTILS: 'stdlib',
     VSM_STORAGE_ROOT: getStorageRoot(projectRoot),
-    VSM_MODELS_ROOT: modelsRoot
+    VSM_MODELS_ROOT: modelsRoot,
+    VSM_RUNTIME_ROOT: runtimeRoot
   }
 }
 
@@ -1393,7 +1487,7 @@ async function runProcessWithLogs(
 
 async function installManagedPythonRuntime() {
   const projectRoot = getProjectRoot()
-  const runtimeRoot = getManagedRuntimeRoot(projectRoot)
+  const runtimeRoot = resolveRuntimeRoot(projectRoot).runtimeRoot
   if (isManagedPythonRuntimeReady(projectRoot)) {
     return { success: true, installed: false }
   }
@@ -1815,6 +1909,7 @@ if (!singleInstanceLock) {
 function getAppPaths() {
   const projectRoot = getProjectRoot()
   const modelsInfo = resolveModelsRoot(projectRoot)
+  const runtimeInfo = resolveRuntimeRoot(projectRoot)
   return {
     projectRoot,
     outputDir: getDefaultOutputDir(),
@@ -1825,7 +1920,12 @@ function getAppPaths() {
     defaultModelsRoot: modelsInfo.defaultModelsRoot,
     configuredModelsRoot: modelsInfo.configuredModelsRoot,
     usingCustomModelsRoot: modelsInfo.usingCustomRoot,
-    protectedDefaultModelsRoot: modelsInfo.protectedDefaultRoot
+    protectedDefaultModelsRoot: modelsInfo.protectedDefaultRoot,
+    runtimeRoot: runtimeInfo.runtimeRoot,
+    defaultRuntimeRoot: runtimeInfo.defaultRuntimeRoot,
+    configuredRuntimeRoot: runtimeInfo.configuredRuntimeRoot,
+    usingCustomRuntimeRoot: runtimeInfo.usingCustomRoot,
+    protectedDefaultRuntimeRoot: runtimeInfo.protectedDefaultRoot
   }
 }
 
@@ -2954,6 +3054,70 @@ app.whenReady().then(async () => {
         defaultRoot: updated.defaultModelsRoot,
         managedRoot: updated.managedModelsRoot,
         configuredRoot: updated.configuredModelsRoot,
+        usingCustomRoot: updated.usingCustomRoot,
+        protectedDefaultRoot: updated.protectedDefaultRoot
+      }
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error)
+      }
+    }
+  })
+
+  ipcMain.handle('get-runtime-root-settings', async () => {
+    const resolved = resolveRuntimeRoot()
+    return {
+      success: true,
+      root: resolved.runtimeRoot,
+      defaultRoot: resolved.defaultRuntimeRoot,
+      managedRoot: resolved.managedRuntimeRoot,
+      configuredRoot: resolved.configuredRuntimeRoot,
+      usingCustomRoot: resolved.usingCustomRoot,
+      protectedDefaultRoot: resolved.protectedDefaultRoot
+    }
+  })
+
+  ipcMain.handle('set-runtime-root-settings', async (_event, payload) => {
+    void _event
+    try {
+      const projectRoot = getProjectRoot()
+      const current = resolveRuntimeRoot(projectRoot)
+      const requestedRoot = normalizeConfiguredRuntimeRoot(payload?.runtimeRoot)
+      const useDefault = payload?.useDefault === true || !requestedRoot
+      const nextConfiguredRoot = useDefault ? null : requestedRoot
+      const nextResolvedRoot = nextConfiguredRoot || current.defaultRuntimeRoot
+
+      if (nextConfiguredRoot && !path.isAbsolute(nextConfiguredRoot)) {
+        return { success: false, error: '运行环境目录必须是绝对路径。' }
+      }
+
+      if (isProtectedInstallLocation(nextResolvedRoot)) {
+        return { success: false, error: '目标目录位于 Program Files 等受保护位置，无法直接写入。请选择用户可写目录。' }
+      }
+
+      if (current.runtimeRoot !== nextResolvedRoot) {
+        await terminateTrackedChildProcesses()
+      }
+
+      fs.mkdirSync(nextResolvedRoot, { recursive: true })
+
+      if (payload?.migrateExisting === true) {
+        migrateModelsRootContents(current.runtimeRoot, nextResolvedRoot)
+      }
+
+      writeRuntimeRootSettings(
+        nextConfiguredRoot ? { customRuntimeRoot: nextConfiguredRoot } : {},
+        projectRoot
+      )
+
+      const updated = resolveRuntimeRoot(projectRoot)
+      return {
+        success: true,
+        root: updated.runtimeRoot,
+        defaultRoot: updated.defaultRuntimeRoot,
+        managedRoot: updated.managedRuntimeRoot,
+        configuredRoot: updated.configuredRuntimeRoot,
         usingCustomRoot: updated.usingCustomRoot,
         protectedDefaultRoot: updated.protectedDefaultRoot
       }
@@ -4658,14 +4822,17 @@ print("SUCCESS", flush=True)
 
   // Helper to resolve python path (refactored from download-model)
   function getPythonExe(projectRoot: string) {
+    const resolvedRuntimeRoot = resolveRuntimeRoot(projectRoot).runtimeRoot
     const candidates = app.isPackaged
       ? [
+          path.join(resolvedRuntimeRoot, 'python', 'python.exe'),
           path.join(getManagedRuntimeRoot(projectRoot), 'python', 'python.exe'),
           path.join(process.resourcesPath, 'python', 'python.exe'),
           path.join(projectRoot, 'runtime', 'python', 'python.exe'),
           path.join(projectRoot, 'python', 'python.exe')
         ]
       : [
+          path.join(resolvedRuntimeRoot, 'python', 'python.exe'),
           path.join(projectRoot, 'runtime', 'python', 'python.exe'),
           path.join(projectRoot, 'python', 'python.exe')
         ]

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import ConfirmDialog from './ConfirmDialog';
-import type { BackendResponseBase, ModelDownloadProgressEvent, ModelRootSettingsResponse, ModelStatusResponse } from '../types/backend';
+import type { BackendResponseBase, ModelDownloadProgressEvent, ModelRootSettingsResponse, ModelStatusResponse, RuntimeRootSettingsResponse } from '../types/backend';
 
 interface ModelStatus {
     faster_whisper_runtime: boolean;
@@ -268,6 +268,14 @@ const ModelManager: React.FC<ModelManagerProps> = ({ onStatusChange, onFeedback 
     const [protectedDefaultModelsRoot, setProtectedDefaultModelsRoot] = useState(false);
     const [pendingModelsRoot, setPendingModelsRoot] = useState('');
     const [applyingModelsRoot, setApplyingModelsRoot] = useState(false);
+    const [runtimeRoot, setRuntimeRoot] = useState('');
+    const [defaultRuntimeRoot, setDefaultRuntimeRoot] = useState('');
+    const [configuredRuntimeRoot, setConfiguredRuntimeRoot] = useState('');
+    const [managedRuntimeRoot, setManagedRuntimeRoot] = useState('');
+    const [usingCustomRuntimeRoot, setUsingCustomRuntimeRoot] = useState(false);
+    const [protectedDefaultRuntimeRoot, setProtectedDefaultRuntimeRoot] = useState(false);
+    const [pendingRuntimeRoot, setPendingRuntimeRoot] = useState('');
+    const [applyingRuntimeRoot, setApplyingRuntimeRoot] = useState(false);
     const [loading, setLoading] = useState(true);
     const [downloadTasks, setDownloadTasks] = useState<Record<string, DownloadTaskState>>({});
     const [localFeedback, setLocalFeedback] = useState<{ title: string; message: string; type: 'success' | 'error' } | null>(null);
@@ -299,6 +307,30 @@ const ModelManager: React.FC<ModelManagerProps> = ({ onStatusChange, onFeedback 
         try {
             const result = await window.api.getModelRootSettings() as ModelRootSettingsResponse;
             applyModelRootSettings(result);
+        } catch (error) {
+            console.error(error);
+        }
+    };
+
+    const applyRuntimeRootSettings = (result: RuntimeRootSettingsResponse | null | undefined) => {
+        if (!result?.success) {
+            return;
+        }
+        const resolvedRoot = result.root || '';
+        const configuredRoot = result.configuredRoot || '';
+        setRuntimeRoot(resolvedRoot);
+        setDefaultRuntimeRoot(result.defaultRoot || '');
+        setConfiguredRuntimeRoot(configuredRoot);
+        setManagedRuntimeRoot(result.managedRoot || '');
+        setUsingCustomRuntimeRoot(Boolean(result.usingCustomRoot));
+        setProtectedDefaultRuntimeRoot(Boolean(result.protectedDefaultRoot));
+        setPendingRuntimeRoot(configuredRoot || resolvedRoot);
+    };
+
+    const loadRuntimeRootSettings = async () => {
+        try {
+            const result = await window.api.getRuntimeRootSettings() as RuntimeRootSettingsResponse;
+            applyRuntimeRootSettings(result);
         } catch (error) {
             console.error(error);
         }
@@ -348,6 +380,7 @@ const ModelManager: React.FC<ModelManagerProps> = ({ onStatusChange, onFeedback 
     useEffect(() => {
         void checkStatus();
         void loadModelRootSettings();
+        void loadRuntimeRootSettings();
     }, []);
 
     useEffect(() => {
@@ -592,6 +625,101 @@ const ModelManager: React.FC<ModelManagerProps> = ({ onStatusChange, onFeedback 
         }
     };
 
+    const handlePickRuntimeRoot = async () => {
+        try {
+            const result = await window.api.openFileDialog({
+                properties: ['openDirectory'],
+                title: '选择运行环境根目录'
+            });
+            if (!result.canceled && result.filePaths && result.filePaths.length > 0) {
+                setPendingRuntimeRoot(result.filePaths[0]);
+            }
+        } catch (error) {
+            console.error(error);
+        }
+    };
+
+    const handleApplyRuntimeRoot = async (migrateExisting: boolean) => {
+        const targetRoot = pendingRuntimeRoot.trim();
+        if (!targetRoot) {
+            notify({
+                title: '目录无效',
+                message: '请先选择或输入一个可写的运行环境根目录。',
+                type: 'error'
+            });
+            return;
+        }
+
+        setApplyingRuntimeRoot(true);
+        try {
+            const result = await window.api.setRuntimeRootSettings({
+                runtimeRoot: targetRoot,
+                migrateExisting
+            }) as RuntimeRootSettingsResponse;
+
+            if (!result.success) {
+                notify({
+                    title: '运行环境目录切换失败',
+                    message: result.error || '未知错误',
+                    type: 'error'
+                });
+                return;
+            }
+
+            applyRuntimeRootSettings(result);
+            await checkStatus();
+            notify({
+                title: migrateExisting ? '迁移完成' : '目录已更新',
+                message: migrateExisting
+                    ? '运行环境根目录已切换，并已将旧目录内容迁移到新目录。'
+                    : '运行环境根目录已切换，后续运行时修复、安装和状态检测将使用新目录。',
+                type: 'success'
+            });
+        } catch (error) {
+            notify({
+                title: '运行环境目录切换失败',
+                message: error instanceof Error ? error.message : String(error),
+                type: 'error'
+            });
+        } finally {
+            setApplyingRuntimeRoot(false);
+        }
+    };
+
+    const handleResetRuntimeRoot = async () => {
+        setApplyingRuntimeRoot(true);
+        try {
+            const result = await window.api.setRuntimeRootSettings({
+                useDefault: true
+            }) as RuntimeRootSettingsResponse;
+
+            if (!result.success) {
+                notify({
+                    title: '恢复默认运行环境目录失败',
+                    message: result.error || '未知错误',
+                    type: 'error'
+                });
+                return;
+            }
+
+            applyRuntimeRootSettings(result);
+            await checkStatus();
+            notify({
+                title: '已恢复默认目录',
+                message: '运行环境目录已恢复为默认解析位置。',
+                type: 'success'
+            });
+        } catch (error) {
+            notify({
+                title: '恢复默认运行环境目录失败',
+                message: error instanceof Error ? error.message : String(error),
+                type: 'error'
+            });
+        } finally {
+            setApplyingRuntimeRoot(false);
+        }
+    };
+
     const groupedModels = useMemo(() => {
         return {
             asr: modelCatalog.filter((item) => item.group === 'asr'),
@@ -740,6 +868,11 @@ const ModelManager: React.FC<ModelManagerProps> = ({ onStatusChange, onFeedback 
                     <strong title={modelsRoot || '正在检测...'}>{modelsRoot || '正在检测...'}</strong>
                     <small>未内置的模型与依赖将在此目录统一管理，并供主应用按需调用。</small>
                 </div>
+                <div className="model-root-card">
+                    <span className="model-root-card__label">运行环境根目录</span>
+                    <strong title={runtimeRoot || '正在检测...'}>{runtimeRoot || '正在检测...'}</strong>
+                    <small>Python 运行时、共享 overlay 和运行时修复状态将在此目录统一管理。</small>
+                </div>
                 <button type="button" className="secondary-button" onClick={() => void checkStatus()} disabled={hasActiveDownloads}>
                     刷新状态
                 </button>
@@ -788,16 +921,74 @@ const ModelManager: React.FC<ModelManagerProps> = ({ onStatusChange, onFeedback 
                     </div>
                 </div>
                 <div className="form-actions">
-                    <button type="button" className="secondary-button" onClick={() => void handlePickModelsRoot()} disabled={applyingModelsRoot || hasActiveDownloads}>
+                    <button type="button" className="secondary-button" onClick={() => void handlePickModelsRoot()} disabled={applyingModelsRoot || applyingRuntimeRoot || hasActiveDownloads}>
                         选择目录
                     </button>
-                    <button type="button" className="secondary-button" onClick={() => void handleApplyModelsRoot(false)} disabled={applyingModelsRoot || hasActiveDownloads}>
+                    <button type="button" className="secondary-button" onClick={() => void handleApplyModelsRoot(false)} disabled={applyingModelsRoot || applyingRuntimeRoot || hasActiveDownloads}>
                         仅切换目录
                     </button>
-                    <button type="button" className="primary-button" onClick={() => void handleApplyModelsRoot(true)} disabled={applyingModelsRoot || hasActiveDownloads}>
+                    <button type="button" className="primary-button" onClick={() => void handleApplyModelsRoot(true)} disabled={applyingModelsRoot || applyingRuntimeRoot || hasActiveDownloads}>
                         迁移并切换
                     </button>
-                    <button type="button" className="secondary-button" onClick={() => void handleResetModelsRoot()} disabled={applyingModelsRoot || hasActiveDownloads}>
+                    <button type="button" className="secondary-button" onClick={() => void handleResetModelsRoot()} disabled={applyingModelsRoot || applyingRuntimeRoot || hasActiveDownloads}>
+                        恢复默认
+                    </button>
+                </div>
+            </section>
+
+            <section className="config-section">
+                <div className="config-section__head">
+                    <div>
+                        <h3>运行环境目录管理</h3>
+                        <p>Python 运行环境、运行时 overlay 和修复状态与用户数据分离管理。建议与模型目录放在同一块大容量磁盘，例如同一父目录下的 <code>models</code> 和 <code>runtime</code>。</p>
+                    </div>
+                </div>
+                <div className="field-grid">
+                    <div className="field-block">
+                        <span>当前生效目录</span>
+                        <input className="field-control" value={runtimeRoot} readOnly />
+                        <small>{usingCustomRuntimeRoot ? '当前正在使用自定义运行环境目录。' : '当前正在使用默认运行环境目录。'}</small>
+                    </div>
+                    <div className="field-block">
+                        <span>默认目录</span>
+                        <input className="field-control" value={defaultRuntimeRoot} readOnly />
+                        <small>
+                            {protectedDefaultRuntimeRoot
+                                ? '默认目录位于受保护位置，直接写入通常需要管理员权限。'
+                                : '未设置自定义目录时，应用会回退到这里。'}
+                        </small>
+                    </div>
+                    <div className="field-block">
+                        <span>自定义目录</span>
+                        <input
+                            className="field-control"
+                            value={pendingRuntimeRoot}
+                            onChange={(event) => setPendingRuntimeRoot(event.target.value)}
+                            placeholder="选择一个用户可写的运行环境目录"
+                        />
+                        <small>
+                            {configuredRuntimeRoot
+                                ? `已配置自定义目录：${configuredRuntimeRoot}`
+                                : '建议与模型目录位于同一磁盘，减少系统盘占用。'}
+                        </small>
+                    </div>
+                    <div className="field-block">
+                        <span>兼容兜底目录</span>
+                        <input className="field-control" value={managedRuntimeRoot} readOnly />
+                        <small>这是安装版原先的托管运行环境目录，迁移时会从当前生效目录搬运到新目录。</small>
+                    </div>
+                </div>
+                <div className="form-actions">
+                    <button type="button" className="secondary-button" onClick={() => void handlePickRuntimeRoot()} disabled={applyingModelsRoot || applyingRuntimeRoot || hasActiveDownloads}>
+                        选择目录
+                    </button>
+                    <button type="button" className="secondary-button" onClick={() => void handleApplyRuntimeRoot(false)} disabled={applyingModelsRoot || applyingRuntimeRoot || hasActiveDownloads}>
+                        仅切换目录
+                    </button>
+                    <button type="button" className="primary-button" onClick={() => void handleApplyRuntimeRoot(true)} disabled={applyingModelsRoot || applyingRuntimeRoot || hasActiveDownloads}>
+                        迁移并切换
+                    </button>
+                    <button type="button" className="secondary-button" onClick={() => void handleResetRuntimeRoot()} disabled={applyingModelsRoot || applyingRuntimeRoot || hasActiveDownloads}>
                         恢复默认
                     </button>
                 </div>
