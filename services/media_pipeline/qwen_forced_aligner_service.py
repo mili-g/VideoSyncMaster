@@ -6,6 +6,7 @@ import torch
 
 from app_logging import get_logger, redirect_print
 from bootstrap.runtime_env import setup_gpu_paths
+from bootstrap.triton_windows_compat import patch_triton_winsdk_registry_bug
 from dependency_manager import ensure_package_installed, ensure_transformers_version
 from model_profiles import MODELS_ROOT, resolve_existing_path
 from subtitle_postprocess import clean_segment_text, normalize_output_segments
@@ -14,6 +15,7 @@ from subtitle_postprocess import clean_segment_text, normalize_output_segments
 logger = get_logger("asr.qwen_forced_aligner")
 print = redirect_print(logger, default_level=logging.DEBUG)
 setup_gpu_paths(logger)
+patch_triton_winsdk_registry_bug()
 
 
 _SUPPORTED_LANGUAGE_HINTS = {

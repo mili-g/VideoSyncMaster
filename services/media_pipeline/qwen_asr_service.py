@@ -7,6 +7,7 @@ import re
 import logging
 from asr_data import ASRData, ASRDataSeg
 from app_logging import get_logger, redirect_print
+from bootstrap.triton_windows_compat import patch_triton_winsdk_registry_bug
 from path_layout import first_existing_path, get_media_tool_bin_dir, get_models_root, get_project_root
 from subtitle_postprocess import clean_segment_text, finalize_subtitle_segments, normalize_output_segments
 
@@ -86,6 +87,8 @@ qwen_repo_path = _resolve_qwen_repo_path()
 if qwen_repo_path and os.path.exists(qwen_repo_path) and qwen_repo_path not in sys.path:
     print(f"[QwenASR] Adding {qwen_repo_path} to sys.path")
     sys.path.insert(0, qwen_repo_path)
+
+patch_triton_winsdk_registry_bug()
 
 try:
     from qwen_asr import Qwen3ASRModel
