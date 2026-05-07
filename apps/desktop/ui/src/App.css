@@ -428,6 +428,13 @@
 
 .workspace-topbar .output-dir-toolbar--compact {
   flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.workspace-topbar .output-dir-toolbar--compact .output-dir-toolbar__path {
+  justify-content: center;
 }
 
 .output-dir-toolbar__path {
