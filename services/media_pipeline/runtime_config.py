@@ -5,6 +5,35 @@ from typing import Any
 
 from model_profiles import normalize_asr_model_profile, normalize_tts_model_profile
 
+VALID_VIDEO_STRATEGIES = {"auto_speedup", "frame_blend", "freeze_frame", "rife"}
+VALID_AUDIO_MIX_MODES = {"preserve_background", "replace_original"}
+
+VIDEO_STRATEGY_ALIASES = {
+    "audio_align": "auto_speedup",
+    "stretch": "auto_speedup",
+}
+
+AUDIO_MIX_MODE_ALIASES = {
+    "mix": "preserve_background",
+    "replace": "replace_original",
+}
+
+
+def normalize_video_strategy(value: Any) -> str:
+    normalized = str(value or "auto_speedup").strip().lower()
+    normalized = VIDEO_STRATEGY_ALIASES.get(normalized, normalized)
+    if normalized not in VALID_VIDEO_STRATEGIES:
+        return "auto_speedup"
+    return normalized
+
+
+def normalize_audio_mix_mode(value: Any) -> str:
+    normalized = str(value or "preserve_background").strip().lower()
+    normalized = AUDIO_MIX_MODE_ALIASES.get(normalized, normalized)
+    if normalized not in VALID_AUDIO_MIX_MODES:
+        return "preserve_background"
+    return normalized
+
 
 @dataclass(frozen=True)
 class AsrRuntimeConfig:
@@ -328,8 +357,8 @@ def build_dub_video_runtime_config(
         vad_onset=float(vad_onset),
         vad_offset=float(vad_offset),
         tts_service=tts_service,
-        strategy=str(kwargs.get("strategy") or "auto_speedup"),
-        audio_mix_mode=str(kwargs.get("audio_mix_mode") or "preserve_background"),
+        strategy=normalize_video_strategy(kwargs.get("strategy")),
+        audio_mix_mode=normalize_audio_mix_mode(kwargs.get("audio_mix_mode")),
         ori_lang=kwargs.get("ori_lang"),
         dub_retry_attempts=max(0, int(kwargs.get("dub_retry_attempts", 3) or 0)),
         asr=asr,
@@ -348,7 +377,7 @@ def build_single_tts_request_config(args, tts_kwargs: dict[str, Any] | None = No
         duration=float(getattr(args, "duration", 3.0) or 3.0),
         target_lang=str(getattr(args, "lang", "English") or "English"),
         tts_service_name=str(getattr(args, "tts_service", "indextts") or "indextts"),
-        strategy=str(getattr(args, "strategy", "auto_speedup") or "auto_speedup"),
+        strategy=normalize_video_strategy(getattr(args, "strategy", "auto_speedup")),
         dub_retry_attempts=max(0, int(getattr(args, "dub_retry_attempts", 3) or 0)),
         ref_audio=getattr(args, "ref_audio", None),
         fallback_ref_audio=getattr(args, "fallback_ref_audio", None),

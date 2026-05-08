@@ -41,6 +41,33 @@ export interface Segment {
 
 export type AudioMixMode = 'preserve_background' | 'replace_original';
 
+function normalizeStoredVideoStrategy(value: string | null): string {
+    switch (value) {
+        case 'auto_speedup':
+        case 'frame_blend':
+        case 'freeze_frame':
+        case 'rife':
+            return value;
+        case 'audio_align':
+        case 'stretch':
+            return 'auto_speedup';
+        default:
+            return 'auto_speedup';
+    }
+}
+
+function normalizeStoredAudioMixMode(value: string | null): AudioMixMode {
+    switch (value) {
+        case 'replace_original':
+        case 'replace':
+            return 'replace_original';
+        case 'preserve_background':
+        case 'mix':
+        default:
+            return 'preserve_background';
+    }
+}
+
 function getTtsBlockingReasonFromStatus(
     result: ModelStatusResponse,
     service: 'indextts' | 'qwen',
@@ -91,11 +118,8 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
     const [dubbingLoading, setDubbingLoading] = useState(false);
     const [progress, setProgress] = useState<number>(0);
     const [isIndeterminate, setIsIndeterminate] = useState<boolean>(false);
-    const [videoStrategy, setVideoStrategy] = useState<string>(() => localStorage.getItem('videoStrategy') || 'auto_speedup');
-    const [audioMixMode, setAudioMixMode] = useState<AudioMixMode>(() => {
-        const saved = localStorage.getItem('audioMixMode');
-        return saved === 'replace_original' ? 'replace_original' : 'preserve_background';
-    });
+    const [videoStrategy, setVideoStrategy] = useState<string>(() => normalizeStoredVideoStrategy(localStorage.getItem('videoStrategy')));
+    const [audioMixMode, setAudioMixMode] = useState<AudioMixMode>(() => normalizeStoredAudioMixMode(localStorage.getItem('audioMixMode')));
     const [generatingSegmentId, setGeneratingSegmentId] = useState<number | null>(null);
     const [retranslatingSegmentId, setRetranslatingSegmentId] = useState<number | null>(null);
 

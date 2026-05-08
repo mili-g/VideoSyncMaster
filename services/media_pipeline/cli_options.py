@@ -42,7 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top_k", type=int, help="Top K sampling", default=5)
     parser.add_argument("--length_penalty", type=float, help="Length Penalty for beam search", default=1.0)
     parser.add_argument("--max_new_tokens", type=int, help="Max New Tokens (mel length limit)", default=2048)
-    parser.add_argument("--strategy", type=str, help="Video sync strategy: auto_speedup, freeze_frame, frame_blend", default="auto_speedup")
+    parser.add_argument("--strategy", type=str, help="Video sync strategy: auto_speedup, freeze_frame, frame_blend, rife", default="auto_speedup")
     parser.add_argument(
         "--audio_mix_mode",
         type=str,

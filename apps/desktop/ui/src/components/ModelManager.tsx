@@ -288,7 +288,7 @@ const ModelManager: React.FC<ModelManagerProps> = ({ onStatusChange, onFeedback 
         setLocalFeedback(feedback);
     };
 
-    const applyModelRootSettings = (result: ModelRootSettingsResponse | null | undefined) => {
+    const applyModelRootSettings = useCallback((result: ModelRootSettingsResponse | null | undefined) => {
         if (!result?.success) {
             return;
         }
@@ -301,18 +301,18 @@ const ModelManager: React.FC<ModelManagerProps> = ({ onStatusChange, onFeedback 
         setUsingCustomModelsRoot(Boolean(result.usingCustomRoot));
         setProtectedDefaultModelsRoot(Boolean(result.protectedDefaultRoot));
         setPendingModelsRoot(configuredRoot || resolvedRoot);
-    };
+    }, []);
 
-    const loadModelRootSettings = async () => {
+    const loadModelRootSettings = useCallback(async () => {
         try {
             const result = await window.api.getModelRootSettings() as ModelRootSettingsResponse;
             applyModelRootSettings(result);
         } catch (error) {
             console.error(error);
         }
-    };
+    }, [applyModelRootSettings]);
 
-    const applyRuntimeRootSettings = (result: RuntimeRootSettingsResponse | null | undefined) => {
+    const applyRuntimeRootSettings = useCallback((result: RuntimeRootSettingsResponse | null | undefined) => {
         if (!result?.success) {
             return;
         }
@@ -325,18 +325,18 @@ const ModelManager: React.FC<ModelManagerProps> = ({ onStatusChange, onFeedback 
         setUsingCustomRuntimeRoot(Boolean(result.usingCustomRoot));
         setProtectedDefaultRuntimeRoot(Boolean(result.protectedDefaultRoot));
         setPendingRuntimeRoot(configuredRoot || resolvedRoot);
-    };
+    }, []);
 
-    const loadRuntimeRootSettings = async () => {
+    const loadRuntimeRootSettings = useCallback(async () => {
         try {
             const result = await window.api.getRuntimeRootSettings() as RuntimeRootSettingsResponse;
             applyRuntimeRootSettings(result);
         } catch (error) {
             console.error(error);
         }
-    };
+    }, [applyRuntimeRootSettings]);
 
-    const checkStatus = async () => {
+    const checkStatus = useCallback(async () => {
         setLoading(true);
         try {
             const result = await window.api.checkModelStatus() as ModelStatusResponse;
@@ -350,7 +350,7 @@ const ModelManager: React.FC<ModelManagerProps> = ({ onStatusChange, onFeedback 
         } finally {
             setLoading(false);
         }
-    };
+    }, []);
 
     const applyDownloadEvent = useCallback((event: ModelDownloadProgressEvent) => {
         if (!event?.key) {
@@ -381,7 +381,7 @@ const ModelManager: React.FC<ModelManagerProps> = ({ onStatusChange, onFeedback 
         void checkStatus();
         void loadModelRootSettings();
         void loadRuntimeRootSettings();
-    }, []);
+    }, [checkStatus, loadModelRootSettings, loadRuntimeRootSettings]);
 
     useEffect(() => {
         void window.api.getDownloadTaskSnapshots()

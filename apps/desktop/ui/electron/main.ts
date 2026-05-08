@@ -1287,9 +1287,12 @@ async function downloadRuntimeBundle(downloadUrl: string, destinationPath: strin
   const handle = fs.openSync(destinationPath, 'w')
 
   try {
-    while (true) {
-      const { done, value } = await reader.read()
+    let done = false
+    while (!done) {
+      const readResult = await reader.read()
+      done = readResult.done
       if (done) break
+      const { value } = readResult
       if (!value) continue
       const chunk = Buffer.from(value)
       fs.writeSync(handle, chunk)

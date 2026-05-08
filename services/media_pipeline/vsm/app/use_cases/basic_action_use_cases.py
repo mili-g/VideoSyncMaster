@@ -5,6 +5,8 @@ import os
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from runtime_config import normalize_audio_mix_mode, normalize_video_strategy
+
 
 @dataclass(frozen=True)
 class MergeVideoPreparationResult:
@@ -78,6 +80,7 @@ def prepare_merge_video_segments(
     align_audio: Callable[..., Any],
     get_audio_duration: Callable[..., Any],
 ) -> MergeVideoPreparationResult:
+    strategy = normalize_video_strategy(strategy)
     with open(json_path, "r", encoding="utf-8") as handle:
         audio_segments = json.load(handle)
 
@@ -126,9 +129,11 @@ def merge_video_use_case(
     get_audio_duration: Callable[..., Any],
     merge_audios_to_video: Callable[..., Any],
 ) -> dict[str, Any]:
+    normalized_strategy = normalize_video_strategy(strategy)
+    normalized_audio_mix_mode = normalize_audio_mix_mode(audio_mix_mode)
     prepared = prepare_merge_video_segments(
         json_path,
-        strategy=strategy,
+        strategy=normalized_strategy,
         align_audio=align_audio,
         get_audio_duration=get_audio_duration,
     )
@@ -136,8 +141,8 @@ def merge_video_use_case(
         video_path,
         prepared.segments,
         output_path,
-        strategy=strategy,
-        audio_mix_mode=audio_mix_mode,
+        strategy=normalized_strategy,
+        audio_mix_mode=normalized_audio_mix_mode,
     )
     return {"success": success, "output": output_path, "messages": prepared.messages}
 
@@ -184,8 +189,8 @@ def dub_video_use_case(
         vad_onset=vad_onset,
         vad_offset=vad_offset,
         tts_service=tts_service,
-        strategy=strategy,
-        audio_mix_mode=audio_mix_mode,
+        strategy=normalize_video_strategy(strategy),
+        audio_mix_mode=normalize_audio_mix_mode(audio_mix_mode),
         ori_lang=ori_lang,
         dub_retry_attempts=dub_retry_attempts,
         **combined_kwargs,

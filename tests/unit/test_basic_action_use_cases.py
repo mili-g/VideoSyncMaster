@@ -79,7 +79,7 @@ class BasicActionUseCasesTests(unittest.TestCase):
                 json_path=str(json_path),
                 output_path="output.mp4",
                 strategy="freeze_frame",
-                audio_mix_mode="replace",
+                audio_mix_mode="replace_original",
                 align_audio=lambda src, dest, duration: True,
                 get_audio_duration=lambda path: 1.5,
                 merge_audios_to_video=lambda *args, **kwargs: True,
@@ -88,6 +88,32 @@ class BasicActionUseCasesTests(unittest.TestCase):
             self.assertTrue(result["success"])
             self.assertEqual("output.mp4", result["output"])
             self.assertEqual(1, len(result["messages"]))
+
+    def test_merge_video_use_case_normalizes_legacy_strategy_and_mix_mode(self) -> None:
+        merge_calls = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            audio_path = pathlib.Path(temp_dir) / "segment.wav"
+            audio_path.write_bytes(b"wave")
+            json_path = pathlib.Path(temp_dir) / "segments.json"
+            json_path.write_text(
+                json.dumps([{"start": 0.0, "end": 1.0, "path": str(audio_path)}]),
+                encoding="utf-8",
+            )
+
+            result = merge_video_use_case(
+                "input.mp4",
+                json_path=str(json_path),
+                output_path="output.mp4",
+                strategy="stretch",
+                audio_mix_mode="replace",
+                align_audio=lambda src, dest, duration: True,
+                get_audio_duration=lambda path: 1.0,
+                merge_audios_to_video=lambda *args, **kwargs: merge_calls.append((args, kwargs)) or True,
+            )
+
+            self.assertTrue(result["success"])
+            self.assertEqual("auto_speedup", merge_calls[0][1]["strategy"])
+            self.assertEqual("replace_original", merge_calls[0][1]["audio_mix_mode"])
 
     def test_check_audio_files_use_case_marks_missing_file(self) -> None:
         result = check_audio_files_use_case(
@@ -116,7 +142,7 @@ class BasicActionUseCasesTests(unittest.TestCase):
             vad_onset=0.7,
             vad_offset=0.7,
             tts_service="indextts",
-            strategy="replace",
+            strategy="stretch",
             audio_mix_mode="mix",
             ori_lang="en",
             dub_retry_attempts=2,
@@ -132,6 +158,8 @@ class BasicActionUseCasesTests(unittest.TestCase):
         self.assertEqual(5, captured["kwargs"]["beam_size"])
         self.assertEqual("demo", captured["kwargs"]["speaker"])
         self.assertEqual("mock", captured["kwargs"]["provider"])
+        self.assertEqual("auto_speedup", captured["kwargs"]["strategy"])
+        self.assertEqual("preserve_background", captured["kwargs"]["audio_mix_mode"])
 
 
 if __name__ == "__main__":
