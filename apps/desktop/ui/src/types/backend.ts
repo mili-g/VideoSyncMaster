@@ -41,6 +41,11 @@ export interface BatchTtsResponse extends BackendResponseBase {
 export interface MergeVideoResponse extends BackendResponseBase {
     output?: string;
     messages?: string[];
+    segments?: Array<Segment & {
+        path?: string;
+        timeline_start?: number;
+        timeline_duration?: number;
+    }>;
 }
 
 export interface PrepareReferenceAudioResponse extends BackendResponseBase {

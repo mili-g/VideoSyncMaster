@@ -14,6 +14,7 @@ import { logUiBusiness, logUiError } from '../utils/frontendLogger';
 import type { SessionManifest } from '../utils/sessionManifest';
 import type { BatchTtsResultItem } from '../types/backend';
 import type { ModelStatusResponse } from '../types/backend';
+import type { MergeVideoResponse } from '../types/backend';
 import { resolveSubtitleArtifactLanguages } from '../utils/languageTags';
 import { validateSegmentLanguageFit } from '../utils/subtitleLanguageGuard';
 
@@ -49,6 +50,43 @@ interface DubbingWorkflowOptions {
     setStatus: Dispatch<SetStateAction<string>>;
     setFeedback: Dispatch<SetStateAction<FeedbackPayload | null>>;
     setMergedVideoPath: Dispatch<SetStateAction<string>>;
+}
+
+function buildMergedSubtitleSegments(
+    translatedSegments: Segment[],
+    mergedSegments?: MergeVideoResponse['segments']
+) {
+    if (!Array.isArray(mergedSegments) || mergedSegments.length === 0) {
+        return translatedSegments.map(segment => ({
+            start: segment.start,
+            end: segment.end,
+            text: segment.text
+        }));
+    }
+
+    const mergedTimelineByIndex = new Map<number, { start: number; end: number }>();
+
+    mergedSegments.forEach((segment, fallbackIndex) => {
+        const segmentIndex = typeof segment.original_index === 'number' ? segment.original_index : fallbackIndex;
+        const mergedStart = typeof segment.timeline_start === 'number' ? segment.timeline_start : segment.start;
+        const mergedDuration = typeof segment.timeline_duration === 'number'
+            ? segment.timeline_duration
+            : Math.max((segment.end ?? 0) - (segment.start ?? 0), 0);
+        const mergedEnd = mergedStart + Math.max(mergedDuration, 0);
+
+        if (Number.isFinite(segmentIndex) && Number.isFinite(mergedStart) && Number.isFinite(mergedEnd)) {
+            mergedTimelineByIndex.set(segmentIndex, { start: mergedStart, end: mergedEnd });
+        }
+    });
+
+    return translatedSegments.map((segment, index) => {
+        const mergedTimeline = mergedTimelineByIndex.get(index);
+        return {
+            start: mergedTimeline?.start ?? segment.start,
+            end: mergedTimeline?.end ?? segment.end,
+            text: segment.text
+        };
+    });
 }
 
 const MODEL_STATUS_TIMEOUT_MS = 8000;
@@ -832,16 +870,17 @@ export function useDubbingWorkflow({
                 ref: tempJsonPath,
                 strategy: videoStrategy,
                 audioMixMode
-            }));
+            })) as MergeVideoResponse;
 
             if (abortRef.current) return;
 
             if (result && result.success) {
+                const mergedSubtitleSegments = buildMergedSubtitleSegments(segmentsToUse, result.segments);
                 await saveSubtitleArtifacts(
                     projectPaths.finalDir,
                     fileName,
                     sourceSegments.map(segment => ({ start: segment.start, end: segment.end, text: segment.text })),
-                    segmentsToUse.map(segment => ({ start: segment.start, end: segment.end, text: segment.text })),
+                    mergedSubtitleSegments,
                     resolveSubtitleArtifactLanguages(asrOriLang, targetLang)
                 );
                 await cleanupSessionArtifacts(projectPaths, 'success', [tempJsonPath]);

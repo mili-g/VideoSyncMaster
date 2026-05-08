@@ -88,6 +88,7 @@ class BasicActionUseCasesTests(unittest.TestCase):
             self.assertTrue(result["success"])
             self.assertEqual("output.mp4", result["output"])
             self.assertEqual(1, len(result["messages"]))
+            self.assertEqual([{"start": 0.0, "end": 1.0, "path": str(audio_path), "duration": 1.0}], result["segments"])
 
     def test_merge_video_use_case_normalizes_legacy_strategy_and_mix_mode(self) -> None:
         merge_calls = []
@@ -114,6 +115,80 @@ class BasicActionUseCasesTests(unittest.TestCase):
             self.assertTrue(result["success"])
             self.assertEqual("auto_speedup", merge_calls[0][1]["strategy"])
             self.assertEqual("replace_original", merge_calls[0][1]["audio_mix_mode"])
+
+    def test_merge_video_use_case_returns_updated_timeline_from_backend_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            audio_path = pathlib.Path(temp_dir) / "segment.wav"
+            audio_path.write_bytes(b"wave")
+            json_path = pathlib.Path(temp_dir) / "segments.json"
+            json_path.write_text(
+                json.dumps([{"start": 0.0, "end": 1.0, "path": str(audio_path), "original_index": 0}]),
+                encoding="utf-8",
+            )
+
+            def fake_merge(_video_path, segments, _output_path, **_kwargs):
+                segments[0]["timeline_start"] = 0.25
+                segments[0]["timeline_duration"] = 1.75
+                return True
+
+            result = merge_video_use_case(
+                "input.mp4",
+                json_path=str(json_path),
+                output_path="output.mp4",
+                strategy="rife",
+                audio_mix_mode="preserve_background",
+                align_audio=lambda src, dest, duration: True,
+                get_audio_duration=lambda path: 1.0,
+                merge_audios_to_video=fake_merge,
+            )
+
+            self.assertTrue(result["success"])
+            self.assertEqual(0.25, result["segments"][0]["timeline_start"])
+            self.assertEqual(1.75, result["segments"][0]["timeline_duration"])
+
+    def test_merge_video_use_case_preserves_subtitle_timeline_behavior_for_all_merge_strategies(self) -> None:
+        strategies_with_expected_timeline = {
+            "auto_speedup": None,
+            "frame_blend": (0.1, 1.4),
+            "freeze_frame": (0.2, 1.5),
+            "rife": (0.3, 1.6),
+        }
+
+        for strategy, expected_timeline in strategies_with_expected_timeline.items():
+            with self.subTest(strategy=strategy):
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    audio_path = pathlib.Path(temp_dir) / "segment.wav"
+                    audio_path.write_bytes(b"wave")
+                    json_path = pathlib.Path(temp_dir) / "segments.json"
+                    json_path.write_text(
+                        json.dumps([{"start": 0.0, "end": 1.0, "path": str(audio_path), "original_index": 0}]),
+                        encoding="utf-8",
+                    )
+
+                    def fake_merge(_video_path, segments, _output_path, **_kwargs):
+                        if expected_timeline is not None:
+                            segments[0]["timeline_start"] = expected_timeline[0]
+                            segments[0]["timeline_duration"] = expected_timeline[1]
+                        return True
+
+                    result = merge_video_use_case(
+                        "input.mp4",
+                        json_path=str(json_path),
+                        output_path="output.mp4",
+                        strategy=strategy,
+                        audio_mix_mode="preserve_background",
+                        align_audio=lambda src, dest, duration: True,
+                        get_audio_duration=lambda path: 1.0,
+                        merge_audios_to_video=fake_merge,
+                    )
+
+                    self.assertTrue(result["success"])
+                    if expected_timeline is None:
+                        self.assertNotIn("timeline_start", result["segments"][0])
+                        self.assertNotIn("timeline_duration", result["segments"][0])
+                    else:
+                        self.assertEqual(expected_timeline[0], result["segments"][0]["timeline_start"])
+                        self.assertEqual(expected_timeline[1], result["segments"][0]["timeline_duration"])
 
     def test_check_audio_files_use_case_marks_missing_file(self) -> None:
         result = check_audio_files_use_case(

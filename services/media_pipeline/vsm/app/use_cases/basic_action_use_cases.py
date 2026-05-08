@@ -144,7 +144,12 @@ def merge_video_use_case(
         strategy=normalized_strategy,
         audio_mix_mode=normalized_audio_mix_mode,
     )
-    return {"success": success, "output": output_path, "messages": prepared.messages}
+    return {
+        "success": success,
+        "output": output_path,
+        "messages": prepared.messages,
+        "segments": prepared.segments,
+    }
 
 
 def analyze_video_use_case(file_path: str, *, analyze_video: Callable[..., Any]):
