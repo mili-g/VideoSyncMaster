@@ -68,6 +68,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--base_url", type=str, help="Base URL for External Translation", default=None)
     parser.add_argument("--model", type=str, help="Model Name for External Translation", default=None)
     parser.add_argument("--enable_local_llm_split", action="store_true", help="Enable local LLM subtitle segmentation")
+    parser.add_argument("--license_ticket", type=str, help=argparse.SUPPRESS, default=None)
+    parser.add_argument("--license_ticket_sig", type=str, help=argparse.SUPPRESS, default=None)
     parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     return parser
 
