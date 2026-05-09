@@ -54,21 +54,9 @@ const TranslationConfig: React.FC = () => {
                 <div className="tool-toolbar">
                     <div className="tool-toolbar__title">
                         <h3>翻译接口</h3>
-                        <p>配置兼容 OpenAI 协议的翻译接口，用于接管字幕翻译任务。</p>
                     </div>
                     <div className="status-inline">
                         {externalReady ? '外部接口' : hasPartialExternalConfig ? '配置未完成' : '本地链路'}
-                    </div>
-                </div>
-
-                <div className="tool-banner">
-                    <div className="tool-banner__title">接口规则</div>
-                    <div className="tool-banner__body">
-                        {externalReady
-                            ? '当前将优先使用外部翻译接口。'
-                            : hasPartialExternalConfig
-                                ? '当前外部翻译配置未填写完整，翻译任务会自动回退到本地翻译链路。'
-                                : '留空即可使用本地翻译链路。填写完整的接口地址、API Key、模型名后才会切换到外部接口。'}
                     </div>
                 </div>
 

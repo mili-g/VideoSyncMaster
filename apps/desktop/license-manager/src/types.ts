@@ -14,7 +14,7 @@ export interface PlanDefinition {
 export interface MachineFingerprintInfo {
   fingerprint?: string
   shortFingerprint: string
-  fingerprintVersion?: 'cpu-v1'
+  fingerprintVersion?: 'cpu-v1' | 'cpu-short-v1'
   hostName: string
   platform: string
   arch: string
@@ -46,7 +46,7 @@ export interface LicensePayload {
   deviceBinding?: {
     mode: 'optional' | 'required'
     fingerprint?: string
-    fingerprintVersion?: 'cpu-v1'
+    fingerprintVersion?: 'cpu-v1' | 'cpu-short-v1'
     label?: string
   }
 }

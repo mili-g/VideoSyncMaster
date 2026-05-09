@@ -15,7 +15,7 @@ const RENDERER_DIST = path.join(process.env.APP_ROOT, 'dist')
 process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, 'public') : RENDERER_DIST
 
 type PlanCycle = 'monthly' | 'quarterly' | 'yearly'
-type MachineFingerprintVersion = 'cpu-v1'
+type MachineFingerprintVersion = 'cpu-v1' | 'cpu-short-v1'
 
 interface PlanDefinition {
   id: string
@@ -85,9 +85,11 @@ const LICENSE_ISSUED_DIR = 'issued'
 const TRUSTED_LICENSE_PUBLIC_KEY_FINGERPRINT = '04B0BFB1FE9B01E0'
 const ACTIVE_MACHINE_FINGERPRINT_VERSION: MachineFingerprintVersion = 'cpu-v1'
 const ACTIVATION_CODE_MAGIC = 'VSM2'
-const ACTIVATION_CODE_VERSION = 1
+const ACTIVATION_CODE_VERSION = 2
 const ACTIVATION_CODE_NOTE = 'activation-code-v2'
 const BASE32_CROCKFORD_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'
+const SHORT_DEVICE_CODE_VERSION: MachineFingerprintVersion = 'cpu-short-v1'
+const SHORT_DEVICE_CODE_LENGTH = 20
 const PLAN_CODE_BY_ID: Record<string, number> = {
   'starter-monthly': 1,
   'starter-quarterly': 2,
@@ -203,8 +205,8 @@ function normalizeMachineToken(value: unknown) {
   return ignored.has(normalized) ? undefined : normalized
 }
 
-function isCanonicalMachineFingerprint(value: unknown) {
-  return typeof value === 'string' && /^[a-f0-9]{64}$/i.test(value.trim())
+function isCanonicalShortDeviceCode(value: unknown) {
+  return typeof value === 'string' && /^[0-9A-HJKMNPQRSTVWXYZ]{20}$/i.test(value.trim())
 }
 
 function buildMachineFingerprintInfo() {
@@ -222,10 +224,13 @@ function buildMachineFingerprintInfo() {
     cpuCount
   ].join('|')
   const fingerprint = createHash('sha256').update(raw).digest('hex')
+  const shortFingerprint = encodeBase32Crockford(
+    Uint8Array.from(createHash('sha256').update(`VSM-DEVICE-CODE|${fingerprint}`).digest().subarray(0, 13))
+  ).slice(0, SHORT_DEVICE_CODE_LENGTH)
 
   return {
     fingerprint,
-    shortFingerprint: fingerprint.slice(0, 16).toUpperCase(),
+    shortFingerprint,
     fingerprintVersion: ACTIVE_MACHINE_FINGERPRINT_VERSION,
     hostName,
     platform: os.platform(),
@@ -263,6 +268,10 @@ function computePublicKeyFingerprint(publicKeyPem: string) {
 
 function hexToBytes(hex: string) {
   return Uint8Array.from(Buffer.from(hex, 'hex'))
+}
+
+function encodeAsciiBytes(value: string) {
+  return Uint8Array.from(Buffer.from(value, 'ascii'))
 }
 
 function encodeUint32(value: number) {
@@ -311,9 +320,6 @@ function buildCompactLicensePayloadBytes(payload: LicensePayloadRecord, keyFinge
   if (!planCode) {
     throw new Error('未找到对应套餐编码。')
   }
-  if (!payload.deviceBinding?.fingerprint || !/^[a-f0-9]{64}$/i.test(payload.deviceBinding.fingerprint)) {
-    throw new Error('许可证缺少有效的设备指纹。')
-  }
 
   const validFromSeconds = Math.floor(new Date(payload.validFrom).getTime() / 1000)
   const validUntilSeconds = Math.floor(new Date(payload.validUntil).getTime() / 1000)
@@ -329,6 +335,29 @@ function buildCompactLicensePayloadBytes(payload: LicensePayloadRecord, keyFinge
   const nonceBytes = Buffer.alloc(8, 0)
   Buffer.from(licenseNonceHex.padEnd(16, '0').slice(0, 16), 'hex').copy(nonceBytes)
 
+  const bindingVersion = payload.deviceBinding?.fingerprintVersion || ACTIVE_MACHINE_FINGERPRINT_VERSION
+  const bindingValue = String(payload.deviceBinding?.fingerprint || '').trim()
+
+  if (bindingVersion === 'cpu-v1') {
+    if (!/^[a-f0-9]{64}$/i.test(bindingValue)) {
+      throw new Error('许可证缺少有效的设备指纹。')
+    }
+    return concatBytes(
+      Uint8Array.from(Buffer.from(ACTIVATION_CODE_MAGIC, 'ascii')),
+      Uint8Array.from([1]),
+      hexToBytes(keyFingerprint),
+      Uint8Array.from([planCode]),
+      encodeUint32(validFromSeconds),
+      encodeUint32(validUntilSeconds),
+      hexToBytes(bindingValue),
+      Uint8Array.from(nonceBytes)
+    )
+  }
+
+  if (bindingVersion !== SHORT_DEVICE_CODE_VERSION || !isCanonicalShortDeviceCode(bindingValue)) {
+    throw new Error('许可证缺少有效的短设备码。')
+  }
+
   return concatBytes(
     Uint8Array.from(Buffer.from(ACTIVATION_CODE_MAGIC, 'ascii')),
     Uint8Array.from([ACTIVATION_CODE_VERSION]),
@@ -336,7 +365,7 @@ function buildCompactLicensePayloadBytes(payload: LicensePayloadRecord, keyFinge
     Uint8Array.from([planCode]),
     encodeUint32(validFromSeconds),
     encodeUint32(validUntilSeconds),
-    hexToBytes(payload.deviceBinding.fingerprint),
+    encodeAsciiBytes(bindingValue),
     Uint8Array.from(nonceBytes)
   )
 }
@@ -492,8 +521,8 @@ function issueLicenseCode(payload: {
   if (!deviceCode) {
     return { success: false, error: '设备识别码不能为空。' }
   }
-  if (!isCanonicalMachineFingerprint(deviceCode)) {
-    return { success: false, error: '设备识别码格式无效。请使用客户端复制的完整识别码。' }
+  if (!isCanonicalShortDeviceCode(deviceCode)) {
+    return { success: false, error: '设备识别码格式无效。请使用客户端复制的短设备码。' }
   }
   const { validFrom, validUntil } = buildValidityWindow(plan)
 
@@ -532,7 +561,7 @@ function issueLicenseCode(payload: {
     deviceBinding: {
       mode: 'required',
       fingerprint: deviceCode,
-      fingerprintVersion: ACTIVE_MACHINE_FINGERPRINT_VERSION,
+      fingerprintVersion: SHORT_DEVICE_CODE_VERSION,
       label: deviceCode
     }
   }

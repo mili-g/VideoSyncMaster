@@ -88,7 +88,7 @@ interface LicensePayloadRecord {
   deviceBinding?: {
     mode: 'optional' | 'required'
     fingerprint?: string
-    fingerprintVersion?: 'cpu-v1'
+    fingerprintVersion?: 'cpu-v1' | 'cpu-short-v1'
     label?: string
   }
 }
@@ -121,9 +121,11 @@ const LICENSE_CACHE_FILE = 'active-license.cache.json'
 const LICENSE_PUBLIC_KEY_FILE = 'public-key.pem'
 const TRUSTED_LICENSE_PUBLIC_KEY_FINGERPRINT = '04B0BFB1FE9B01E0'
 const ACTIVATION_CODE_MAGIC = 'VSM2'
-const ACTIVATION_CODE_VERSION = 1
+const ACTIVATION_CODE_VERSION = 2
 const ACTIVATION_CODE_NOTE = 'activation-code-v2'
 const BASE32_CROCKFORD_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'
+const SHORT_DEVICE_CODE_VERSION = 'cpu-short-v1'
+const SHORT_DEVICE_CODE_LENGTH = 20
 const PLAN_CODE_BY_ID: Record<string, number> = {
   'starter-monthly': 1,
   'starter-quarterly': 2,
@@ -2117,6 +2119,24 @@ function concatBytes(...parts: Uint8Array[]) {
   return result
 }
 
+function encodeBase32Crockford(bytes: Uint8Array) {
+  let bits = 0
+  let value = 0
+  let output = ''
+  for (const byte of bytes) {
+    value = (value << 8) | byte
+    bits += 8
+    while (bits >= 5) {
+      output += BASE32_CROCKFORD_ALPHABET[(value >>> (bits - 5)) & 31]
+      bits -= 5
+    }
+  }
+  if (bits > 0) {
+    output += BASE32_CROCKFORD_ALPHABET[(value << (5 - bits)) & 31]
+  }
+  return output
+}
+
 function decodeBase32Crockford(value: string) {
   const lookup = new Map<string, number>()
   for (let index = 0; index < BASE32_CROCKFORD_ALPHABET.length; index += 1) {
@@ -2145,13 +2165,22 @@ function decodeBase32Crockford(value: string) {
   return Uint8Array.from(output)
 }
 
+function normalizeShortDeviceCode(value: unknown) {
+  return String(value || '').toUpperCase().replace(/[^0-9A-Z]/g, '')
+}
+
+function isCanonicalShortDeviceCode(value: unknown) {
+  return typeof value === 'string' && /^[0-9A-HJKMNPQRSTVWXYZ]{20}$/i.test(value.trim())
+}
+
+function encodeAsciiBytes(value: string) {
+  return Uint8Array.from(Buffer.from(value, 'ascii'))
+}
+
 function buildCompactLicensePayloadBytes(payload: LicensePayloadRecord, keyFingerprint: string) {
   const planCode = PLAN_CODE_BY_ID[payload.planId]
   if (!planCode) {
     throw new Error('未找到对应套餐编码。')
-  }
-  if (!payload.deviceBinding?.fingerprint || !/^[a-f0-9]{64}$/i.test(payload.deviceBinding.fingerprint)) {
-    throw new Error('许可证缺少有效的设备指纹。')
   }
 
   const validFromSeconds = Math.floor(new Date(payload.validFrom).getTime() / 1000)
@@ -2168,6 +2197,28 @@ function buildCompactLicensePayloadBytes(payload: LicensePayloadRecord, keyFinge
   const nonceBytes = Buffer.alloc(8, 0)
   Buffer.from(licenseNonceHex.padEnd(16, '0').slice(0, 16), 'hex').copy(nonceBytes)
 
+  const bindingVersion = payload.deviceBinding?.fingerprintVersion || 'cpu-v1'
+  const bindingValue = String(payload.deviceBinding?.fingerprint || '').trim()
+  if (bindingVersion === 'cpu-v1') {
+    if (!/^[a-f0-9]{64}$/i.test(bindingValue)) {
+      throw new Error('许可证缺少有效的设备指纹。')
+    }
+    return concatBytes(
+      Uint8Array.from(Buffer.from(ACTIVATION_CODE_MAGIC, 'ascii')),
+      Uint8Array.from([1]),
+      hexToBytes(keyFingerprint),
+      Uint8Array.from([planCode]),
+      encodeUint32(validFromSeconds),
+      encodeUint32(validUntilSeconds),
+      hexToBytes(bindingValue),
+      Uint8Array.from(nonceBytes)
+    )
+  }
+
+  if (bindingVersion !== SHORT_DEVICE_CODE_VERSION || !isCanonicalShortDeviceCode(bindingValue)) {
+    throw new Error('许可证缺少有效的短设备码。')
+  }
+
   return concatBytes(
     Uint8Array.from(Buffer.from(ACTIVATION_CODE_MAGIC, 'ascii')),
     Uint8Array.from([ACTIVATION_CODE_VERSION]),
@@ -2175,7 +2226,7 @@ function buildCompactLicensePayloadBytes(payload: LicensePayloadRecord, keyFinge
     Uint8Array.from([planCode]),
     encodeUint32(validFromSeconds),
     encodeUint32(validUntilSeconds),
-    hexToBytes(payload.deviceBinding.fingerprint),
+    encodeAsciiBytes(bindingValue),
     Uint8Array.from(nonceBytes)
   )
 }
@@ -2187,9 +2238,14 @@ function decodeCompactActivationCode(rawCode: string): LicenseEnvelopeRecord {
   }
 
   const decoded = decodeBase32Crockford(normalized)
-  const payloadSize = 62
   const signatureSize = 64
-  if (decoded.length !== payloadSize + signatureSize) {
+  if (decoded.length <= signatureSize) {
+    throw new Error('授权码长度无效。')
+  }
+
+  const version = decoded[4]
+  const payloadSize = version === 1 ? 62 : version === ACTIVATION_CODE_VERSION ? 50 : -1
+  if (payloadSize < 0 || decoded.length !== payloadSize + signatureSize) {
     throw new Error('授权码长度无效。')
   }
 
@@ -2199,7 +2255,7 @@ function decodeCompactActivationCode(rawCode: string): LicenseEnvelopeRecord {
   if (magic !== ACTIVATION_CODE_MAGIC) {
     throw new Error('授权码标识无效。')
   }
-  if (compactPayload[4] !== ACTIVATION_CODE_VERSION) {
+  if (version !== 1 && version !== ACTIVATION_CODE_VERSION) {
     throw new Error('授权码版本不受支持。')
   }
 
@@ -2213,8 +2269,11 @@ function decodeCompactActivationCode(rawCode: string): LicenseEnvelopeRecord {
 
   const validFrom = new Date(decodeUint32(compactPayload, 14) * 1000).toISOString()
   const validUntil = new Date(decodeUint32(compactPayload, 18) * 1000).toISOString()
-  const fingerprint = bytesToHex(compactPayload.slice(22, 54)).toLowerCase()
-  const nonceHex = bytesToHex(compactPayload.slice(54, 62)).toUpperCase().replace(/0+$/g, '') || '000000000000'
+  const deviceBindingValue = version === 1
+    ? bytesToHex(compactPayload.slice(22, 54)).toLowerCase()
+    : Buffer.from(compactPayload.slice(22, 42)).toString('ascii').toUpperCase()
+  const nonceHex = bytesToHex(compactPayload.slice(version === 1 ? 54 : 42, version === 1 ? 62 : 50)).toUpperCase().replace(/0+$/g, '') || '000000000000'
+  const bindingVersion: 'cpu-v1' | 'cpu-short-v1' = version === 1 ? 'cpu-v1' : SHORT_DEVICE_CODE_VERSION
 
   return {
     signatureAlgorithm: 'ed25519',
@@ -2225,7 +2284,7 @@ function decodeCompactActivationCode(rawCode: string): LicenseEnvelopeRecord {
       licenseId: `LIC-${nonceHex}`,
       product: LICENSE_PRODUCT_NAME,
       edition: 'Commercial',
-      customerName: fingerprint,
+      customerName: deviceBindingValue,
       customerEmail: 'activation@local',
       planId: plan.id,
       planName: plan.name,
@@ -2242,9 +2301,9 @@ function decodeCompactActivationCode(rawCode: string): LicenseEnvelopeRecord {
       notes: ACTIVATION_CODE_NOTE,
       deviceBinding: {
         mode: 'required',
-        fingerprint,
-        fingerprintVersion: 'cpu-v1',
-        label: fingerprint.toUpperCase()
+        fingerprint: deviceBindingValue,
+        fingerprintVersion: bindingVersion,
+        label: deviceBindingValue.toUpperCase()
       }
     }
   }
@@ -2294,10 +2353,13 @@ function buildCpuMachineFingerprintInfo() {
     cpuCount
   ].join('|')
   const fingerprint = createHash('sha256').update(raw).digest('hex')
+  const shortFingerprint = encodeBase32Crockford(
+    Uint8Array.from(createHash('sha256').update(`VSM-DEVICE-CODE|${fingerprint}`).digest().subarray(0, 13))
+  ).slice(0, SHORT_DEVICE_CODE_LENGTH)
 
   return {
     fingerprint,
-    shortFingerprint: fingerprint.slice(0, 16).toUpperCase(),
+    shortFingerprint,
     fingerprintVersion: 'cpu-v1' as const,
     hostName,
     platform: os.platform(),
@@ -2415,17 +2477,26 @@ function verifyLicenseEnvelope(envelope: LicenseEnvelopeRecord) {
 
   if (envelope.payload.deviceBinding?.mode === 'required') {
     const currentMachine = buildMachineFingerprintInfo()
-    if (!envelope.payload.deviceBinding.fingerprintVersion || envelope.payload.deviceBinding.fingerprintVersion !== currentMachine.fingerprintVersion) {
-      return { verified: true, validNow: false, reason: '许可证设备绑定版本不受支持。' }
-    }
-
+    const bindingVersion = envelope.payload.deviceBinding.fingerprintVersion || 'cpu-v1'
     const bindingFingerprint = String(envelope.payload.deviceBinding.fingerprint || '').trim().toLowerCase()
-    const currentFingerprint = String(currentMachine.fingerprint || '').trim().toLowerCase()
-    if (!isCanonicalMachineFingerprint(bindingFingerprint)) {
-      return { verified: true, validNow: false, reason: '许可证设备识别码格式无效。' }
-    }
-    if (bindingFingerprint !== currentFingerprint) {
-      return { verified: true, validNow: false, reason: '许可证与当前设备指纹不匹配。' }
+    if (bindingVersion === 'cpu-v1') {
+      const currentFingerprint = String(currentMachine.fingerprint || '').trim().toLowerCase()
+      if (!isCanonicalMachineFingerprint(bindingFingerprint)) {
+        return { verified: true, validNow: false, reason: '许可证设备识别码格式无效。' }
+      }
+      if (bindingFingerprint !== currentFingerprint) {
+        return { verified: true, validNow: false, reason: '许可证与当前设备指纹不匹配。' }
+      }
+    } else if (bindingVersion === SHORT_DEVICE_CODE_VERSION) {
+      const currentShortCode = normalizeShortDeviceCode(currentMachine.shortFingerprint)
+      if (!isCanonicalShortDeviceCode(bindingFingerprint)) {
+        return { verified: true, validNow: false, reason: '许可证短设备码格式无效。' }
+      }
+      if (bindingFingerprint.toUpperCase() !== currentShortCode) {
+        return { verified: true, validNow: false, reason: '许可证与当前设备码不匹配。' }
+      }
+    } else {
+      return { verified: true, validNow: false, reason: '许可证设备绑定版本不受支持。' }
     }
   }
 
@@ -2472,7 +2543,6 @@ function buildLicensingOverview() {
     success: machine.available !== false,
     plans: LICENSE_PLANS,
     machine: {
-      fingerprint: machine.fingerprint,
       shortFingerprint: machine.shortFingerprint,
       appVersion: machine.appVersion,
       available: machine.available,

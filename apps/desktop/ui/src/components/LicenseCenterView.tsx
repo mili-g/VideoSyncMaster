@@ -2,8 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ActivateLicenseResponse, LicensingOverviewResponse } from '../types/licensing';
 
 type FeedbackState = { type: 'success' | 'error'; message: string } | null;
-const ACTIVATION_SEGMENT_LENGTH = 24;
-const ACTIVATION_SEGMENT_COUNT = 9;
+const ACTIVATION_SEGMENT_LENGTH = 5;
 
 function formatDateLabel(value?: string) {
     if (!value) return '-';
@@ -18,7 +17,7 @@ export default function LicenseCenterView() {
     const [submitting, setSubmitting] = useState(false);
     const [feedback, setFeedback] = useState<FeedbackState>(null);
     const [activationCode, setActivationCode] = useState('');
-    const segmentRefs = useRef<Array<HTMLInputElement | null>>([]);
+    const activationInputRef = useRef<HTMLInputElement | null>(null);
 
     const loadOverview = useCallback(async () => {
         setLoading(true);
@@ -41,10 +40,14 @@ export default function LicenseCenterView() {
 
     const plans = useMemo(() => overview?.plans || [], [overview]);
     const activeLicense = overview?.activeLicense;
-    const machineCode = overview?.machine.fingerprint || overview?.machine.shortFingerprint || '';
-    const activationSegments = useMemo(
-        () => splitActivationCode(activationCode),
+    const machineCode = overview?.machine.shortFingerprint || '';
+    const activationDisplayValue = useMemo(
+        () => formatActivationCodeForDisplay(activationCode),
         [activationCode]
+    );
+    const machineCodeDisplayValue = useMemo(
+        () => formatDeviceCodeForDisplay(machineCode),
+        [machineCode]
     );
 
     const handleCopyDeviceCode = async () => {
@@ -81,26 +84,17 @@ export default function LicenseCenterView() {
         }
     };
 
-    const updateActivationSegment = (index: number, rawValue: string) => {
-        const sanitized = sanitizeActivationChunk(rawValue).slice(0, ACTIVATION_SEGMENT_LENGTH);
-        const nextSegments = splitActivationCode(activationCode);
-        nextSegments[index] = sanitized;
-        setActivationCode(joinActivationSegments(nextSegments));
-        if (sanitized.length === ACTIVATION_SEGMENT_LENGTH && index < ACTIVATION_SEGMENT_COUNT - 1) {
-            segmentRefs.current[index + 1]?.focus();
-            segmentRefs.current[index + 1]?.select();
-        }
+    const updateActivationCode = (rawValue: string) => {
+        setActivationCode(normalizeActivationCode(rawValue));
     };
 
-    const handleActivationPaste = (index: number, pastedText: string) => {
+    const handleActivationPaste = (pastedText: string) => {
         const normalized = normalizeActivationCode(pastedText);
         if (!normalized) return;
-        const incomingSegments = splitActivationCode(normalized);
-        const nextSegments = splitActivationCode(activationCode);
-        for (let segmentIndex = index; segmentIndex < ACTIVATION_SEGMENT_COUNT; segmentIndex += 1) {
-            nextSegments[segmentIndex] = incomingSegments[segmentIndex - index] || '';
-        }
-        setActivationCode(joinActivationSegments(nextSegments));
+        setActivationCode(normalized);
+        requestAnimationFrame(() => {
+            activationInputRef.current?.focus();
+        });
     };
 
     return (
@@ -109,23 +103,19 @@ export default function LicenseCenterView() {
                 <div style={heroCopyStyle}>
                     <div style={eyebrowStyle}>Commercial License</div>
                     <h2 style={titleStyle}>商业授权</h2>
-                    <p style={subtitleStyle}>在当前终端查看识别码、订阅方案与授权有效期，并使用授权码完成激活。</p>
                 </div>
                 <div style={heroMetricGridStyle}>
                     <div style={metricStyle}>
                         <span style={metricLabelStyle}>当前状态</span>
                         <strong style={metricValueStyle}>{activeLicense?.validNow ? '已激活' : '未激活'}</strong>
-                        <span style={metricHintStyle}>{activeLicense?.validNow ? '当前终端授权有效' : '需要输入授权码激活'}</span>
                     </div>
                     <div style={metricStyle}>
                         <span style={metricLabelStyle}>当前套餐</span>
                         <strong style={metricValueStyle}>{activeLicense?.planName || '-'}</strong>
-                        <span style={metricHintStyle}>激活后显示套餐信息</span>
                     </div>
                     <div style={metricStyle}>
                         <span style={metricLabelStyle}>到期日期</span>
                         <strong style={metricValueStyle}>{formatDateLabel(activeLicense?.validUntil)}</strong>
-                        <span style={metricHintStyle}>按授权周期自动核验</span>
                     </div>
                 </div>
             </section>
@@ -145,7 +135,6 @@ export default function LicenseCenterView() {
                     <div style={panelHeadStyle}>
                         <div>
                             <h3 style={sectionTitleStyle}>订阅方案</h3>
-                            <p style={sectionDescStyle}>年费最高 129 元，适配个人与轻量生产场景。</p>
                         </div>
                     </div>
                     <div style={planGridStyle}>
@@ -160,10 +149,7 @@ export default function LicenseCenterView() {
                                     }}
                                 >
                                     <div style={planHeaderStyle}>
-                                        <div>
-                                            <div style={planNameStyle}>{plan.name}</div>
-                                            <div style={planDescStyle}>{plan.description}</div>
-                                        </div>
+                                        <div style={planNameStyle}>{plan.name}</div>
                                         <div style={planPriceStyle}>{plan.priceLabel}</div>
                                     </div>
                                     <div style={planFeaturesStyle}>
@@ -181,16 +167,11 @@ export default function LicenseCenterView() {
                     <div style={panelHeadStyle}>
                         <div>
                             <h3 style={sectionTitleStyle}>激活</h3>
-                            <p style={sectionDescStyle}>将设备识别码发送给授权方，获取授权码后在此激活。</p>
                         </div>
                     </div>
                     <div style={fieldGroupStyle}>
                         <label style={fieldLabelStyle}>设备识别码</label>
-                        <textarea
-                            value={machineCode}
-                            readOnly
-                            style={readonlyTextareaStyle}
-                        />
+                        <div style={deviceCodeTextStyle}>{machineCodeDisplayValue || '设备识别码不可用'}</div>
                         <div style={actionRowStyle}>
                             <button type="button" className="secondary-button" onClick={() => void handleCopyDeviceCode()} disabled={!machineCode}>
                                 复制识别码
@@ -202,27 +183,26 @@ export default function LicenseCenterView() {
                     </div>
                     <div style={fieldGroupStyle}>
                         <label style={fieldLabelStyle}>授权码</label>
-                        <div style={activationGridStyle}>
-                            {activationSegments.map((segment, index) => (
-                                <input
-                                    key={`activation-segment-${index}`}
-                                    ref={(node) => {
-                                        segmentRefs.current[index] = node;
-                                    }}
-                                    value={segment}
-                                    onChange={(event) => updateActivationSegment(index, event.target.value)}
-                                    onPaste={(event) => {
-                                        event.preventDefault();
-                                        handleActivationPaste(index, event.clipboardData.getData('text'));
-                                    }}
-                                    placeholder="粘贴自动填充"
-                                    style={activationInputStyle}
-                                />
-                            ))}
-                        </div>
+                        <input
+                            type="text"
+                            ref={activationInputRef}
+                            value={activationDisplayValue}
+                            onChange={(event) => updateActivationCode(event.target.value)}
+                            onPaste={(event) => {
+                                event.preventDefault();
+                                handleActivationPaste(event.clipboardData.getData('text'));
+                            }}
+                            placeholder="XXXXX-XXXXX-XXXXX-XXXXX-XXXXX"
+                            spellCheck={false}
+                            autoComplete="off"
+                            style={activationInputStyle}
+                        />
                     </div>
                     <div style={footerRowStyle}>
-                        <div style={contactHintStyle}>商务邮箱：1556049389@qq.com</div>
+                        <div style={contactInfoStyle}>
+                            <span style={contactLabelStyle}>授权联系</span>
+                            <strong style={contactValueStyle}>1556049389@qq.com</strong>
+                        </div>
                         <button type="button" className="primary-button" onClick={() => void handleActivate()} disabled={submitting}>
                             激活授权
                         </button>
@@ -265,13 +245,6 @@ const titleStyle: React.CSSProperties = {
     color: '#f8fafc'
 };
 
-const subtitleStyle: React.CSSProperties = {
-    margin: 0,
-    lineHeight: 1.55,
-    color: '#94a3b8',
-    maxWidth: 720
-};
-
 const heroMetricGridStyle: React.CSSProperties = {
     display: 'grid',
     gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
@@ -295,12 +268,6 @@ const metricLabelStyle: React.CSSProperties = {
 const metricValueStyle: React.CSSProperties = {
     color: '#f8fafc',
     fontSize: '1rem'
-};
-
-const metricHintStyle: React.CSSProperties = {
-    color: '#64748b',
-    fontSize: '0.76rem',
-    lineHeight: 1.4
 };
 
 const noticeStyle: React.CSSProperties = {
@@ -338,12 +305,6 @@ const sectionTitleStyle: React.CSSProperties = {
     fontSize: '1rem'
 };
 
-const sectionDescStyle: React.CSSProperties = {
-    margin: '4px 0 0',
-    color: '#94a3b8',
-    lineHeight: 1.5
-};
-
 const planGridStyle: React.CSSProperties = {
     display: 'grid',
     gap: 10
@@ -369,12 +330,6 @@ const planNameStyle: React.CSSProperties = {
     color: '#f8fafc',
     fontWeight: 700,
     marginBottom: 4
-};
-
-const planDescStyle: React.CSSProperties = {
-    color: '#94a3b8',
-    fontSize: '0.84rem',
-    lineHeight: 1.45
 };
 
 const planPriceStyle: React.CSSProperties = {
@@ -410,42 +365,28 @@ const fieldLabelStyle: React.CSSProperties = {
     fontWeight: 600
 };
 
-const textareaBaseStyle: React.CSSProperties = {
-    width: '100%',
-    minHeight: 88,
-    resize: 'vertical',
-    borderRadius: 12,
-    border: '1px solid rgba(148,163,184,0.16)',
-    background: 'rgba(8,15,28,0.92)',
-    color: '#e2e8f0',
-    padding: '10px 12px',
-    lineHeight: 1.45,
-    fontSize: '0.84rem',
+const deviceCodeTextStyle: React.CSSProperties = {
+    color: '#f8fafc',
+    lineHeight: 1.78,
+    fontSize: '1rem',
+    fontWeight: 600,
+    letterSpacing: '0.12em',
+    wordBreak: 'break-all',
     fontFamily: 'Consolas, ui-monospace, SFMono-Regular, Menlo, monospace'
-};
-
-const readonlyTextareaStyle: React.CSSProperties = {
-    ...textareaBaseStyle,
-    minHeight: 74
-};
-
-const activationGridStyle: React.CSSProperties = {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
-    gap: 10
 };
 
 const activationInputStyle: React.CSSProperties = {
     width: '100%',
-    minHeight: 44,
-    borderRadius: 12,
-    border: '1px solid rgba(148,163,184,0.16)',
-    background: 'rgba(8,15,28,0.92)',
-    color: '#e2e8f0',
-    padding: '10px 12px',
+    minHeight: 54,
+    borderRadius: 14,
+    border: '1px solid rgba(96,165,250,0.22)',
+    background: 'linear-gradient(180deg, rgba(8,15,28,0.98), rgba(15,23,42,0.92))',
+    color: '#f8fafc',
+    padding: '0 16px',
     lineHeight: 1.2,
-    fontSize: '0.82rem',
-    letterSpacing: '0.02em',
+    fontSize: '0.96rem',
+    letterSpacing: '0.12em',
+    boxSizing: 'border-box',
     fontFamily: 'Consolas, ui-monospace, SFMono-Regular, Menlo, monospace'
 };
 
@@ -458,13 +399,28 @@ const actionRowStyle: React.CSSProperties = {
 const footerRowStyle: React.CSSProperties = {
     display: 'flex',
     justifyContent: 'space-between',
-    alignItems: 'center',
+    alignItems: 'flex-end',
+    flexWrap: 'wrap',
     gap: 12
 };
 
-const contactHintStyle: React.CSSProperties = {
-    color: '#94a3b8',
-    fontSize: '0.88rem'
+const contactInfoStyle: React.CSSProperties = {
+    display: 'grid',
+    gap: 3,
+    minWidth: 260
+};
+
+const contactLabelStyle: React.CSSProperties = {
+    color: '#cbd5e1',
+    fontSize: '0.82rem',
+    fontWeight: 700
+};
+
+const contactValueStyle: React.CSSProperties = {
+    color: '#f8fafc',
+    fontSize: '1.18rem',
+    fontWeight: 800,
+    letterSpacing: '0.02em'
 };
 
 function sanitizeActivationChunk(value: string) {
@@ -475,13 +431,27 @@ function normalizeActivationCode(value: string) {
     return sanitizeActivationChunk(value);
 }
 
-function splitActivationCode(value: string) {
-    const normalized = normalizeActivationCode(value);
-    return Array.from({ length: ACTIVATION_SEGMENT_COUNT }, (_, index) => (
-        normalized.slice(index * ACTIVATION_SEGMENT_LENGTH, (index + 1) * ACTIVATION_SEGMENT_LENGTH)
-    ));
+function formatActivationCodeForDisplay(value: string) {
+    const segments = splitSegmentedCode(value, ACTIVATION_SEGMENT_LENGTH);
+    if (segments.length === 0) {
+        return '';
+    }
+    return segments.join('-');
 }
 
-function joinActivationSegments(segments: string[]) {
-    return segments.map((segment) => sanitizeActivationChunk(segment)).join('');
+function formatDeviceCodeForDisplay(value: string) {
+    return sanitizeActivationChunk(value);
+}
+
+function splitSegmentedCode(value: string, segmentLength: number) {
+    const normalized = sanitizeActivationChunk(value);
+    if (!normalized) {
+        return [];
+    }
+
+    const segments: string[] = [];
+    for (let index = 0; index < normalized.length; index += segmentLength) {
+        segments.push(normalized.slice(index, index + segmentLength));
+    }
+    return segments;
 }

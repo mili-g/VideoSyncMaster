@@ -193,6 +193,15 @@ export default function DiagnosticsPage({
             };
         }
 
+        if (selectedTtsService === 'gptsovits') {
+            const detail = statusDetails.gpt_sovits?.detail || 'GPT-SoVITS 首次启用时会自动安装运行时。';
+            const state = statusDetails.gpt_sovits?.state;
+            return {
+                ready: !(state === 'unsupported_platform' || state === 'runtime_incompatible'),
+                detail
+            };
+        }
+
         const hasTokenizer = Boolean(status.qwen_tokenizer);
         const hasBase = Boolean(status.qwen_17b_base || status.qwen_06b_base);
         return {
@@ -275,7 +284,7 @@ export default function DiagnosticsPage({
             <PageFrame
                 eyebrow="Diagnostics"
                 title="环境诊断"
-                description="展示运行环境、模型状态与工作流就绪度。"
+                description=""
                 headerMode="hidden"
             >
                 <div className="config-page">
@@ -283,7 +292,6 @@ export default function DiagnosticsPage({
                         <div>
                             <span className="config-page__eyebrow">Readiness</span>
                             <h1>环境诊断</h1>
-                            <p>用于快速确认可用状态与阻塞项。</p>
                         </div>
                         <div className="config-page__hero-meta">
                             <div className="status-kpi">
@@ -307,7 +315,6 @@ export default function DiagnosticsPage({
                             <strong title={`ASR: ${selectedAsrService} / TTS: ${selectedTtsService}`}>
                                 ASR: {selectedAsrService} / TTS: {selectedTtsService}
                             </strong>
-                            <small>主流程将按此组合执行。</small>
                         </div>
                         <div className="output-dir-toolbar__actions">
                             <button type="button" className="secondary-button" onClick={() => void refresh()} disabled={loadState === 'loading'}>
@@ -338,10 +345,7 @@ export default function DiagnosticsPage({
 
                     <section className="config-section">
                         <div className="config-section__head">
-                            <div>
-                                <h3>工作流就绪度</h3>
-                                <p>评估主流程执行条件。</p>
-                            </div>
+                            <div><h3>工作流就绪度</h3></div>
                         </div>
                         <div className="model-grid">
                             {readinessCards.map((item) => (
@@ -371,10 +375,7 @@ export default function DiagnosticsPage({
 
                     <section className="config-section">
                         <div className="config-section__head">
-                            <div>
-                                <h3>ASR 通道诊断</h3>
-                                <p>验证识别通道的执行能力与模型状态。</p>
-                            </div>
+                            <div><h3>ASR 通道诊断</h3></div>
                         </div>
                         {!asrDiagnostics && (
                             <div className="model-grid model-grid--single">
@@ -382,7 +383,6 @@ export default function DiagnosticsPage({
                                     <div className="model-card__header">
                                         <div>
                                             <h4>尚未运行 ASR 诊断</h4>
-                                            <p>按需手动触发识别通道诊断。</p>
                                         </div>
                                         <span className="model-status-pill">idle</span>
                                     </div>
@@ -423,10 +423,7 @@ export default function DiagnosticsPage({
 
                     <section className="config-section">
                         <div className="config-section__head">
-                            <div>
-                                <h3>模型与运行时问题</h3>
-                                <p>仅展示需要处理的模型与运行时问题。</p>
-                            </div>
+                            <div><h3>模型与运行时问题</h3></div>
                         </div>
                         <div className="model-grid">
                             {highlightedModelIssues.length === 0 ? (
@@ -464,7 +461,6 @@ export default function DiagnosticsPage({
                             <div className="config-section__head">
                                 <div>
                                 <h3>阻塞项</h3>
-                                <p>以下问题会直接影响主流程执行。</p>
                                 </div>
                             </div>
                             <div className="model-grid">

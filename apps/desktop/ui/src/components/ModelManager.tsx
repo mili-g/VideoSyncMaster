@@ -13,6 +13,7 @@ interface ModelStatus {
     funasr_punc: boolean;
     vibevoice_asr_standard: boolean;
     index_tts: boolean;
+    gpt_sovits: boolean;
     source_separation: boolean;
     qwen: boolean;
     qwen_tokenizer: boolean;
@@ -97,6 +98,7 @@ const modelCatalog: ModelItem[] = [
     { key: 'vibevoice_asr_standard', name: 'VibeVoice-ASR HF', desc: '长音频与多说话人识别模型。', link: 'Models/VibeVoice-ASR-HF', group: 'asr', usage: '长音频 / 多说话人', requiredBy: 'VibeVoice-ASR' },
     { key: 'qwen', name: 'Qwen2.5-7B-Instruct', desc: '本地字幕翻译模型。', link: 'Models/Qwen2.5-7B-Instruct', group: 'tts', usage: '本地翻译', requiredBy: '单条/批量字幕翻译' },
     { key: 'index_tts', name: 'Index-TTS', desc: '语音克隆合成引擎。', link: 'Models/index-tts', group: 'tts', usage: '语音克隆', requiredBy: 'Index-TTS' },
+    { key: 'gpt_sovits', name: 'GPT-SoVITS', desc: '官方零样本语音克隆引擎。', link: 'runtime/gpt_sovits', group: 'tts', usage: '零样本语音克隆', requiredBy: 'GPT-SoVITS' },
     { key: 'qwen_tokenizer', name: 'Qwen3 Tokenizer', desc: 'Qwen3-TTS 共享分词器。', link: 'Models/Qwen3-TTS-Tokenizer-12Hz', group: 'tts', usage: 'TTS 基础依赖', requiredBy: 'Qwen3-TTS 全部档位' },
     { key: 'qwen_17b_base', name: 'Qwen3-TTS 1.7B Base', desc: '正式生成优先档位。', link: 'Models/Qwen3-TTS-12Hz-1.7B-Base', group: 'tts', usage: '高质量配音', requiredBy: 'Qwen3-TTS / Quality' },
     { key: 'qwen_17b_design', name: 'Qwen3-TTS 1.7B VoiceDesign', desc: '面向音色设计和描述式声音控制。', link: 'Models/Qwen3-TTS-12Hz-1.7B-VoiceDesign', group: 'tts', usage: '声音设计', requiredBy: 'Qwen3-TTS / Design' },
@@ -108,9 +110,9 @@ const modelCatalog: ModelItem[] = [
 ];
 
 const groupMeta: Record<ModelGroup, { title: string; description: string }> = {
-    asr: { title: 'ASR 模型', description: '本地识别引擎和辅助对齐能力。' },
-    tts: { title: 'TTS 模型', description: '配音引擎和共享依赖。' },
-    aux: { title: '辅助能力', description: '分离、补帧等非核心模型。' }
+    asr: { title: 'ASR 模型', description: '' },
+    tts: { title: 'TTS 模型', description: '' },
+    aux: { title: '辅助能力', description: '' }
 };
 
 const downloadSpecs: Record<string, DownloadSpec> = {
@@ -262,18 +264,12 @@ const ModelManager: React.FC<ModelManagerProps> = ({ onStatusChange, onFeedback 
     const [statusDetails, setStatusDetails] = useState<Record<string, ModelStatusDetail>>({});
     const [modelsRoot, setModelsRoot] = useState('');
     const [defaultModelsRoot, setDefaultModelsRoot] = useState('');
-    const [configuredModelsRoot, setConfiguredModelsRoot] = useState('');
     const [managedModelsRoot, setManagedModelsRoot] = useState('');
-    const [usingCustomModelsRoot, setUsingCustomModelsRoot] = useState(false);
-    const [protectedDefaultModelsRoot, setProtectedDefaultModelsRoot] = useState(false);
     const [pendingModelsRoot, setPendingModelsRoot] = useState('');
     const [applyingModelsRoot, setApplyingModelsRoot] = useState(false);
     const [runtimeRoot, setRuntimeRoot] = useState('');
     const [defaultRuntimeRoot, setDefaultRuntimeRoot] = useState('');
-    const [configuredRuntimeRoot, setConfiguredRuntimeRoot] = useState('');
     const [managedRuntimeRoot, setManagedRuntimeRoot] = useState('');
-    const [usingCustomRuntimeRoot, setUsingCustomRuntimeRoot] = useState(false);
-    const [protectedDefaultRuntimeRoot, setProtectedDefaultRuntimeRoot] = useState(false);
     const [pendingRuntimeRoot, setPendingRuntimeRoot] = useState('');
     const [applyingRuntimeRoot, setApplyingRuntimeRoot] = useState(false);
     const [loading, setLoading] = useState(true);
@@ -296,10 +292,7 @@ const ModelManager: React.FC<ModelManagerProps> = ({ onStatusChange, onFeedback 
         const configuredRoot = result.configuredRoot || '';
         setModelsRoot(resolvedRoot);
         setDefaultModelsRoot(result.defaultRoot || '');
-        setConfiguredModelsRoot(configuredRoot);
         setManagedModelsRoot(result.managedRoot || '');
-        setUsingCustomModelsRoot(Boolean(result.usingCustomRoot));
-        setProtectedDefaultModelsRoot(Boolean(result.protectedDefaultRoot));
         setPendingModelsRoot(configuredRoot || resolvedRoot);
     }, []);
 
@@ -320,10 +313,7 @@ const ModelManager: React.FC<ModelManagerProps> = ({ onStatusChange, onFeedback 
         const configuredRoot = result.configuredRoot || '';
         setRuntimeRoot(resolvedRoot);
         setDefaultRuntimeRoot(result.defaultRoot || '');
-        setConfiguredRuntimeRoot(configuredRoot);
         setManagedRuntimeRoot(result.managedRoot || '');
-        setUsingCustomRuntimeRoot(Boolean(result.usingCustomRoot));
-        setProtectedDefaultRuntimeRoot(Boolean(result.protectedDefaultRoot));
         setPendingRuntimeRoot(configuredRoot || resolvedRoot);
     }, []);
 
@@ -748,8 +738,11 @@ const ModelManager: React.FC<ModelManagerProps> = ({ onStatusChange, onFeedback 
         const actionLabel = downloadTask?.phase === 'canceled'
             ? (isRuntimeItem ? '重新安装运行时' : '重新下载')
             : (isRuntimeItem ? '安装运行时' : '下载并校验');
+        const autoBootstrapOnly = item.key === 'gpt_sovits';
         const footerNote = isInstalled
             ? '目录和关键文件已通过当前状态检查。'
+            : autoBootstrapOnly
+                ? '该引擎在首次启用时自动安装官方运行时与预置资源。'
             : downloadTask?.phase === 'canceled'
                 ? '下载已取消，可重新发起下载。'
                 : '当前环境未发现该模型或运行时，请先完成下载与校验。';
@@ -808,7 +801,7 @@ const ModelManager: React.FC<ModelManagerProps> = ({ onStatusChange, onFeedback 
 
                     <p className="model-card__hint">{footerNote}</p>
 
-                    {!isInstalled && (
+                    {!isInstalled && !autoBootstrapOnly && (
                         <div className="model-card__actions">
                             {isDownloadingThis ? (
                                 <button type="button" className="secondary-button secondary-button--danger" onClick={() => handleCancel(item.key)}>
@@ -848,7 +841,6 @@ const ModelManager: React.FC<ModelManagerProps> = ({ onStatusChange, onFeedback 
                 <div>
                     <span className="config-page__eyebrow">Models</span>
                     <h1>模型中心</h1>
-                    <p>集中管理识别、配音与辅助能力所需的模型及运行时，并展示实时可用状态。</p>
                 </div>
                 <div className="config-page__hero-meta">
                     <div className="status-kpi">
@@ -866,12 +858,10 @@ const ModelManager: React.FC<ModelManagerProps> = ({ onStatusChange, onFeedback 
                 <div className="model-root-card">
                     <span className="model-root-card__label">模型根目录</span>
                     <strong title={modelsRoot || '正在检测...'}>{modelsRoot || '正在检测...'}</strong>
-                    <small>未内置的模型与依赖将在此目录统一管理，并供主应用按需调用。</small>
                 </div>
                 <div className="model-root-card">
                     <span className="model-root-card__label">运行环境根目录</span>
                     <strong title={runtimeRoot || '正在检测...'}>{runtimeRoot || '正在检测...'}</strong>
-                    <small>Python 运行时、共享 overlay 和运行时修复状态将在此目录统一管理。</small>
                 </div>
                 <button type="button" className="secondary-button" onClick={() => void checkStatus()} disabled={hasActiveDownloads}>
                     刷新状态
@@ -880,25 +870,16 @@ const ModelManager: React.FC<ModelManagerProps> = ({ onStatusChange, onFeedback 
 
             <section className="config-section">
                 <div className="config-section__head">
-                    <div>
-                        <h3>模型目录管理</h3>
-                        <p>安装版和仓库版统一通过同一套模型根目录解析逻辑工作。切换目录后，下载、状态检查和后端调用都会立即使用新位置。</p>
-                    </div>
+                    <div><h3>模型目录</h3></div>
                 </div>
                 <div className="field-grid">
                     <div className="field-block">
                         <span>当前生效目录</span>
                         <input className="field-control" value={modelsRoot} readOnly />
-                        <small>{usingCustomModelsRoot ? '当前正在使用自定义模型目录。' : '当前正在使用默认模型目录。'}</small>
                     </div>
                     <div className="field-block">
                         <span>默认目录</span>
                         <input className="field-control" value={defaultModelsRoot} readOnly />
-                        <small>
-                            {protectedDefaultModelsRoot
-                                ? '默认目录位于受保护位置，直接写入通常需要管理员权限。'
-                                : '未设置自定义目录时，应用会回退到这里。'}
-                        </small>
                     </div>
                     <div className="field-block">
                         <span>自定义目录</span>
@@ -908,16 +889,10 @@ const ModelManager: React.FC<ModelManagerProps> = ({ onStatusChange, onFeedback 
                             onChange={(event) => setPendingModelsRoot(event.target.value)}
                             placeholder="选择一个用户可写的目录"
                         />
-                        <small>
-                            {configuredModelsRoot
-                                ? `已配置自定义目录：${configuredModelsRoot}`
-                                : '建议使用非 Program Files 的本地磁盘目录，便于安装版和仓库版共用。'}
-                        </small>
                     </div>
                     <div className="field-block">
                         <span>兼容兜底目录</span>
                         <input className="field-control" value={managedModelsRoot} readOnly />
-                        <small>这是安装版原先的托管模型目录，迁移时会从当前生效目录搬运到新目录。</small>
                     </div>
                 </div>
                 <div className="form-actions">
@@ -938,25 +913,16 @@ const ModelManager: React.FC<ModelManagerProps> = ({ onStatusChange, onFeedback 
 
             <section className="config-section">
                 <div className="config-section__head">
-                    <div>
-                        <h3>运行环境目录管理</h3>
-                        <p>Python 运行环境、运行时 overlay 和修复状态与用户数据分离管理。建议与模型目录放在同一块大容量磁盘，例如同一父目录下的 <code>models</code> 和 <code>runtime</code>。</p>
-                    </div>
+                    <div><h3>运行环境目录</h3></div>
                 </div>
                 <div className="field-grid">
                     <div className="field-block">
                         <span>当前生效目录</span>
                         <input className="field-control" value={runtimeRoot} readOnly />
-                        <small>{usingCustomRuntimeRoot ? '当前正在使用自定义运行环境目录。' : '当前正在使用默认运行环境目录。'}</small>
                     </div>
                     <div className="field-block">
                         <span>默认目录</span>
                         <input className="field-control" value={defaultRuntimeRoot} readOnly />
-                        <small>
-                            {protectedDefaultRuntimeRoot
-                                ? '默认目录位于受保护位置，直接写入通常需要管理员权限。'
-                                : '未设置自定义目录时，应用会回退到这里。'}
-                        </small>
                     </div>
                     <div className="field-block">
                         <span>自定义目录</span>
@@ -966,16 +932,10 @@ const ModelManager: React.FC<ModelManagerProps> = ({ onStatusChange, onFeedback 
                             onChange={(event) => setPendingRuntimeRoot(event.target.value)}
                             placeholder="选择一个用户可写的运行环境目录"
                         />
-                        <small>
-                            {configuredRuntimeRoot
-                                ? `已配置自定义目录：${configuredRuntimeRoot}`
-                                : '建议与模型目录位于同一磁盘，减少系统盘占用。'}
-                        </small>
                     </div>
                     <div className="field-block">
                         <span>兼容兜底目录</span>
                         <input className="field-control" value={managedRuntimeRoot} readOnly />
-                        <small>这是安装版原先的托管运行环境目录，迁移时会从当前生效目录搬运到新目录。</small>
                     </div>
                 </div>
                 <div className="form-actions">
@@ -997,10 +957,7 @@ const ModelManager: React.FC<ModelManagerProps> = ({ onStatusChange, onFeedback 
             {(['asr', 'tts', 'aux'] as ModelGroup[]).map((group) => (
                 <section key={group} className="config-section">
                     <div className="config-section__head">
-                        <div>
-                            <h3>{groupMeta[group].title}</h3>
-                            <p>{groupMeta[group].description}</p>
-                        </div>
+                        <div><h3>{groupMeta[group].title}</h3></div>
                     </div>
                     <div className="model-grid">
                         {groupedModels[group].map(renderCard)}

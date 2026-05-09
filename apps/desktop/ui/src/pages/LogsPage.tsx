@@ -148,7 +148,7 @@ export default function LogsPage({ active = false, onStatusChange }: LogsPagePro
             <PageFrame
                 eyebrow="Logs"
                 title="运行日志"
-                description="在应用内查看后端日志，支持刷新、清空和导出。"
+                description=""
                 headerMode="hidden"
             >
                 <div className="config-page">
@@ -156,7 +156,6 @@ export default function LogsPage({ active = false, onStatusChange }: LogsPagePro
                         <div>
                             <span className="config-page__eyebrow">Observability</span>
                             <h1>运行日志</h1>
-                            <p>用于排查任务执行异常和下载、模型、环境相关问题。</p>
                         </div>
                         <div className="config-page__hero-meta">
                             <div className="status-kpi">
@@ -178,7 +177,7 @@ export default function LogsPage({ active = false, onStatusChange }: LogsPagePro
                         <div className="model-root-card">
                             <span className="model-root-card__label">日志文件</span>
                             <strong title={logState.path || '暂无路径'}>{logState.path || 'backend_debug.log'}</strong>
-                            <small>最后更新时间: {formatTimestamp(logState.updatedAt)}</small>
+                            <small>{formatTimestamp(logState.updatedAt)}</small>
                         </div>
                         <div className="output-dir-toolbar__actions">
                             <button type="button" className="secondary-button" onClick={() => void refreshLogs()} disabled={loading}>
@@ -211,7 +210,6 @@ export default function LogsPage({ active = false, onStatusChange }: LogsPagePro
                         <div className="config-section__head">
                             <div>
                                 <h3>日志内容</h3>
-                                <p>页面激活时每 3 秒自动刷新一次。</p>
                             </div>
                         </div>
                         <div className="log-viewer">

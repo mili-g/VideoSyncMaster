@@ -12,7 +12,7 @@ export default function ModelCenterPage(props: ModelCenterPageProps) {
             <PageFrame
                 eyebrow="Models"
                 title="模型中心"
-                description="集中管理本地模型、下载入口和路径状态。业务页面只消费结果，不直接承担模型运维职责。"
+                description=""
                 headerMode="hidden"
             >
                 <ModelManager themeMode="dark" {...props} />

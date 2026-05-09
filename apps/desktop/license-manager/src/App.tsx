@@ -66,7 +66,10 @@ export default function App() {
     [plans, selectedPlanId]
   )
   const latestPayload = overview?.latestIssuedLicense?.payload
-  const activationSegments = useMemo(() => splitActivationCode(activationCode), [activationCode])
+  const activationDisplayValue = useMemo(
+    () => formatActivationCodeForDisplay(activationCode),
+    [activationCode]
+  )
 
   const handleIssueLicense = async () => {
     if (!selectedPlan) {
@@ -81,7 +84,7 @@ export default function App() {
     setSubmitting(true)
     try {
       const result = await window.api.issueLicense({
-        deviceCode: deviceCode.trim(),
+        deviceCode: normalizeLicenseCode(deviceCode),
         planId: selectedPlan.id
       }) as IssueLicenseResponse
 
@@ -139,7 +142,6 @@ export default function App() {
           <div>
             <div style={eyebrowStyle}>License Issuer</div>
             <h1 style={heroTitleStyle}>授权码生成</h1>
-            <p style={heroDescStyle}>选择套餐并输入设备识别码，直接生成可供客户端激活的授权码。</p>
           </div>
           <div style={heroMetaStyle}>
             <div style={metricStyle}>
@@ -172,7 +174,6 @@ export default function App() {
             <div style={panelHeadStyle}>
               <div>
                 <h2 style={sectionTitleStyle}>套餐</h2>
-                <p style={sectionDescStyle}>按套餐时长生成授权码。</p>
               </div>
             </div>
             <div style={planGridStyle}>
@@ -200,11 +201,11 @@ export default function App() {
 
             <div style={fieldGroupStyle}>
               <label style={fieldLabelStyle}>设备识别码</label>
-              <textarea
+              <input
                 value={deviceCode}
-                onChange={(event) => setDeviceCode(event.target.value)}
-                placeholder="粘贴客户端展示的设备识别码"
-                style={textareaStyle}
+                onChange={(event) => setDeviceCode(normalizeLicenseCode(event.target.value))}
+                placeholder="XXXXXXXXXXXXXXX"
+                style={deviceInputStyle}
               />
             </div>
 
@@ -222,21 +223,15 @@ export default function App() {
             <div style={panelHeadStyle}>
               <div>
                 <h2 style={sectionTitleStyle}>授权码</h2>
-                <p style={sectionDescStyle}>将生成结果复制给客户端直接激活。</p>
               </div>
             </div>
 
-            <div style={activationGridStyle}>
-              {activationSegments.map((segment, index) => (
-                <input
-                  key={`activation-code-${index}`}
-                  value={segment}
-                  readOnly
-                  placeholder="生成后显示"
-                  style={activationInputStyle}
-                />
-              ))}
-            </div>
+            <input
+              value={activationDisplayValue}
+              readOnly
+              placeholder="生成后显示"
+              style={activationInputStyle}
+            />
 
             <div style={buttonRowStyle}>
               <div style={hintStyle}>签发归档：{overview?.vaultPath || '-'}</div>
@@ -332,12 +327,6 @@ const heroTitleStyle: React.CSSProperties = {
   color: '#f8fafc'
 }
 
-const heroDescStyle: React.CSSProperties = {
-  margin: '6px 0 0',
-  color: '#94a3b8',
-  lineHeight: 1.5
-}
-
 const heroMetaStyle: React.CSSProperties = {
   display: 'grid',
   gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
@@ -400,12 +389,6 @@ const sectionTitleStyle: React.CSSProperties = {
   fontSize: 17
 }
 
-const sectionDescStyle: React.CSSProperties = {
-  margin: '4px 0 0',
-  color: '#94a3b8',
-  lineHeight: 1.45
-}
-
 const planGridStyle: React.CSSProperties = {
   display: 'grid',
   gap: 10,
@@ -457,29 +440,23 @@ const fieldLabelStyle: React.CSSProperties = {
   fontSize: 14
 }
 
-const textareaStyle: React.CSSProperties = {
+const deviceInputStyle: React.CSSProperties = {
   width: '100%',
-  minHeight: 78,
-  resize: 'vertical',
+  minHeight: 48,
   borderRadius: 12,
   border: '1px solid rgba(148,163,184,0.16)',
   background: 'rgba(8,15,28,0.92)',
   color: '#e2e8f0',
   padding: '10px 12px',
-  lineHeight: 1.45,
-  fontSize: 13,
+  lineHeight: 1.2,
+  fontSize: 15,
+  letterSpacing: '0.16em',
   fontFamily: 'Consolas, ui-monospace, SFMono-Regular, Menlo, monospace'
-}
-
-const activationGridStyle: React.CSSProperties = {
-  display: 'grid',
-  gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
-  gap: 10
 }
 
 const activationInputStyle: React.CSSProperties = {
   width: '100%',
-  minHeight: 44,
+  minHeight: 52,
   borderRadius: 12,
   border: '1px solid rgba(148,163,184,0.16)',
   background: 'rgba(8,15,28,0.92)',
@@ -504,13 +481,26 @@ const hintStyle: React.CSSProperties = {
   fontSize: 13
 }
 
-function sanitizeActivationChunk(value: string) {
+function sanitizeLicenseChunk(value: string) {
   return String(value || '').toUpperCase().replace(/[^0-9A-Z]/g, '')
 }
 
+function normalizeLicenseCode(value: string) {
+  return sanitizeLicenseChunk(value)
+}
+
 function splitActivationCode(value: string) {
-  const normalized = sanitizeActivationChunk(value)
-  return Array.from({ length: ACTIVATION_SEGMENT_COUNT }, (_, index) => (
-    normalized.slice(index * ACTIVATION_SEGMENT_LENGTH, (index + 1) * ACTIVATION_SEGMENT_LENGTH)
+  return splitSegmentedCode(value, ACTIVATION_SEGMENT_LENGTH, ACTIVATION_SEGMENT_COUNT)
+}
+
+function formatActivationCodeForDisplay(value: string) {
+  const segments = splitActivationCode(value).filter(Boolean)
+  return segments.join('-')
+}
+
+function splitSegmentedCode(value: string, segmentLength: number, segmentCount: number) {
+  const normalized = normalizeLicenseCode(value)
+  return Array.from({ length: segmentCount }, (_, index) => (
+    normalized.slice(index * segmentLength, (index + 1) * segmentLength)
   ))
 }

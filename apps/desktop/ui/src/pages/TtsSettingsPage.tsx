@@ -1,12 +1,13 @@
 import React from 'react';
 import TTSConfig from '../components/TTSConfig';
 import PageFrame from '../layout/PageFrame';
+import type { TtsService } from '../utils/modelProfiles';
 
 interface TtsSettingsPageProps {
-    activeService: 'indextts' | 'qwen';
-    onServiceChange: (service: 'indextts' | 'qwen') => Promise<boolean>;
-    ttsModelProfiles: Record<'indextts' | 'qwen', string>;
-    setTtsModelProfiles: React.Dispatch<React.SetStateAction<Record<'indextts' | 'qwen', string>>>;
+    activeService: TtsService;
+    onServiceChange: (service: TtsService) => Promise<boolean>;
+    ttsModelProfiles: Record<TtsService, string>;
+    setTtsModelProfiles: React.Dispatch<React.SetStateAction<Record<TtsService, string>>>;
     batchSize: number;
     setBatchSize: (size: number) => void;
     cloneBatchSize: number;
@@ -21,7 +22,7 @@ export default function TtsSettingsPage(props: TtsSettingsPageProps) {
             <PageFrame
                 eyebrow="Speech"
                 title="配音中心"
-                description="统一管理配音引擎、音色模式与生成参数。"
+                description=""
                 headerMode="hidden"
             >
                 <TTSConfig

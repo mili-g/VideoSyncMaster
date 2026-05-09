@@ -138,9 +138,6 @@ export default function BatchQueuePanel({
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
                     <div>
                         <h2 style={{ margin: 0, color: '#fff' }}>批量处理队列</h2>
-                        <p style={{ margin: '8px 0 0', color: 'rgba(255,255,255,0.72)' }}>
-                            管理批量素材、字幕资产与执行进度。
-                        </p>
                     </div>
 
                     <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>

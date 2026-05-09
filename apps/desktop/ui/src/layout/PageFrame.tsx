@@ -3,7 +3,7 @@ import React from 'react';
 interface PageFrameProps {
     eyebrow?: string;
     title: string;
-    description: string;
+    description?: string;
     aside?: React.ReactNode;
     children: React.ReactNode;
     actions?: React.ReactNode;
@@ -18,7 +18,7 @@ export default function PageFrame({ eyebrow, title, description, aside, actions,
                     <div>
                         {eyebrow && <span className="config-page__eyebrow">{eyebrow}</span>}
                         <h1>{title}</h1>
-                        <p>{description}</p>
+                        {description ? <p>{description}</p> : null}
                     </div>
                     {(aside || actions) && (
                         <div className="page-frame__hero-side">

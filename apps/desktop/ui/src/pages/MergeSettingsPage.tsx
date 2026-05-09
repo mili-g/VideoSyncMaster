@@ -15,7 +15,7 @@ export default function MergeSettingsPage(props: MergeSettingsPageProps) {
             <PageFrame
                 eyebrow="Delivery"
                 title="合成配置"
-                description="配置混音策略、时长对齐方案与最终成片交付参数。"
+                description=""
                 headerMode="hidden"
             >
                 <MergeConfig themeMode="dark" {...props} />

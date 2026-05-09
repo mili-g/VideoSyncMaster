@@ -12,7 +12,6 @@ interface MergeConfigProps {
 interface OptionCard {
     value: string;
     label: string;
-    description: string;
     badge?: string;
 }
 
@@ -20,13 +19,11 @@ const audioMixOptions: Array<OptionCard & { value: AudioMixMode }> = [
     {
         value: 'preserve_background',
         label: '保留背景音',
-        description: '保留环境声与配乐，仅替换原始人声并叠加新配音。',
         badge: '默认'
     },
     {
         value: 'replace_original',
-        label: '完全替换原音轨',
-        description: '仅输出新配音音轨，适用于纯净旁白或全量重配场景。'
+        label: '完全替换原音轨'
     }
 ];
 
@@ -34,23 +31,19 @@ const strategyOptions: OptionCard[] = [
     {
         value: 'auto_speedup',
         label: '自动加速',
-        description: '优先通过轻量加速控制时长偏差，适合常规批量交付。',
         badge: '推荐'
     },
     {
         value: 'frame_blend',
-        label: '帧混合',
-        description: '通过平滑过渡延展画面时长，适用于轻度时长补偿。'
+        label: '帧混合'
     },
     {
         value: 'freeze_frame',
-        label: '冻结尾帧',
-        description: '以尾帧停留换取额外配音空间，适用于静态讲解类画面。'
+        label: '冻结尾帧'
     },
     {
         value: 'rife',
-        label: 'RIFE 智能补帧',
-        description: '通过智能补帧延展视频时长，优先保证画面流畅度。'
+        label: 'RIFE 智能补帧'
     }
 ];
 
@@ -120,9 +113,6 @@ function renderOption(
                     </span>
                 )}
             </div>
-            <div style={{ marginLeft: '28px', fontSize: '0.92rem', lineHeight: 1.6, color: isLightMode ? '#475569' : '#94a3b8' }}>
-                {option.description}
-            </div>
         </button>
     );
 }
@@ -149,9 +139,6 @@ const MergeConfig: React.FC<MergeConfigProps> = ({
 
             <div style={sectionCardStyle(isLightMode)}>
                 <h3 style={{ fontSize: '1.08rem', fontWeight: 700, marginBottom: '10px' }}>音频合成方式</h3>
-                <p style={{ margin: '0 0 16px 0', lineHeight: 1.7, color: isLightMode ? '#475569' : '#94a3b8' }}>
-                    选择成片音轨保留策略，控制原始环境声、配乐与新配音的组合方式。
-                </p>
                 <div style={{ display: 'grid', gap: '14px' }}>
                     {audioMixOptions.map((option) => renderOption(option, audioMixMode, isLightMode, () => setAudioMixMode(option.value)))}
                 </div>
@@ -159,9 +146,6 @@ const MergeConfig: React.FC<MergeConfigProps> = ({
 
             <div style={sectionCardStyle(isLightMode)}>
                 <h3 style={{ fontSize: '1.08rem', fontWeight: 700, marginBottom: '10px' }}>视频对齐策略</h3>
-                <p style={{ margin: '0 0 16px 0', lineHeight: 1.7, color: isLightMode ? '#475569' : '#94a3b8' }}>
-                    当配音时长超出原片段时，选择音画同步的处理方式。
-                </p>
                 <div style={{ display: 'grid', gap: '14px' }}>
                     {strategyOptions.map((option) => renderOption(option, videoStrategy, isLightMode, () => setVideoStrategy(option.value)))}
                 </div>

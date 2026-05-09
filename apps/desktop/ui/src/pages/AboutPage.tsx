@@ -7,7 +7,7 @@ export default function AboutPage() {
             <PageFrame
                 eyebrow="System"
                 title="关于"
-                description="保留版本信息、能力边界和运行说明，避免和工作流配置混在一起。"
+                description=""
                 headerMode="compact"
             >
                 <AboutView themeMode="dark" />

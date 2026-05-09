@@ -2,6 +2,7 @@ import type React from 'react';
 import VideoUpload from '../components/VideoUpload';
 import Timeline, { type Segment } from '../components/Timeline';
 import TranslationPanel from '../components/TranslationPanel';
+import type { TtsService } from '../utils/modelProfiles';
 
 interface HomeWorkbenchPageProps {
     leftWidth: number;
@@ -30,7 +31,7 @@ interface HomeWorkbenchPageProps {
     timelineRef: React.RefObject<HTMLDivElement>;
     translationRef: React.RefObject<HTMLDivElement>;
     targetLang: string;
-    ttsService: 'indextts' | 'qwen';
+    ttsService: TtsService;
     onVideoSelected: (path: string) => void;
     onTimeUpdate: (time: number) => void;
     onVideoPause: () => void;
@@ -165,7 +166,7 @@ export default function HomeWorkbenchPage({
 
                         {!mergedVideoPath && (
                             <div className="delivery-panel__empty">
-                                合并完成后将在此显示
+                                暂无成片
                             </div>
                         )}
 

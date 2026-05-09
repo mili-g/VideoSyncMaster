@@ -74,14 +74,13 @@ export default function ASRHub({
         <PageFrame
             eyebrow="Recognition"
             title="识别中心"
-            description="只保留会直接影响识别结果的设置。"
+            description=""
             headerMode="hidden"
         >
                 <div className="config-section">
                     <div className="config-section__head">
                         <div>
                             <h3>识别引擎</h3>
-                            <p>切换当前任务的识别后端。</p>
                         </div>
                         <div className="status-inline">
                             {ASR_SERVICE_META[currentService].shortName} / {localServiceSet.has(currentService) ? '本地' : '云端'}
@@ -128,7 +127,6 @@ export default function ASRHub({
                     <div className="config-section__head">
                         <div>
                             <h3>源语言</h3>
-                            <p>语言指定只在支持的引擎上生效。</p>
                         </div>
                         <div className="status-inline">
                             {ASR_SERVICE_META[currentService].sourceLanguageMode === 'auto_only' ? '自动识别' : '自动 / 指定'}

@@ -1,6 +1,4 @@
 import React from 'react';
-import wxImg from '../../wx.jpg';
-import zfbImg from '../../zfb.jpg';
 import { BACKEND_COMMAND_CATALOG } from '../types/backendCommandCatalog';
 
 interface AboutViewProps {
@@ -34,19 +32,39 @@ const AboutView: React.FC<AboutViewProps> = ({ themeMode }) => {
                 </h1>
 
                 <div style={{
-                    background: isLightMode ? 'rgba(99, 102, 241, 0.1)' : 'rgba(99, 102, 241, 0.15)',
-                    padding: '30px',
-                    borderRadius: '20px',
+                    background: isLightMode ? 'rgba(99, 102, 241, 0.1)' : 'linear-gradient(180deg, rgba(59,130,246,0.16), rgba(30,41,59,0.3))',
+                    padding: '32px',
+                    borderRadius: '18px',
                     marginBottom: '40px',
-                    border: '1px solid rgba(99, 102, 241, 0.2)'
+                    border: '1px solid rgba(99, 102, 241, 0.22)',
+                    boxShadow: isLightMode ? '0 18px 40px rgba(15,23,42,0.08)' : '0 20px 44px rgba(2,6,23,0.22)'
                 }}>
-                    <p style={{ fontSize: '1.2em', fontWeight: 'bold', margin: '0 0 10px 0' }}>VideoSyncMaster</p>
-                    <p style={{ fontSize: '0.9em', color: isLightMode ? '#64748b' : '#94a3b8', margin: '0 0 20px 0' }}>
-                        Version: v1.0.0
-                    </p>
-                    <p style={{ lineHeight: '1.6', margin: 0 }}>
-                        VideoSyncMaster 面向字幕生产、多语言配音与成片交付场景，提供统一的视频本地化工作流。
-                    </p>
+                    <div style={{ marginBottom: '18px' }}>
+                        <p style={{ fontSize: '0.82em', letterSpacing: '0.08em', textTransform: 'uppercase', color: isLightMode ? '#475569' : '#93c5fd', margin: '0 0 10px 0' }}>
+                            Product Overview
+                        </p>
+                        <p style={{ fontSize: '1.36em', fontWeight: 800, margin: 0 }}>VideoSyncMaster</p>
+                    </div>
+                    <div style={{
+                        display: 'grid',
+                        gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
+                        gap: '12px',
+                        marginBottom: '22px',
+                        textAlign: 'left'
+                    }}>
+                        <div style={heroMetricStyle(isLightMode)}>
+                            <div style={heroMetricLabelStyle(isLightMode)}>版本</div>
+                            <div style={heroMetricValueStyle(isLightMode)}>v1.0.0</div>
+                        </div>
+                        <div style={heroMetricStyle(isLightMode)}>
+                            <div style={heroMetricLabelStyle(isLightMode)}>著作权署名</div>
+                            <div style={heroMetricValueStyle(isLightMode)}>RRQ-DS</div>
+                        </div>
+                        <div style={heroMetricStyle(isLightMode)}>
+                            <div style={heroMetricLabelStyle(isLightMode)}>定位</div>
+                            <div style={heroMetricValueStyle(isLightMode)}>商业版本</div>
+                        </div>
+                    </div>
                 </div>
 
                 <div style={{
@@ -59,10 +77,6 @@ const AboutView: React.FC<AboutViewProps> = ({ themeMode }) => {
                 }}>
                     <div style={{ marginBottom: '18px' }}>
                         <h3 style={{ margin: '0 0 8px 0', color: isLightMode ? '#1e293b' : '#fff' }}>后端命令目录</h3>
-                        <p style={{ margin: 0, color: isLightMode ? '#64748b' : '#94a3b8', fontSize: '0.95em', lineHeight: 1.6 }}>
-                            当前版本内置 {BACKEND_COMMAND_CATALOG.commands.length} 个后端动作，用于支撑识别、翻译、配音与合成流程。
-                            该目录可用于版本核验、能力巡检与执行链路确认。
-                        </p>
                     </div>
 
                     <div style={{
@@ -193,45 +207,54 @@ const AboutView: React.FC<AboutViewProps> = ({ themeMode }) => {
 
                 <div style={{ marginBottom: '40px' }}>
                     <h3 style={{ marginBottom: '20px', color: isLightMode ? '#1e293b' : '#fff' }}>商务与支持</h3>
-                    <p style={{ marginBottom: '25px', color: isLightMode ? '#64748b' : '#94a3b8', fontSize: '0.95em' }}>
-                        如需商务合作、功能定制或持续支持，可通过以下方式与项目维护方联系。
-                    </p>
 
-                    <div style={{ display: 'flex', justifyContent: 'center', gap: '40px', flexWrap: 'wrap' }}>
-                        <div style={{ textAlign: 'center' }}>
-                            <div style={{
-                                width: '200px',
-                                height: '200px',
-                                background: '#fff',
-                                padding: '10px',
-                                borderRadius: '12px',
-                                boxShadow: '0 10px 25px rgba(0,0,0,0.1)',
-                                marginBottom: '10px'
-                            }}>
-                                <img src={wxImg} alt="WeChat Pay" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
-                            </div>
-                            <p style={{ fontWeight: 'bold', color: '#07c160' }}>微信支付</p>
+                    <div style={{
+                        display: 'grid',
+                        gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+                        gap: '16px',
+                        textAlign: 'left'
+                    }}>
+                        <div style={contactCardStyle(isLightMode)}>
+                            <div style={contactEyebrowStyle(isLightMode)}>Primary Contact</div>
+                            <div style={contactTitleStyle(isLightMode)}>商务邮箱</div>
+                            <a
+                                href="mailto:1556049389@qq.com"
+                                style={{
+                                    display: 'inline-block',
+                                    marginTop: '10px',
+                                    fontSize: '1.02em',
+                                    fontWeight: 700,
+                                    color: isLightMode ? '#1d4ed8' : '#93c5fd',
+                                    textDecoration: 'none',
+                                    wordBreak: 'break-all'
+                                }}
+                            >
+                                1556049389@qq.com
+                            </a>
                         </div>
 
-                        <div style={{ textAlign: 'center' }}>
+                        <div style={contactCardStyle(isLightMode)}>
+                            <div style={contactEyebrowStyle(isLightMode)}>Service Scope</div>
+                            <div style={contactTitleStyle(isLightMode)}>交付范围</div>
                             <div style={{
-                                width: '200px',
-                                height: '200px',
-                                background: '#fff',
-                                padding: '10px',
-                                borderRadius: '12px',
-                                boxShadow: '0 10px 25px rgba(0,0,0,0.1)',
+                                display: 'flex',
+                                flexWrap: 'wrap',
+                                gap: '8px',
+                                marginTop: '12px',
                                 marginBottom: '10px'
                             }}>
-                                <img src={zfbImg} alt="Alipay" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+                                {['字幕生产', '配音合成', '批量交付', '流程定制'].map((item) => (
+                                    <span key={item} style={serviceTagStyle(isLightMode)}>
+                                        {item}
+                                    </span>
+                                ))}
                             </div>
-                            <p style={{ fontWeight: 'bold', color: '#1677ff' }}>支付宝支付</p>
                         </div>
                     </div>
                 </div>
 
                 <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '20px', fontSize: '0.85em', color: isLightMode ? '#64748b' : '#94a3b8' }}>
-                    <p>© 2026 VideoSyncMaster. Developed by 天冬 (TianDong) - Batch Features and Optimization by RRQ-DS</p>
+                    <p>© 2026 VideoSyncMaster. All rights reserved. Developed and maintained by RRQ-DS.</p>
                 </div>
             </div>
         </div>
@@ -260,6 +283,72 @@ function infoValueStyle(isLightMode: boolean): React.CSSProperties {
         fontSize: '1.15em',
         fontWeight: 700,
         color: isLightMode ? '#0f172a' : '#f8fafc'
+    };
+}
+
+function heroMetricStyle(isLightMode: boolean): React.CSSProperties {
+    return {
+        padding: '14px 16px',
+        borderRadius: '12px',
+        background: isLightMode ? 'rgba(255,255,255,0.78)' : 'rgba(15,23,42,0.36)',
+        border: '1px solid rgba(148, 163, 184, 0.18)'
+    };
+}
+
+function heroMetricLabelStyle(isLightMode: boolean): React.CSSProperties {
+    return {
+        fontSize: '0.8em',
+        marginBottom: '6px',
+        color: isLightMode ? '#64748b' : '#93c5fd'
+    };
+}
+
+function heroMetricValueStyle(isLightMode: boolean): React.CSSProperties {
+    return {
+        fontSize: '1.04em',
+        fontWeight: 700,
+        color: isLightMode ? '#0f172a' : '#f8fafc'
+    };
+}
+
+function contactCardStyle(isLightMode: boolean): React.CSSProperties {
+    return {
+        padding: '20px',
+        borderRadius: '16px',
+        background: isLightMode ? 'rgba(255,255,255,0.82)' : 'rgba(15,23,42,0.3)',
+        border: '1px solid rgba(148, 163, 184, 0.18)',
+        boxShadow: isLightMode ? '0 14px 32px rgba(15,23,42,0.06)' : '0 14px 32px rgba(2,6,23,0.16)'
+    };
+}
+
+function contactEyebrowStyle(isLightMode: boolean): React.CSSProperties {
+    return {
+        fontSize: '0.78em',
+        textTransform: 'uppercase',
+        letterSpacing: '0.06em',
+        color: isLightMode ? '#64748b' : '#93c5fd',
+        marginBottom: '8px'
+    };
+}
+
+function contactTitleStyle(isLightMode: boolean): React.CSSProperties {
+    return {
+        fontSize: '1.08em',
+        fontWeight: 700,
+        color: isLightMode ? '#0f172a' : '#f8fafc'
+    };
+}
+
+function serviceTagStyle(isLightMode: boolean): React.CSSProperties {
+    return {
+        display: 'inline-flex',
+        alignItems: 'center',
+        padding: '5px 10px',
+        borderRadius: '999px',
+        fontSize: '0.8em',
+        background: isLightMode ? 'rgba(37, 99, 235, 0.08)' : 'rgba(59,130,246,0.16)',
+        color: isLightMode ? '#1d4ed8' : '#bfdbfe',
+        border: '1px solid rgba(59,130,246,0.16)'
     };
 }
 

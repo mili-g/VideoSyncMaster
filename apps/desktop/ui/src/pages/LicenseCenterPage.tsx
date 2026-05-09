@@ -7,7 +7,7 @@ export default function LicenseCenterPage() {
             <PageFrame
                 eyebrow="Licensing"
                 title="授权中心"
-                description="管理订阅套餐、设备识别码与授权码激活状态。"
+                description=""
                 headerMode="hidden"
             >
                 <LicenseCenterView />

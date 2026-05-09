@@ -48,7 +48,7 @@ export default function BatchTasksPage(props: BatchTasksPageProps) {
             <PageFrame
                 eyebrow="Batch"
                 title="批量任务"
-                description="集中管理批量素材、执行队列与成片产出。"
+                description=""
                 headerMode="hidden"
             >
                 <BatchQueuePanel {...props} />
