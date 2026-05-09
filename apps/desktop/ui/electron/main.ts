@@ -1,10 +1,11 @@
-import { app, BrowserWindow, ipcMain, shell, dialog, screen } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, dialog, screen, safeStorage } from 'electron'
 import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { createHash } from 'node:crypto'
+import { createHash, createHmac, randomBytes, verify as cryptoVerify } from 'node:crypto'
 import path from 'node:path'
 import { spawn, exec, execFile, ChildProcess } from 'child_process'
 import fs from 'fs'
+import os from 'node:os'
 
 const activeDownloads = new Map<string, ChildProcess>();
 const canceledDownloadKeys = new Set<string>()
@@ -53,10 +54,128 @@ interface ResolvedRuntimeRootInfo {
   protectedDefaultRoot: boolean
 }
 
+interface LicensePlanDefinition {
+  id: string
+  name: string
+  cycle: 'monthly' | 'quarterly' | 'yearly'
+  priceCny: number
+  priceLabel: string
+  seats: number
+  description: string
+  features: string[]
+}
+
+interface LicensePayloadRecord {
+  schemaVersion: number
+  licenseId: string
+  product: string
+  edition: string
+  customerName: string
+  customerEmail: string
+  planId: string
+  planName: string
+  cycle: 'monthly' | 'quarterly' | 'yearly'
+  priceCny: number
+  currency: string
+  issuedAt: string
+  validFrom: string
+  validUntil: string
+  maxDevices: number
+  features: string[]
+  operator: string
+  status: 'active' | 'suspended'
+  notes?: string
+  deviceBinding?: {
+    mode: 'optional' | 'required'
+    fingerprint?: string
+    fingerprintVersion?: 'cpu-v1'
+    label?: string
+  }
+}
+
+interface LicenseEnvelopeRecord {
+  signatureAlgorithm: 'ed25519'
+  keyFingerprint: string
+  payload: LicensePayloadRecord
+  signature: string
+}
+
+interface MachineFingerprintInfoRecord {
+  fingerprint?: string
+  shortFingerprint: string
+  fingerprintVersion?: 'cpu-v1'
+  hostName?: string
+  platform?: string
+  arch?: string
+  appVersion: string
+  available?: boolean
+  reason?: string
+}
+
 const downloadTaskSnapshots = new Map<string, DownloadTaskSnapshot>()
 const PYTHON_RUNTIME_TRACKING_KEY = 'python_runtime'
 let pythonRuntimeInstallPromise: Promise<{ success: boolean; installed: boolean; error?: string }> | null = null
 const VERBOSE_MAIN_LOGS = process.env.VSM_VERBOSE_MAIN === '1'
+const LICENSE_PRODUCT_NAME = 'VideoSyncMaster'
+const LICENSE_CACHE_FILE = 'active-license.cache.json'
+const LICENSE_PUBLIC_KEY_FILE = 'public-key.pem'
+const TRUSTED_LICENSE_PUBLIC_KEY_FINGERPRINT = '04B0BFB1FE9B01E0'
+const ACTIVATION_CODE_MAGIC = 'VSM2'
+const ACTIVATION_CODE_VERSION = 1
+const ACTIVATION_CODE_NOTE = 'activation-code-v2'
+const BASE32_CROCKFORD_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'
+const PLAN_CODE_BY_ID: Record<string, number> = {
+  'starter-monthly': 1,
+  'starter-quarterly': 2,
+  'starter-yearly': 3
+}
+const PLAN_ID_BY_CODE = new Map<number, string>(Object.entries(PLAN_CODE_BY_ID).map(([planId, code]) => [code, planId]))
+const LICENSE_PLANS: LicensePlanDefinition[] = [
+  {
+    id: 'starter-monthly',
+    name: '个人月套餐',
+    cycle: 'monthly',
+    priceCny: 15,
+    priceLabel: '15 元 / 月',
+    seats: 1,
+    description: '适合轻量级日常制作。',
+    features: ['单设备授权', '本地识别/翻译/配音', '字幕与成片导出', '标准更新支持']
+  },
+  {
+    id: 'starter-quarterly',
+    name: '个人季套餐',
+    cycle: 'quarterly',
+    priceCny: 39,
+    priceLabel: '39 元 / 季',
+    seats: 1,
+    description: '适合阶段性交付与连续使用。',
+    features: ['单设备授权', '批量任务能力', '模型目录管理', '标准更新支持']
+  },
+  {
+    id: 'starter-yearly',
+    name: '个人年套餐',
+    cycle: 'yearly',
+    priceCny: 129,
+    priceLabel: '129 元 / 年',
+    seats: 1,
+    description: '适合长期稳定生产使用。',
+    features: ['单设备授权', '批量生产能力', '年度更新支持', '优先工单响应']
+  }
+]
+
+const LICENSE_PROTECTED_BACKEND_ACTIONS = new Set([
+  'test_asr',
+  'translate_text',
+  'test_tts',
+  'merge_video',
+  'dub_video',
+  'generate_single_tts',
+  'generate_batch_tts',
+  'prepare_reference_audio'
+])
+const LICENSE_TICKET_SECRET_ENV = 'VSM_LICENSE_TICKET_SECRET'
+const LICENSE_TICKET_TTL_MS = 90 * 1000
+const backendLicenseTicketSecret = randomBytes(32).toString('hex')
 
 type MainLogLevel = 'info' | 'warn' | 'error' | 'debug'
 type MainLogType = 'business' | 'error' | 'security' | 'debug'
@@ -1583,7 +1702,7 @@ async function installManagedPythonRuntime() {
       percent: 72
     })
 
-    await runProcessWithLogs(stagingPythonExe, ['-c', 'import torch; print(torch.__version__); print(torch.version.cuda or "none")'], {
+    await runProcessWithLogs(stagingPythonExe, ['-c', 'import torch; assert torch.cuda.is_available(), "CUDA unavailable in managed runtime"; print(torch.__version__); print(torch.version.cuda or "none")'], {
       env: bootstrapEnv,
       progressMessage: '正在校验 CUDA 版 PyTorch 运行时',
       percent: 75
@@ -1929,6 +2048,536 @@ function getAppPaths() {
     configuredRuntimeRoot: runtimeInfo.configuredRuntimeRoot,
     usingCustomRuntimeRoot: runtimeInfo.usingCustomRoot,
     protectedDefaultRuntimeRoot: runtimeInfo.protectedDefaultRoot
+  }
+}
+
+function ensureDirectorySync(targetPath: string) {
+  if (!fs.existsSync(targetPath)) {
+    fs.mkdirSync(targetPath, { recursive: true })
+  }
+}
+
+function getLicensingRoot() {
+  return path.join(app.getPath('userData'), 'licensing')
+}
+
+function getLicenseCachePath() {
+  return path.join(getLicensingRoot(), LICENSE_CACHE_FILE)
+}
+
+function getEmbeddedTrustedLicensePublicKeyPath() {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, 'licensing', LICENSE_PUBLIC_KEY_FILE)
+    : path.join(getProjectRoot(), 'resources', 'licensing-authority', LICENSE_PUBLIC_KEY_FILE)
+}
+
+function canonicalizeForSigning(value: unknown): string {
+  const normalize = (input: unknown): unknown => {
+    if (Array.isArray(input)) {
+      return input.map((item) => normalize(item))
+    }
+    if (input && typeof input === 'object') {
+      const sortedEntries = Object.entries(input as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, child]) => [key, normalize(child)])
+      return Object.fromEntries(sortedEntries)
+    }
+    return input
+  }
+
+  return JSON.stringify(normalize(value))
+}
+
+function bytesToHex(bytes: Uint8Array) {
+  return Buffer.from(bytes).toString('hex')
+}
+
+function hexToBytes(hex: string) {
+  return Uint8Array.from(Buffer.from(hex, 'hex'))
+}
+
+function encodeUint32(value: number) {
+  const buffer = Buffer.allocUnsafe(4)
+  buffer.writeUInt32BE(value >>> 0, 0)
+  return Uint8Array.from(buffer)
+}
+
+function decodeUint32(bytes: Uint8Array, offset: number) {
+  return Buffer.from(bytes.slice(offset, offset + 4)).readUInt32BE(0)
+}
+
+function concatBytes(...parts: Uint8Array[]) {
+  const totalLength = parts.reduce((sum, part) => sum + part.length, 0)
+  const result = new Uint8Array(totalLength)
+  let offset = 0
+  for (const part of parts) {
+    result.set(part, offset)
+    offset += part.length
+  }
+  return result
+}
+
+function decodeBase32Crockford(value: string) {
+  const lookup = new Map<string, number>()
+  for (let index = 0; index < BASE32_CROCKFORD_ALPHABET.length; index += 1) {
+    lookup.set(BASE32_CROCKFORD_ALPHABET[index], index)
+  }
+  lookup.set('O', 0)
+  lookup.set('I', 1)
+  lookup.set('L', 1)
+
+  let bits = 0
+  let current = 0
+  const output: number[] = []
+  for (const rawChar of value.toUpperCase()) {
+    if (!rawChar || rawChar === '-' || /\s/.test(rawChar)) continue
+    const digit = lookup.get(rawChar)
+    if (digit === undefined) {
+      throw new Error(`授权码包含无效字符: ${rawChar}`)
+    }
+    current = (current << 5) | digit
+    bits += 5
+    if (bits >= 8) {
+      output.push((current >>> (bits - 8)) & 0xff)
+      bits -= 8
+    }
+  }
+  return Uint8Array.from(output)
+}
+
+function buildCompactLicensePayloadBytes(payload: LicensePayloadRecord, keyFingerprint: string) {
+  const planCode = PLAN_CODE_BY_ID[payload.planId]
+  if (!planCode) {
+    throw new Error('未找到对应套餐编码。')
+  }
+  if (!payload.deviceBinding?.fingerprint || !/^[a-f0-9]{64}$/i.test(payload.deviceBinding.fingerprint)) {
+    throw new Error('许可证缺少有效的设备指纹。')
+  }
+
+  const validFromSeconds = Math.floor(new Date(payload.validFrom).getTime() / 1000)
+  const validUntilSeconds = Math.floor(new Date(payload.validUntil).getTime() / 1000)
+  if (!Number.isFinite(validFromSeconds) || !Number.isFinite(validUntilSeconds)) {
+    throw new Error('许可证时间字段无效。')
+  }
+
+  const licenseNonceHex = payload.licenseId.replace(/^LIC-/i, '').trim()
+  if (!/^[a-f0-9]{12,16}$/i.test(licenseNonceHex)) {
+    throw new Error('许可证编号格式无效。')
+  }
+
+  const nonceBytes = Buffer.alloc(8, 0)
+  Buffer.from(licenseNonceHex.padEnd(16, '0').slice(0, 16), 'hex').copy(nonceBytes)
+
+  return concatBytes(
+    Uint8Array.from(Buffer.from(ACTIVATION_CODE_MAGIC, 'ascii')),
+    Uint8Array.from([ACTIVATION_CODE_VERSION]),
+    hexToBytes(keyFingerprint),
+    Uint8Array.from([planCode]),
+    encodeUint32(validFromSeconds),
+    encodeUint32(validUntilSeconds),
+    hexToBytes(payload.deviceBinding.fingerprint),
+    Uint8Array.from(nonceBytes)
+  )
+}
+
+function decodeCompactActivationCode(rawCode: string): LicenseEnvelopeRecord {
+  const normalized = String(rawCode || '').toUpperCase().replace(/[^0-9A-Z]/g, '')
+  if (!normalized) {
+    throw new Error('授权码不能为空。')
+  }
+
+  const decoded = decodeBase32Crockford(normalized)
+  const payloadSize = 62
+  const signatureSize = 64
+  if (decoded.length !== payloadSize + signatureSize) {
+    throw new Error('授权码长度无效。')
+  }
+
+  const compactPayload = decoded.slice(0, payloadSize)
+  const signatureBytes = decoded.slice(payloadSize)
+  const magic = Buffer.from(compactPayload.slice(0, 4)).toString('ascii')
+  if (magic !== ACTIVATION_CODE_MAGIC) {
+    throw new Error('授权码标识无效。')
+  }
+  if (compactPayload[4] !== ACTIVATION_CODE_VERSION) {
+    throw new Error('授权码版本不受支持。')
+  }
+
+  const keyFingerprint = bytesToHex(compactPayload.slice(5, 13)).toUpperCase()
+  const planCode = compactPayload[13]
+  const planId = PLAN_ID_BY_CODE.get(planCode)
+  const plan = LICENSE_PLANS.find((item) => item.id === planId)
+  if (!planId || !plan) {
+    throw new Error('授权码套餐编码无效。')
+  }
+
+  const validFrom = new Date(decodeUint32(compactPayload, 14) * 1000).toISOString()
+  const validUntil = new Date(decodeUint32(compactPayload, 18) * 1000).toISOString()
+  const fingerprint = bytesToHex(compactPayload.slice(22, 54)).toLowerCase()
+  const nonceHex = bytesToHex(compactPayload.slice(54, 62)).toUpperCase().replace(/0+$/g, '') || '000000000000'
+
+  return {
+    signatureAlgorithm: 'ed25519',
+    keyFingerprint,
+    signature: Buffer.from(signatureBytes).toString('base64'),
+    payload: {
+      schemaVersion: 1,
+      licenseId: `LIC-${nonceHex}`,
+      product: LICENSE_PRODUCT_NAME,
+      edition: 'Commercial',
+      customerName: fingerprint,
+      customerEmail: 'activation@local',
+      planId: plan.id,
+      planName: plan.name,
+      cycle: plan.cycle,
+      priceCny: plan.priceCny,
+      currency: 'CNY',
+      issuedAt: validFrom,
+      validFrom,
+      validUntil,
+      maxDevices: 1,
+      features: plan.features,
+      operator: 'RRQ-DS',
+      status: 'active',
+      notes: ACTIVATION_CODE_NOTE,
+      deviceBinding: {
+        mode: 'required',
+        fingerprint,
+        fingerprintVersion: 'cpu-v1',
+        label: fingerprint.toUpperCase()
+      }
+    }
+  }
+}
+
+function normalizeMachineToken(value: unknown) {
+  if (typeof value !== 'string') {
+    return undefined
+  }
+
+  const normalized = value.trim().replace(/\s+/g, ' ').toUpperCase()
+  if (!normalized) {
+    return undefined
+  }
+
+  const ignored = new Set([
+    'UNKNOWN',
+    'DEFAULT STRING',
+    'SYSTEM SERIAL NUMBER',
+    'TO BE FILLED BY O.E.M.',
+    'TO BE FILLED BY OEM',
+    'NONE',
+    'N/A',
+    'NOT APPLICABLE',
+    'NOT SPECIFIED'
+  ])
+
+  return ignored.has(normalized) ? undefined : normalized
+}
+
+function isCanonicalMachineFingerprint(value: unknown) {
+  return typeof value === 'string' && /^[a-f0-9]{64}$/i.test(value.trim())
+}
+
+function buildCpuMachineFingerprintInfo() {
+  const primaryCpu = os.cpus()?.[0]
+  const cpuModel = normalizeMachineToken(primaryCpu?.model) || 'UNKNOWN-CPU'
+  const cpuCount = String(os.cpus()?.length || 1)
+  const hostName = os.hostname() || process.env.COMPUTERNAME || 'unknown-host'
+  const raw = [
+    LICENSE_PRODUCT_NAME,
+    'cpu-v1',
+    os.platform(),
+    os.arch(),
+    hostName,
+    cpuModel,
+    cpuCount
+  ].join('|')
+  const fingerprint = createHash('sha256').update(raw).digest('hex')
+
+  return {
+    fingerprint,
+    shortFingerprint: fingerprint.slice(0, 16).toUpperCase(),
+    fingerprintVersion: 'cpu-v1' as const,
+    hostName,
+    platform: os.platform(),
+    arch: os.arch(),
+    appVersion: app.getVersion()
+  }
+}
+
+function buildMachineFingerprintInfo() {
+  return buildCpuMachineFingerprintInfo()
+}
+
+function buildUnavailableMachineFingerprintInfo(reason?: string): MachineFingerprintInfoRecord {
+  return {
+    shortFingerprint: 'UNAVAILABLE',
+    appVersion: app.getVersion(),
+    hostName: os.hostname() || process.env.COMPUTERNAME || 'unknown-host',
+    platform: os.platform(),
+    arch: os.arch(),
+    available: false,
+    reason: reason || '当前设备暂时无法生成 CPU 绑定指纹。'
+  }
+}
+
+function getMachineFingerprintInfoSafe(): MachineFingerprintInfoRecord {
+  try {
+    return {
+      ...buildMachineFingerprintInfo(),
+      available: true
+    }
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    logMainWarn('CPU 指纹读取失败', {
+      domain: 'licensing.machine',
+      action: 'getMachineFingerprintInfoSafe',
+      detail: reason
+    })
+    return buildUnavailableMachineFingerprintInfo(reason)
+  }
+}
+
+function encryptLicenseEnvelope(envelope: LicenseEnvelopeRecord) {
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error('系统安全存储不可用，无法写入授权缓存。')
+  }
+
+  return {
+    importedAt: new Date().toISOString(),
+    ciphertext: safeStorage.encryptString(JSON.stringify(envelope)).toString('base64')
+  }
+}
+
+function decryptLicenseEnvelopeCache(raw: string): LicenseEnvelopeRecord {
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error('系统安全存储不可用，无法读取授权缓存。')
+  }
+
+  const payload = JSON.parse(raw) as { ciphertext: string }
+  const plaintext = safeStorage.decryptString(Buffer.from(payload.ciphertext, 'base64'))
+  return JSON.parse(plaintext) as LicenseEnvelopeRecord
+}
+
+function loadTrustedLicensePublicKey() {
+  const publicKeyPath = getEmbeddedTrustedLicensePublicKeyPath()
+  if (!fs.existsSync(publicKeyPath)) {
+    throw new Error('未检测到内置授权公钥，无法完成授权校验。')
+  }
+
+  const publicKeyPem = fs.readFileSync(publicKeyPath, 'utf8')
+  const fingerprint = createHash('sha256').update(publicKeyPem.trim()).digest('hex').slice(0, 16).toUpperCase()
+  if (fingerprint !== TRUSTED_LICENSE_PUBLIC_KEY_FINGERPRINT) {
+    throw new Error('内置授权公钥指纹不匹配，已拒绝加载。')
+  }
+
+  return publicKeyPem
+}
+
+function verifyLicenseEnvelope(envelope: LicenseEnvelopeRecord) {
+  let publicKeyPem = ''
+  try {
+    publicKeyPem = loadTrustedLicensePublicKey()
+  } catch (error) {
+    return { verified: false, validNow: false, reason: error instanceof Error ? error.message : String(error) }
+  }
+
+  const message = envelope.payload.notes === ACTIVATION_CODE_NOTE
+    ? Buffer.from(buildCompactLicensePayloadBytes(envelope.payload, envelope.keyFingerprint))
+    : Buffer.from(canonicalizeForSigning(envelope.payload))
+
+  const signatureOk = cryptoVerify(null, message, publicKeyPem, Buffer.from(envelope.signature, 'base64'))
+
+  if (!signatureOk) {
+    return { verified: false, validNow: false, reason: '许可证签名校验失败。' }
+  }
+
+  const now = Date.now()
+  const validFrom = new Date(envelope.payload.validFrom).getTime()
+  const validUntil = new Date(envelope.payload.validUntil).getTime()
+
+  if (!Number.isFinite(validFrom) || !Number.isFinite(validUntil)) {
+    return { verified: true, validNow: false, reason: '许可证时间字段无效。' }
+  }
+
+  if (envelope.payload.status !== 'active') {
+    return { verified: true, validNow: false, reason: '许可证当前状态不可用。' }
+  }
+
+  if (now < validFrom) {
+    return { verified: true, validNow: false, reason: '许可证尚未生效。' }
+  }
+
+  if (now > validUntil) {
+    return { verified: true, validNow: false, reason: '许可证已到期。' }
+  }
+
+  if (envelope.payload.deviceBinding?.mode === 'required') {
+    const currentMachine = buildMachineFingerprintInfo()
+    if (!envelope.payload.deviceBinding.fingerprintVersion || envelope.payload.deviceBinding.fingerprintVersion !== currentMachine.fingerprintVersion) {
+      return { verified: true, validNow: false, reason: '许可证设备绑定版本不受支持。' }
+    }
+
+    const bindingFingerprint = String(envelope.payload.deviceBinding.fingerprint || '').trim().toLowerCase()
+    const currentFingerprint = String(currentMachine.fingerprint || '').trim().toLowerCase()
+    if (!isCanonicalMachineFingerprint(bindingFingerprint)) {
+      return { verified: true, validNow: false, reason: '许可证设备识别码格式无效。' }
+    }
+    if (bindingFingerprint !== currentFingerprint) {
+      return { verified: true, validNow: false, reason: '许可证与当前设备指纹不匹配。' }
+    }
+  }
+
+  return { verified: true, validNow: true }
+}
+
+function readActiveLicenseStatus() {
+  const cachePath = getLicenseCachePath()
+  if (!fs.existsSync(cachePath)) {
+    return { exists: false, verified: false, validNow: false }
+  }
+
+  try {
+    const raw = fs.readFileSync(cachePath, 'utf8')
+    const cachePayload = JSON.parse(raw) as { importedAt?: string }
+    const envelope = decryptLicenseEnvelopeCache(raw)
+    const verification = verifyLicenseEnvelope(envelope)
+    return {
+      exists: true,
+      verified: verification.verified,
+      validNow: verification.validNow,
+      reason: verification.reason,
+      importedAt: cachePayload.importedAt,
+      planId: envelope.payload.planId,
+      planName: envelope.payload.planName,
+      cycle: envelope.payload.cycle,
+      validFrom: envelope.payload.validFrom,
+      validUntil: envelope.payload.validUntil,
+      maxDevices: envelope.payload.maxDevices
+    }
+  } catch (error) {
+    return {
+      exists: true,
+      verified: false,
+      validNow: false,
+      reason: error instanceof Error ? error.message : String(error)
+    }
+  }
+}
+
+function buildLicensingOverview() {
+  const machine = getMachineFingerprintInfoSafe()
+  return {
+    success: machine.available !== false,
+    plans: LICENSE_PLANS,
+    machine: {
+      fingerprint: machine.fingerprint,
+      shortFingerprint: machine.shortFingerprint,
+      appVersion: machine.appVersion,
+      available: machine.available,
+      reason: machine.reason
+    },
+    activeLicense: readActiveLicenseStatus(),
+    error: machine.available === false ? machine.reason : undefined
+  }
+}
+
+function decodeActivationCode(rawCode: string): LicenseEnvelopeRecord {
+  const normalized = String(rawCode || '').trim()
+  if (!normalized) {
+    throw new Error('授权码不能为空。')
+  }
+
+  try {
+    return decodeCompactActivationCode(normalized)
+  } catch {
+    // fall through to legacy formats
+  }
+
+  try {
+    const jsonText = Buffer.from(normalized, 'base64url').toString('utf8')
+    return JSON.parse(jsonText) as LicenseEnvelopeRecord
+  } catch {
+    try {
+      return JSON.parse(normalized) as LicenseEnvelopeRecord
+    } catch (error) {
+      throw new Error(`授权码格式无效。${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+}
+
+function getBackendActionFromArgs(args: string[]) {
+  const actionIndex = args.indexOf('--action')
+  if (actionIndex < 0 || actionIndex + 1 >= args.length) {
+    return null
+  }
+  const action = args[actionIndex + 1]
+  return typeof action === 'string' && action.trim() ? action.trim() : null
+}
+
+function buildBackendLicenseTicket(action: string, lane: BackendLane) {
+  const payload = {
+    action,
+    lane,
+    exp: Date.now() + LICENSE_TICKET_TTL_MS,
+    nonce: randomBytes(12).toString('hex')
+  }
+  const serialized = JSON.stringify(payload)
+  const token = Buffer.from(serialized, 'utf8').toString('base64url')
+  const signature = createHmac('sha256', backendLicenseTicketSecret).update(token).digest('hex')
+  return { token, signature }
+}
+
+function withBackendLicenseTicket(args: string[], lane: BackendLane) {
+  const action = getBackendActionFromArgs(args)
+  if (!action || !LICENSE_PROTECTED_BACKEND_ACTIONS.has(action)) {
+    return args
+  }
+
+  const { token, signature } = buildBackendLicenseTicket(action, lane)
+  return [
+    ...args,
+    '--license_ticket',
+    token,
+    '--license_ticket_sig',
+    signature
+  ]
+}
+
+function getBackendActionLicenseError(action: string | null) {
+  if (!action || !LICENSE_PROTECTED_BACKEND_ACTIONS.has(action)) {
+    return null
+  }
+
+  const licenseStatus = readActiveLicenseStatus()
+  if (licenseStatus.validNow) {
+    return null
+  }
+
+  const detail = licenseStatus.reason || '当前客户端未激活有效授权。'
+  logMainDebug('拦截未授权后端任务', {
+    domain: 'licensing.enforcement',
+    action: 'getBackendActionLicenseError',
+    detail: `${action} | ${detail}`
+  })
+  return `当前功能需要有效许可证。请先在“授权中心”输入授权码完成激活。\n\n${detail}`
+}
+
+
+function activateLicenseFromCode(activationCode: string) {
+  const envelope = decodeActivationCode(activationCode)
+  const verification = verifyLicenseEnvelope(envelope)
+  if (!verification.verified) {
+    return { success: false, error: verification.reason || '许可证签名校验失败。' }
+  }
+
+  ensureDirectorySync(getLicensingRoot())
+  fs.writeFileSync(getLicenseCachePath(), JSON.stringify(encryptLicenseEnvelope(envelope), null, 2), 'utf8')
+
+  return {
+    success: true,
+    activeLicense: readActiveLicenseStatus()
   }
 }
 
@@ -2312,6 +2961,7 @@ async function ensureBackendWorker(lane: BackendLane) {
 
   const workerEnv = {
     ...getPythonProcessEnv(),
+    [LICENSE_TICKET_SECRET_ENV]: backendLicenseTicketSecret,
     ...workerState.launchEnvOverrides
   }
   if (Object.keys(workerState.launchEnvOverrides).length > 0) {
@@ -2615,6 +3265,17 @@ function isBenignTaskkillMessage(message: string) {
   )
 }
 
+function isBenignPowerShellKillMessage(message: string) {
+  const text = message.toLowerCase()
+  return (
+    text.includes('cannot find a process') ||
+    text.includes('cannot find the process') ||
+    text.includes('no process') ||
+    text.includes('找不到') ||
+    text.includes('没有')
+  )
+}
+
 function terminateProcessTree(proc: ChildProcess | null): Promise<boolean> {
   if (!proc || !proc.pid) {
     return Promise.resolve(true)
@@ -2705,6 +3366,67 @@ async function terminateTrackedChildProcesses() {
   }
 }
 
+async function terminateResidualGptSovitsServers(projectRoot = getProjectRoot()) {
+  const runtimeInfo = resolveRuntimeRoot(projectRoot)
+  const scriptPath = path.join(projectRoot, 'services', 'media_pipeline', 'gpt_sovits_api_server.py')
+  const pythonPath = path.join(runtimeInfo.runtimeRoot, 'gpt_sovits', 'venv', 'Scripts', 'python.exe')
+  const stateFilePath = path.join(runtimeInfo.runtimeRoot, 'gpt_sovits', 'api_v2.state.json')
+
+  if (process.platform !== 'win32') {
+    await fs.promises.rm(stateFilePath, { force: true }).catch(() => undefined)
+    return true
+  }
+
+  const escapedScriptPath = scriptPath.replace(/'/g, "''")
+  const escapedPythonPath = pythonPath.replace(/'/g, "''")
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      execFile(
+        'powershell',
+        [
+          '-NoProfile',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-Command',
+          [
+            `$scriptPath = '${escapedScriptPath}'`,
+            `$pythonPath = '${escapedPythonPath}'`,
+            "$targets = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'python.exe' -and $_.CommandLine -like '*gpt_sovits_api_server.py*' -and $_.CommandLine -like ('*' + $scriptPath + '*') -and $_.CommandLine -like ('*' + $pythonPath + '*') }",
+            'foreach ($proc in $targets) {',
+            '  try { Stop-Process -Id $proc.ProcessId -Force -ErrorAction Stop } catch { }',
+            '}'
+          ].join('; '),
+        ],
+        { windowsHide: true, encoding: 'utf8', maxBuffer: 1024 * 1024 * 4 },
+        (error, stdout, stderr) => {
+          const combinedOutput = `${stdout || ''}\n${stderr || ''}`.trim()
+          if (error && !isBenignPowerShellKillMessage(combinedOutput)) {
+            reject(new Error(combinedOutput || error.message))
+            return
+          }
+          resolve()
+        }
+      )
+    })
+  } catch (error) {
+    logMainError('清理残留 GPT-SoVITS 服务失败', {
+      domain: 'process.control',
+      action: 'terminateResidualGptSovitsServers',
+      detail: error instanceof Error ? error.message : String(error)
+    })
+    return false
+  }
+
+  await fs.promises.rm(stateFilePath, { force: true }).catch(() => undefined)
+  logMainSecurity('完成 GPT-SoVITS 残留服务清理', {
+    domain: 'process.control',
+    action: 'terminateResidualGptSovitsServers',
+    detail: scriptPath
+  })
+  return true
+}
+
 
   function createWindow() {
     logMainBusiness('创建主窗口', { domain: 'window.lifecycle', action: 'createWindow' })
@@ -2727,7 +3449,10 @@ async function terminateTrackedChildProcesses() {
     icon: path.join(process.env.VITE_PUBLIC, 'icon.ico'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.mjs'),
-      webSecurity: false // Allow loading local resources (file://)
+      webSecurity: false, // Allow loading local resources (file://)
+      contextIsolation: true,
+      nodeIntegration: false,
+      devTools: !app.isPackaged
     },
     autoHideMenuBar: true, // Hide the default menu bar (File, Edit, etc.)
   })
@@ -2741,6 +3466,16 @@ async function terminateTrackedChildProcesses() {
   win.webContents.on('did-finish-load', () => {
     win?.webContents.send('main-process-message', (new Date).toLocaleString())
   })
+
+  if (app.isPackaged) {
+    win.webContents.on('devtools-opened', () => {
+      win?.webContents.closeDevTools()
+      logMainSecurity('生产态阻止 DevTools 打开', {
+        domain: 'window.security',
+        action: 'devtools-opened'
+      })
+    })
+  }
 
   if (VITE_DEV_SERVER_URL) {
     win.loadURL(VITE_DEV_SERVER_URL)
@@ -2786,6 +3521,7 @@ app.on('before-quit', (event) => {
   shutdownCleanupState = 'running'
   void Promise.all([
     terminateTrackedChildProcesses(),
+    terminateResidualGptSovitsServers(),
     removePureCacheDirectoriesOnQuit()
   ])
     .catch((error) => {
@@ -2910,6 +3646,8 @@ app.whenReady().then(async () => {
     domain: 'bootstrap',
     action: 'whenReady'
   })
+
+  await terminateResidualGptSovitsServers().catch(() => undefined)
 
   // Check and install VC++ Runtime before creating window
   await checkAndInstallVCRuntime();
@@ -3136,6 +3874,32 @@ app.whenReady().then(async () => {
     return getRuntimeDownloadInfo();
   })
 
+  ipcMain.handle('get-licensing-overview', async () => {
+    try {
+      return buildLicensingOverview()
+    } catch (error) {
+      return {
+        success: false,
+        plans: LICENSE_PLANS,
+        machine: buildUnavailableMachineFingerprintInfo(error instanceof Error ? error.message : String(error)),
+        activeLicense: readActiveLicenseStatus(),
+        error: error instanceof Error ? error.message : String(error)
+      }
+    }
+  })
+
+  ipcMain.handle('activate-license-code', async (_event, payload) => {
+    void _event
+    try {
+      return activateLicenseFromCode(String(payload?.activationCode || ''))
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error)
+      }
+    }
+  })
+
   ipcMain.handle('analyze-video-metadata', async (_event, filePath: string) => {
     return analyzeVideoWithFfprobe(filePath)
   })
@@ -3148,6 +3912,17 @@ app.whenReady().then(async () => {
     if (!Array.isArray(requestArgs)) {
       throw new Error('run-backend payload must provide an args array')
     }
+    const action = getBackendActionFromArgs(requestArgs)
+    const licenseError = getBackendActionLicenseError(action)
+    if (licenseError) {
+      return {
+        success: false,
+        error: licenseError,
+        error_code: 'LICENSE_REQUIRED',
+        license_required: true
+      }
+    }
+    const finalArgs = withBackendLicenseTicket(requestArgs, lane)
 
     return enqueueBackendRun(lane, async () => {
       logMainDebug('派发后端任务', {
@@ -3179,7 +3954,7 @@ app.whenReady().then(async () => {
           return
         }
 
-        backendProcess.stdin.write(`${JSON.stringify({ id: requestId, args: requestArgs })}\n`, 'utf8')
+        backendProcess.stdin.write(`${JSON.stringify({ id: requestId, args: finalArgs })}\n`, 'utf8')
       })
     })
   })
@@ -3635,12 +4410,91 @@ app.whenReady().then(async () => {
     }
   })
 
+  ipcMain.handle('get-tts-runtime-diagnostics', async (_event, payload?: {
+    ttsService?: 'indextts' | 'qwen' | 'gptsovits'
+    text?: string
+    duration?: number
+    batchSize?: number
+    ttsModelProfile?: string
+    maxNewTokens?: number
+    gptSovitsParallelInfer?: boolean
+    gptSovitsSampleSteps?: number
+    gptSovitsBatchThreshold?: number
+    gptSovitsTextSplitMethod?: string
+    gptSovitsOfficialFastMode?: boolean
+  }) => {
+    void _event
+    try {
+      const args = [
+        '--action', 'get_tts_runtime_diagnostics',
+        '--tts_service', String(payload?.ttsService || 'indextts'),
+        '--text', String(payload?.text || '这是运行诊断示例文本。'),
+        '--batch_size', String(payload?.batchSize || 1),
+        '--max_new_tokens', String(payload?.maxNewTokens || 2048),
+      ]
+      if (payload?.ttsModelProfile) {
+        args.push('--tts_model_profile', payload.ttsModelProfile)
+      }
+      if (typeof payload?.duration === 'number' && Number.isFinite(payload.duration)) {
+        args.push('--duration', String(payload.duration))
+      }
+      if (typeof payload?.gptSovitsParallelInfer === 'boolean') {
+        args.push('--gpt_sovits_parallel_infer', payload.gptSovitsParallelInfer ? 'true' : 'false')
+      }
+      if (typeof payload?.gptSovitsSampleSteps === 'number' && Number.isFinite(payload.gptSovitsSampleSteps)) {
+        args.push('--gpt_sovits_sample_steps', String(payload.gptSovitsSampleSteps))
+      }
+      if (typeof payload?.gptSovitsBatchThreshold === 'number' && Number.isFinite(payload.gptSovitsBatchThreshold)) {
+        args.push('--gpt_sovits_batch_threshold', String(payload.gptSovitsBatchThreshold))
+      }
+      if (payload?.gptSovitsTextSplitMethod) {
+        args.push('--gpt_sovits_text_split_method', payload.gptSovitsTextSplitMethod)
+      }
+      if (typeof payload?.gptSovitsOfficialFastMode === 'boolean') {
+        args.push('--gpt_sovits_official_fast_mode', payload.gptSovitsOfficialFastMode ? 'true' : 'false')
+      }
+
+      return await enqueueBackendRun('default', async () => {
+        const backendProcess = await ensureBackendWorker('default')
+        const workerState = getBackendWorkerState('default')
+        const requestId = `req-${Date.now()}-${++workerState.requestCounter}`
+        return await new Promise((resolve, reject) => {
+          workerState.activeRequest = {
+            requestId,
+            sender: _event.sender,
+            resolve,
+            reject,
+            cancellationState: { requested: false },
+            outputData: '',
+            errorData: ''
+          }
+          workerState.activeCancellation = { requested: false }
+          if (!backendProcess.stdin || backendProcess.stdin.destroyed || !backendProcess.stdin.writable) {
+            workerState.activeRequest = null
+            workerState.activeCancellation = null
+            reject(new Error('Backend worker stdin is not writable'))
+            return
+          }
+          backendProcess.stdin.write(`${JSON.stringify({ id: requestId, args })}\n`, 'utf8')
+        })
+      })
+    } catch (error) {
+      logMainError('获取 TTS 运行诊断失败', {
+        domain: 'runtime.diagnostics',
+        action: 'get-tts-runtime-diagnostics',
+        detail: error instanceof Error ? error.message : String(error)
+      })
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+
   // IPC Handler to check model status
   ipcMain.handle('check-model-status', async (_event) => {
     void _event
     return new Promise((resolve) => {
       try {
         const { modelsRoot, projectRoot } = resolveModelsRoot();
+        const { runtimeRoot } = resolveRuntimeRoot(projectRoot);
         const pythonRoot = getPythonRoot(projectRoot);
         logMainDebug('检查模型目录状态', {
           domain: 'model.lifecycle',
@@ -4023,6 +4877,34 @@ app.whenReady().then(async () => {
           return createStatusDetail(true, 'ready', `${label} 模型文件已就绪。`);
         };
 
+        const getGptSovitsStatusDetail = () => {
+          const serviceRoot = path.join(runtimeRoot, 'gpt_sovits');
+          const repoRoot = path.join(serviceRoot, 'repo');
+          const venvPython = path.join(serviceRoot, 'venv', 'Scripts', 'python.exe');
+          const bootstrapStatePath = path.join(serviceRoot, 'bootstrap-state.json');
+          const configPath = path.join(serviceRoot, 'tts_infer.generated.yaml');
+          const weightsRoot = path.join(repoRoot, 'GPT_SoVITS', 'pretrained_models');
+          if (!fs.existsSync(serviceRoot)) {
+            return createStatusDetail(false, 'staged', 'GPT-SoVITS 尚未初始化。首次启用时将自动下载官方仓库、依赖和预置模型。');
+          }
+          if (!fs.existsSync(repoRoot)) {
+            return createStatusDetail(false, 'incomplete', 'GPT-SoVITS 运行目录存在，但缺少官方仓库文件。', true);
+          }
+          if (!fs.existsSync(venvPython)) {
+            return createStatusDetail(false, 'missing_runtime', 'GPT-SoVITS 运行目录存在，但缺少独立 Python 运行时。', true);
+          }
+          if (!fs.existsSync(bootstrapStatePath)) {
+            return createStatusDetail(false, 'incomplete', 'GPT-SoVITS 独立运行时目录存在，但依赖安装状态文件缺失。', true);
+          }
+          if (!fs.existsSync(configPath)) {
+            return createStatusDetail(false, 'incomplete', 'GPT-SoVITS 缺少生成后的推理配置文件。', true);
+          }
+          if (!fs.existsSync(weightsRoot)) {
+            return createStatusDetail(false, 'incomplete', 'GPT-SoVITS 缺少预训练模型目录。', true);
+          }
+          return createStatusDetail(true, 'ready', 'GPT-SoVITS 官方仓库、独立运行时和预训练资源已就绪。');
+        };
+
         const getSourceSeparationStatusDetail = () => {
           const modelDir = path.join(modelsRoot, 'source_separation');
           const candidates = [
@@ -4120,6 +5002,7 @@ app.whenReady().then(async () => {
         const qwenAlignerDetail = getQwenAlignerStatusDetail();
         const qwenTextDetail = getQwenTextModelStatusDetail();
         const indexTtsDetail = getIndexTtsStatusDetail();
+        const gptSovitsDetail = getGptSovitsStatusDetail();
         const qwenTokenizerDetail = getQwenTokenizerStatusDetail();
         const qwen17BBaseDetail = getQwenTtsModelStatusDetail('Qwen3-TTS-12Hz-1.7B-Base', 'Qwen3-TTS 1.7B Base');
         const qwen17BDesignDetail = getQwenTtsModelStatusDetail('Qwen3-TTS-12Hz-1.7B-VoiceDesign', 'Qwen3-TTS 1.7B VoiceDesign');
@@ -4141,6 +5024,7 @@ app.whenReady().then(async () => {
           funasr_standard: funAsrDetail.installed,
           vibevoice_asr_standard: vibeVoiceAsrDetail.installed,
           index_tts: indexTtsDetail.installed,
+          gpt_sovits: gptSovitsDetail.installed,
           source_separation: sourceSeparationDetail.installed,
           qwen: qwenTextDetail.installed,
           qwen_tokenizer: qwenTokenizerDetail.installed,
@@ -4182,6 +5066,7 @@ app.whenReady().then(async () => {
             repairable: vibeVoiceAsrDetail.repairable,
           },
           index_tts: indexTtsDetail,
+          gpt_sovits: gptSovitsDetail,
           qwen_tokenizer: qwenTokenizerDetail,
           qwen_17b_base: qwen17BBaseDetail,
           qwen_17b_design: qwen17BDesignDetail,

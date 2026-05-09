@@ -1,4 +1,4 @@
-export type ViewId = 'home' | 'batch' | 'models' | 'diagnostics' | 'logs' | 'asr' | 'tts' | 'translation' | 'merge' | 'about';
+export type ViewId = 'home' | 'batch' | 'models' | 'licenses' | 'diagnostics' | 'logs' | 'asr' | 'tts' | 'translation' | 'merge' | 'about';
 
 export interface ViewMeta {
     id: ViewId;
@@ -15,6 +15,7 @@ export const VIEW_REGISTRY: ViewMeta[] = [
     { id: 'translation', title: '翻译配置', description: '维护字幕翻译策略和语言输出设置。', section: 'workflow' },
     { id: 'merge', title: '合成配置', description: '控制混音、烧录与视频交付策略。', section: 'workflow' },
     { id: 'models', title: '模型中心', description: '查看本地模型状态、路径和下载入口。', section: 'system' },
+    { id: 'licenses', title: '授权中心', description: '管理订阅方案、许可证激活状态与商务授权信息。', section: 'system' },
     { id: 'diagnostics', title: '环境诊断', description: '检查 Python、模型、ASR 通道和工作流就绪度。', section: 'system' },
     { id: 'logs', title: '运行日志', description: '在应用内查看、清空和导出后端运行日志。', section: 'system' },
     { id: 'about', title: '关于', description: '查看应用版本与能力说明。', section: 'system' }

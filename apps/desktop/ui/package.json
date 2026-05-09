@@ -2,6 +2,8 @@
   "name": "videosync",
   "private": true,
   "version": "1.0.0",
+  "description": "VideoSync commercial desktop client",
+  "author": "RRQ-DS",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -59,11 +61,16 @@
     },
     "extraFiles": [
       {
+        "from": "../../../resources/licensing-authority/public-key.pem",
+        "to": "resources/licensing/public-key.pem"
+      },
+      {
         "from": "../../../resources/media_tools",
         "to": "resources/media_tools",
         "filter": [
           "**/*",
-          "!faster_whisper/**"
+          "!faster_whisper/**",
+          "!ffmpeg/doc/**"
         ]
       },
       {
@@ -101,6 +108,18 @@
       {
         "from": "../../../requirements.txt",
         "to": "services/media_pipeline/requirements.txt"
+      },
+      {
+        "from": "../../../resources/packaging/runtime/runtime-bootstrap-manifest.json",
+        "to": "resources/runtime/runtime-bootstrap-manifest.json"
+      },
+      {
+        "from": "../../../resources/voice_refs/gpt_sovits",
+        "to": "resources/voice_refs/gpt_sovits",
+        "filter": [
+          "**/*.wav",
+          "**/*.json"
+        ]
       },
       {
         "from": "../../../runtime/python/Lib/site-packages/triton",

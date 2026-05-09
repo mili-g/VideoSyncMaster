@@ -21,6 +21,7 @@ import type { WorkflowOverviewModel, WorkflowStepState } from '../types/workflow
 import { getRuntimeCombinationNotice } from '../utils/runtimeCompatibility';
 import { resolveSubtitleArtifactLanguages } from '../utils/languageTags';
 import { persistSingleSubtitleArtifacts } from '../utils/singleSubtitlePersistence';
+import type { TtsService } from '../utils/modelProfiles';
 
 export interface Segment {
     start: number;
@@ -70,7 +71,7 @@ function normalizeStoredAudioMixMode(value: string | null): AudioMixMode {
 
 function getTtsBlockingReasonFromStatus(
     result: ModelStatusResponse,
-    service: 'indextts' | 'qwen',
+    service: TtsService,
     profile: string
 ): string | null {
     const status = result.status || {};
@@ -84,6 +85,14 @@ function getTtsBlockingReasonFromStatus(
 
     if (service === 'indextts') {
         return readDetail('index_tts', 'Index-TTS 模型未就绪。');
+    }
+
+    if (service === 'gptsovits') {
+        const detail = details.gpt_sovits?.detail || 'GPT-SoVITS 将在首次启用时自动初始化。';
+        if (details.gpt_sovits?.state === 'unsupported_platform' || details.gpt_sovits?.state === 'runtime_incompatible') {
+            return detail;
+        }
+        return null;
     }
 
     const tokenizerIssue = readDetail('qwen_tokenizer', 'Qwen3-TTS tokenizer 未就绪。');
@@ -130,7 +139,7 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
     const [rawLogLines, setRawLogLines] = useState<RawBackendLogLine[]>([]);
 
     const abortRef = useRef(false);
-    const warmedTtsServicesRef = useRef<Set<'indextts' | 'qwen'>>(new Set());
+    const warmedTtsServicesRef = useRef<Set<TtsService>>(new Set());
     const ttsSwitchingRef = useRef(false);
     const segmentsRef = useRef<Segment[]>([]);
     const translatedSegmentsRef = useRef<Segment[]>([]);
@@ -346,7 +355,48 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
         return true;
     };
 
-    const switchTtsRuntime = useCallback(async (newService: 'indextts' | 'qwen') => {
+    const getTtsEngineLabel = useCallback((service: TtsService) => {
+        if (service === 'qwen') return 'Qwen3-TTS';
+        if (service === 'gptsovits') return 'GPT-SoVITS';
+        return 'Index-TTS';
+    }, []);
+
+    const getTtsRuntimePackageLabel = useCallback((service: TtsService) => {
+        if (service === 'qwen') return 'Qwen3 TTS Runtime';
+        if (service === 'gptsovits') return 'GPT-SoVITS Runtime';
+        return 'IndexTTS Runtime';
+    }, []);
+
+    const ensureLicenseActive = useCallback(async (actionLabel: string) => {
+        try {
+            const overview = await window.api.getLicensingOverview();
+            if (overview?.success && overview.activeLicense?.validNow) {
+                return true;
+            }
+
+            const reason = overview?.activeLicense?.reason || overview?.error || '当前客户端未激活有效授权。';
+            const message = `${actionLabel}需要有效许可证。请先在“授权中心”输入授权码完成激活。\n\n${reason}`;
+            setFeedback({
+                title: '需要授权',
+                message,
+                type: 'error'
+            });
+            setStatus(message);
+            return false;
+        } catch (error: unknown) {
+            const detail = error instanceof Error ? error.message : String(error);
+            const message = `${actionLabel}前无法确认授权状态。请先在“授权中心”检查许可证。\n\n${detail}`;
+            setFeedback({
+                title: '授权校验失败',
+                message,
+                type: 'error'
+            });
+            setStatus(message);
+            return false;
+        }
+    }, [setFeedback]);
+
+    const switchTtsRuntime = useCallback(async (newService: TtsService) => {
         if (ttsSwitchingRef.current) {
             setStatus('TTS 运行环境切换仍在进行中，请稍候。');
             return false;
@@ -388,14 +438,14 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
 
         if (warmedTtsServicesRef.current.has(newService)) {
             setTtsService(newService);
-            setStatus(`${newService === 'qwen' ? 'Qwen3-TTS' : 'Index-TTS'} 已切换`);
+            setStatus(`${getTtsEngineLabel(newService)} 已切换`);
             return true;
         }
 
         ttsSwitchingRef.current = true;
         setInstallingDeps(true);
-        setDepsPackageName(newService === 'qwen' ? 'Qwen3 TTS Runtime' : 'IndexTTS Runtime');
-        setStatus(`正在切换到 ${newService === 'qwen' ? 'Qwen3-TTS' : 'Index-TTS'} 运行环境...`);
+        setDepsPackageName(getTtsRuntimePackageLabel(newService));
+        setStatus(`正在切换到 ${getTtsEngineLabel(newService)} 运行环境...`);
 
         try {
             const result = await Promise.race([
@@ -426,13 +476,13 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
 
             warmedTtsServicesRef.current.add(newService);
             setTtsService(newService);
-            setStatus(`${newService === 'qwen' ? 'Qwen3-TTS' : 'Index-TTS'} 运行环境已就绪`);
+            setStatus(`${getTtsEngineLabel(newService)} 运行环境已就绪`);
             return true;
         } catch (e: unknown) {
             const rawMessage = e instanceof Error ? e.message : String(e);
             if (rawMessage.startsWith('TTS_RUNTIME_SWITCH_TIMEOUT:')) {
                 await restartBackendAfterSwitchTimeout();
-                const engineName = newService === 'qwen' ? 'Qwen3-TTS' : 'Index-TTS';
+                const engineName = getTtsEngineLabel(newService);
                 const timeoutSeconds = Math.round(TTS_RUNTIME_SWITCH_TIMEOUT_MS / 1000);
                 const timeoutMessage = `${engineName} 切换超时（>${timeoutSeconds} 秒），已自动重置后端运行环境。请重试一次；若仍复现，请查看执行日志中的最后一条 TTS 初始化信息。`;
                 setFeedback({
@@ -471,6 +521,8 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
         restartBackendAfterSwitchTimeout,
         ttsModelProfiles,
         ttsService,
+        getTtsEngineLabel,
+        getTtsRuntimePackageLabel,
         TTS_RUNTIME_SWITCH_TIMEOUT_MS
     ]);
 
@@ -638,6 +690,9 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
     }, [asrModelProfiles, asrService]);
 
     const handleASR = async (): Promise<Segment[] | null> => {
+        if (!await ensureLicenseActive('字幕识别')) {
+            return null;
+        }
         if (!originalVideoPath) {
             setStatus('请先上传或选择视频');
             return null;
@@ -775,6 +830,9 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
     };
 
     const handleOneClickRun = async () => {
+        if (!await ensureLicenseActive('一键处理')) {
+            return;
+        }
         if (!originalVideoPath) {
             setStatus('请先选择视频');
             return;
@@ -813,6 +871,9 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
     };
 
     const handleTranslateAndDub = async () => {
+        if (!await ensureLicenseActive('翻译与配音')) {
+            return;
+        }
         abortRef.current = false;
 
         const transSegs = await handleTranslate();
@@ -1001,6 +1062,48 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
         steps
     };
 
+    const guardedHandleTranslate = useCallback(async (overrideSegments?: Segment[]) => {
+        if (!await ensureLicenseActive('字幕翻译')) {
+            return null;
+        }
+        return handleTranslate(overrideSegments);
+    }, [ensureLicenseActive, handleTranslate]);
+
+    const guardedHandleReTranslate = useCallback(async (index: number) => {
+        if (!await ensureLicenseActive('字幕重翻译')) {
+            return;
+        }
+        return handleReTranslate(index);
+    }, [ensureLicenseActive, handleReTranslate]);
+
+    const guardedHandleRetryErrors = useCallback(async () => {
+        if (!await ensureLicenseActive('失败片段重试')) {
+            return;
+        }
+        return handleRetryErrors();
+    }, [ensureLicenseActive, handleRetryErrors]);
+
+    const guardedHandleGenerateSingleDubbing = useCallback(async (index: number) => {
+        if (!await ensureLicenseActive('单段配音')) {
+            return;
+        }
+        return handleGenerateSingleDubbing(index);
+    }, [ensureLicenseActive, handleGenerateSingleDubbing]);
+
+    const guardedHandleGenerateAllDubbing = useCallback(async (overrideSegments?: Segment[]) => {
+        if (!await ensureLicenseActive('批量配音')) {
+            return null;
+        }
+        return handleGenerateAllDubbing(overrideSegments);
+    }, [ensureLicenseActive, handleGenerateAllDubbing]);
+
+    const guardedHandleMergeVideo = useCallback(async (overrideSegments?: Segment[]) => {
+        if (!await ensureLicenseActive('视频合成')) {
+            return;
+        }
+        return handleMergeVideo(overrideSegments);
+    }, [ensureLicenseActive, handleMergeVideo]);
+
     return {
         videoPath, setVideoPath,
         originalVideoPath, setOriginalVideoPath,
@@ -1037,12 +1140,12 @@ export function useVideoProject({ outputDirOverride }: UseVideoProjectOptions = 
         clearExecutionConsole,
 
         handleASR,
-        handleTranslate,
-        handleReTranslate,
-        handleRetryErrors,
-        handleGenerateSingleDubbing,
-        handleGenerateAllDubbing,
-        handleMergeVideo,
+        handleTranslate: guardedHandleTranslate,
+        handleReTranslate: guardedHandleReTranslate,
+        handleRetryErrors: guardedHandleRetryErrors,
+        handleGenerateSingleDubbing: guardedHandleGenerateSingleDubbing,
+        handleGenerateAllDubbing: guardedHandleGenerateAllDubbing,
+        handleMergeVideo: guardedHandleMergeVideo,
         parseSRTContent,
         handleSRTUpload,
         handleTargetSRTUpload,

@@ -66,6 +66,12 @@ contextBridge.exposeInMainWorld('api', {
   getRuntimeDownloadInfo() {
     return ipcRenderer.invoke('get-runtime-download-info')
   },
+  getLicensingOverview() {
+    return ipcRenderer.invoke('get-licensing-overview')
+  },
+  activateLicenseCode(payload: { activationCode: string }) {
+    return ipcRenderer.invoke('activate-license-code', payload)
+  },
   async runBackend(args: string[], options?: { lane?: 'default' | 'prep' }) {
     const result = await ipcRenderer.invoke('run-backend', {
       args,
@@ -118,6 +124,21 @@ contextBridge.exposeInMainWorld('api', {
   },
   runAsrDiagnostics() {
     return ipcRenderer.invoke('run-asr-diagnostics')
+  },
+  getTtsRuntimeDiagnostics(payload: {
+    ttsService?: 'indextts' | 'qwen' | 'gptsovits'
+    text?: string
+    duration?: number
+    batchSize?: number
+    ttsModelProfile?: string
+    maxNewTokens?: number
+    gptSovitsParallelInfer?: boolean
+    gptSovitsSampleSteps?: number
+    gptSovitsBatchThreshold?: number
+    gptSovitsTextSplitMethod?: string
+    gptSovitsOfficialFastMode?: boolean
+  }) {
+    return ipcRenderer.invoke('get-tts-runtime-diagnostics', payload)
   },
   getDownloadTaskSnapshots() {
     return ipcRenderer.invoke('get-download-task-snapshots')

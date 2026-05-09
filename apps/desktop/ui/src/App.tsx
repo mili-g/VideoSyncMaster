@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import './App.css'
 import ModernBackground from './components/ModernBackground'
 import Sidebar from './components/Sidebar'
@@ -17,6 +17,7 @@ import TtsSettingsPage from './pages/TtsSettingsPage';
 import TranslationSettingsPage from './pages/TranslationSettingsPage';
 import MergeSettingsPage from './pages/MergeSettingsPage';
 import ModelCenterPage from './pages/ModelCenterPage';
+import LicenseCenterPage from './pages/LicenseCenterPage';
 import DiagnosticsPage from './pages/DiagnosticsPage';
 import LogsPage from './pages/LogsPage';
 import AboutPage from './pages/AboutPage';
@@ -26,6 +27,7 @@ import type { DownloadTaskSnapshotsResponse, FileDialogResult, ModelDownloadProg
 import { buildOutputArtifacts } from './utils/outputArtifacts';
 import { resolveSubtitleArtifactLanguages } from './utils/languageTags';
 import { validateSegmentLanguageFit } from './utils/subtitleLanguageGuard';
+import type { TtsService } from './utils/modelProfiles';
 
 const SIDEBAR_WIDTH = 96;
 const APP_SHELL_GAP = 18;
@@ -48,6 +50,12 @@ function getRepairPhaseLabel(phase: ModelDownloadProgressEvent['phase'] | undefi
   if (phase === 'downloading') return '下载中';
   if (phase === 'preparing') return '准备中';
   return active ? '处理中' : '待命';
+}
+
+function getTtsServiceLabel(service: TtsService) {
+  if (service === 'qwen') return 'Qwen3';
+  if (service === 'gptsovits') return 'GPT-SoVITS';
+  return 'Index-TTS';
 }
 
 
@@ -183,13 +191,39 @@ function App() {
   const backendBusy = loading || dubbingLoading || generatingSegmentId !== null || isBatchQueueRunning;
   const consoleAttention = consoleEntries.some(entry => entry.level === 'error' || entry.level === 'warn');
   const batchResumeStartedRef = useRef(false);
-  useEffect(() => {
-    if (!shouldResumeBatchQueue || backendBusy || batchResumeStartedRef.current) return;
-    if (!batchQueueItems.some(item => item.status === 'pending')) return;
+  const ensureLicenseActive = useCallback(async (actionLabel: string) => {
+    try {
+      const overview = await window.api.getLicensingOverview();
+      if (overview?.success && overview.activeLicense?.validNow) {
+        return true;
+      }
 
-    batchResumeStartedRef.current = true;
-    acknowledgeBatchQueueResume();
-    setStatus('检测到上次未完成的批量任务，正在自动继续...');
+      const reason = overview?.activeLicense?.reason || overview?.error || '当前客户端未激活有效授权。';
+      const message = `${actionLabel}需要有效许可证。请先在“授权中心”输入授权码完成激活。\n\n${reason}`;
+      setFeedback({
+        title: '需要授权',
+        message,
+        type: 'error'
+      });
+      setStatus(message);
+      return false;
+    } catch (error: unknown) {
+      const detail = error instanceof Error ? error.message : String(error);
+      const message = `${actionLabel}前无法确认授权状态。请先在“授权中心”检查许可证。\n\n${detail}`;
+      setFeedback({
+        title: '授权校验失败',
+        message,
+        type: 'error'
+      });
+      setStatus(message);
+      return false;
+    }
+  }, [setFeedback, setStatus]);
+
+  const startBatchQueueWithLicense = useCallback(async () => {
+    if (!await ensureLicenseActive('批量任务')) {
+      return;
+    }
     void startBatchQueue({
       outputDirOverride,
       targetLang,
@@ -204,6 +238,70 @@ function App() {
       setStatus
     });
   }, [
+    ensureLicenseActive,
+    startBatchQueue,
+    outputDirOverride,
+    targetLang,
+    asrService,
+    ttsService,
+    asrOriLang,
+    videoStrategy,
+    audioMixMode,
+    batchSize,
+    cloneBatchSize,
+    maxNewTokens,
+    setStatus
+  ]);
+
+  const generateBatchQueueSubtitlesWithLicense = useCallback(async () => {
+    if (!await ensureLicenseActive('批量字幕识别')) {
+      return;
+    }
+    void generateBatchQueueSubtitles({
+      outputDirOverride,
+      targetLang,
+      asrService,
+      asrOriLang,
+      setStatus
+    });
+  }, [
+    ensureLicenseActive,
+    generateBatchQueueSubtitles,
+    outputDirOverride,
+    targetLang,
+    asrService,
+    asrOriLang,
+    setStatus
+  ]);
+
+  const generateBatchQueueTranslationsWithLicense = useCallback(async () => {
+    if (!await ensureLicenseActive('批量字幕翻译')) {
+      return;
+    }
+    void generateBatchQueueTranslations({
+      outputDirOverride,
+      targetLang,
+      asrOriLang,
+      setStatus
+    });
+  }, [
+    ensureLicenseActive,
+    generateBatchQueueTranslations,
+    outputDirOverride,
+    targetLang,
+    asrOriLang,
+    setStatus
+  ]);
+
+  useEffect(() => {
+    if (!shouldResumeBatchQueue || backendBusy || batchResumeStartedRef.current) return;
+    if (!batchQueueItems.some(item => item.status === 'pending')) return;
+
+    batchResumeStartedRef.current = true;
+    acknowledgeBatchQueueResume();
+    setStatus('检测到上次未完成的批量任务，正在校验授权状态...');
+    void startBatchQueueWithLicense();
+  }, [
     acknowledgeBatchQueueResume,
     asrOriLang,
     asrService,
@@ -212,11 +310,12 @@ function App() {
     batchQueueItems,
     batchSize,
     cloneBatchSize,
+    ensureLicenseActive,
     maxNewTokens,
     outputDirOverride,
     setStatus,
     shouldResumeBatchQueue,
-    startBatchQueue,
+    startBatchQueueWithLicense,
     targetLang,
     ttsService,
     videoStrategy
@@ -889,34 +988,11 @@ function App() {
       onRemoveItem={removeBatchQueueItem}
       onClearCompleted={clearCompletedBatchQueue}
       onClearAll={clearAllBatchQueue}
-      onGenerateSubtitles={() => generateBatchQueueSubtitles({
-        outputDirOverride,
-        targetLang,
-        asrService,
-        asrOriLang,
-        setStatus
-      })}
-      onGenerateTranslations={() => generateBatchQueueTranslations({
-        outputDirOverride,
-        targetLang,
-        asrOriLang,
-        setStatus
-      })}
+      onGenerateSubtitles={() => void generateBatchQueueSubtitlesWithLicense()}
+      onGenerateTranslations={() => void generateBatchQueueTranslationsWithLicense()}
       onRetryFailed={retryFailedBatchQueue}
       onOpenOutput={openBatchQueueOutput}
-      onStart={() => startBatchQueue({
-        outputDirOverride,
-        targetLang,
-        asrService,
-        ttsService,
-        asrOriLang,
-        videoStrategy,
-        audioMixMode,
-        batchSize,
-        cloneBatchSize,
-        maxNewTokens,
-        setStatus
-      })}
+      onStart={() => void startBatchQueueWithLicense()}
       canStart={!loading && !dubbingLoading && generatingSegmentId === null && !isBatchQueueRunning && batchQueueItems.length > 0}
       onStop={() => stopBatchQueue(setStatus)}
     />
@@ -958,6 +1034,8 @@ function App() {
       onStatusChange={setStatus}
       onFeedback={setFeedback}
     />
+  ) : currentView === 'licenses' ? (
+    <LicenseCenterPage />
   ) : currentView === 'diagnostics' ? (
     <DiagnosticsPage
       selectedAsrService={asrService}
@@ -1015,7 +1093,7 @@ function App() {
               </div>
               <div className="status-chip status-chip--compact">
                 <span className="status-chip__label">TTS</span>
-                <strong>{ttsService === 'qwen' ? 'Qwen3' : 'Index-TTS'}</strong>
+                <strong>{getTtsServiceLabel(ttsService)}</strong>
               </div>
               {ttsService === 'qwen' && (
                 <div className="status-chip status-chip--accent status-chip--compact">
@@ -1045,7 +1123,6 @@ function App() {
               <span>翻译 {workflowOverview.translatedCount}</span>
               <span>可用音频 {workflowOverview.dubbedReadyCount}</span>
               {workflowOverview.dubbedErrorCount > 0 && <span className="workflow-summary-row__danger">失败 {workflowOverview.dubbedErrorCount}</span>}
-              {workflowOverview.latestIssue && <span className="workflow-summary-row__danger" title={workflowOverview.latestIssue.title}>异常: {workflowOverview.latestIssue.title}</span>}
             </div>
 
             <div className="output-dir-toolbar output-dir-toolbar--compact">
@@ -1131,6 +1208,12 @@ function App() {
                   message.includes('当前 ASR 通道不可执行') ||
                   message.includes('不会自动切换')
                 );
+                const navigateToLicenses = (
+                  message.includes('需要有效许可证') ||
+                  message.includes('授权中心') ||
+                  message.includes('未激活有效授权') ||
+                  message.includes('授权校验失败')
+                );
                 const navigateToAsr = (
                   message.includes('ASR') ||
                   message.includes('识别失败') ||
@@ -1140,7 +1223,9 @@ function App() {
                   message.includes('VibeVoice-ASR')
                 );
 
-                if (navigateToDiagnostics) {
+                if (navigateToLicenses) {
+                  setCurrentView('licenses');
+                } else if (navigateToDiagnostics) {
                   setCurrentView('diagnostics');
                 } else if (navigateToModels) {
                   setCurrentView('models');
@@ -1153,7 +1238,9 @@ function App() {
               setFeedback(null);
             }}
             isLightMode={false}
-            confirmText={feedback?.type === 'error' ? "前往设置" : "确定"}
+            confirmText={feedback?.type === 'error'
+              ? ((feedback?.message || '').includes('授权中心') ? "前往授权" : "前往设置")
+              : "确定"}
             confirmColor={feedback?.type === 'success' ? '#10b981' : '#3b82f6'}
             onCancel={() => setFeedback(null)}
             cancelText="取消"

@@ -19,6 +19,8 @@ interface DesktopApi {
     getRuntimeRootSettings(): Promise<import('./types/backend').RuntimeRootSettingsResponse>;
     setRuntimeRootSettings(payload: { runtimeRoot?: string | null; useDefault?: boolean; migrateExisting?: boolean }): Promise<import('./types/backend').RuntimeRootSettingsResponse>;
     getRuntimeDownloadInfo(): Promise<{ success: boolean; bundleFileName?: string; downloadUrl?: string; downloadPageUrl?: string; error?: string }>;
+    getLicensingOverview(): Promise<import('./types/licensing').LicensingOverviewResponse>;
+    activateLicenseCode(payload: { activationCode: string }): Promise<import('./types/licensing').ActivateLicenseResponse>;
     runBackend<T = import('./types/backend').BackendResponseBase>(args: string[], options?: { lane?: BackendLane }): Promise<T>;
     analyzeVideoMetadata(filePath: string): Promise<import('./types/backend').AnalyzeVideoMetadataResponse>;
     cacheVideo(filePath: string): Promise<string>;
@@ -33,6 +35,19 @@ interface DesktopApi {
     checkPythonEnv(): Promise<import('./types/backend').PythonEnvCheckResponse>;
     checkModelStatus(): Promise<import('./types/backend').ModelStatusResponse>;
     runAsrDiagnostics(): Promise<import('./types/backend').AsrDiagnosticsResponse>;
+    getTtsRuntimeDiagnostics(payload: {
+        ttsService?: 'indextts' | 'qwen' | 'gptsovits';
+        text?: string;
+        duration?: number;
+        batchSize?: number;
+        ttsModelProfile?: string;
+        maxNewTokens?: number;
+        gptSovitsParallelInfer?: boolean;
+        gptSovitsSampleSteps?: number;
+        gptSovitsBatchThreshold?: number;
+        gptSovitsTextSplitMethod?: string;
+        gptSovitsOfficialFastMode?: boolean;
+    }): Promise<import('./types/backend').TtsRuntimeDiagnosticsResponse>;
     getDownloadTaskSnapshots(): Promise<import('./types/backend').DownloadTaskSnapshotsResponse>;
     downloadModel(payload: { key: string; model: string; localDir: string }): Promise<import('./types/backend').BackendResponseBase>;
     downloadFile(payload: { key: string; url?: string; urls?: string[]; targetDir: string; name: string; outputFileName?: string; baseDir?: 'models' | 'project'; releaseAsset?: { owner: string; repo: string; tag: string; assetPattern: string } }): Promise<import('./types/backend').BackendResponseBase>;
