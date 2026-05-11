@@ -1,0 +1,20 @@
+{
+  "voices": [
+    {
+      "id": "builtin://gpt-sovits/jing-yuan-cn",
+      "label": "景元（男声）",
+      "file": "jing_yuan_cn.wav",
+      "prompt_text": "我是「罗浮」云骑将军景元。不必拘谨，「将军」只是一时的身份，你称呼我景元便可。",
+      "prompt_lang": "zh",
+      "source": "Honkai: Star Rail voice-over reference"
+    },
+    {
+      "id": "builtin://gpt-sovits/kafka-cn",
+      "label": "卡芙卡（女声）",
+      "file": "kafka_cn.wav",
+      "prompt_text": "嗨，列车团…嗯，你们逮住我啦。",
+      "prompt_lang": "zh",
+      "source": "Honkai: Star Rail voice-over reference"
+    }
+  ]
+}

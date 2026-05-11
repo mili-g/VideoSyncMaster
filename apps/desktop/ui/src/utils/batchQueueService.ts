@@ -788,9 +788,10 @@ function assertSubtitleLanguageFit(
 async function prepareFallbackReferenceAudio(
     sourcePath: string,
     workDir: string,
-    segments: SrtSegment[]
+    segments: SrtSegment[],
+    ttsService: 'indextts' | 'qwen' | 'gptsovits'
 ) {
-    return prepareFallbackReferenceAudioForDubbing(sourcePath, workDir, segments, 'prep');
+    return prepareFallbackReferenceAudioForDubbing(sourcePath, workDir, segments, ttsService, 'prep');
 }
 
 async function retryFailedBatchSegments({
@@ -815,9 +816,9 @@ async function retryFailedBatchSegments({
         refText: string;
     };
 }) {
-    const voiceMode = getStoredTtsVoiceMode();
+    const voiceMode = getStoredTtsVoiceMode(options.ttsService);
     const useNarrationMode = voiceMode === 'narration';
-    const fallbackRefAudio = fallbackReferenceAudio || await prepareFallbackReferenceAudio(sourcePath, workDir, translatedSegments);
+    const fallbackRefAudio = fallbackReferenceAudio || await prepareFallbackReferenceAudio(sourcePath, workDir, translatedSegments, options.ttsService);
 
     for (const index of failedIndexes) {
         const segment = translatedSegments[index];

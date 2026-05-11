@@ -194,6 +194,18 @@ def build_backend_command_catalog() -> tuple[BackendCommandSpec, ...]:
             ),
             json_supported=True,
         ),
+        BackendCommandSpec(
+            name="get_tts_runtime_diagnostics",
+            description="Inspect current GPU tier and predicted adaptive runtime settings for a TTS engine.",
+            category="runtime",
+            args=(
+                CommandArgumentSpec("tts_service", required=True, description="TTS engine name"),
+                CommandArgumentSpec("text", description="Representative synthesis text"),
+                CommandArgumentSpec("duration", description="Representative target duration"),
+                CommandArgumentSpec("batch_size", description="Requested runtime batch size"),
+            ),
+            json_supported=True,
+        ),
     )
 
 

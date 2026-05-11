@@ -29,6 +29,7 @@ class ExecutionServicesTests(unittest.TestCase):
             handle_generate_single_tts=noop,
             handle_generate_batch_tts=noop,
             handle_prepare_reference_audio=noop,
+            get_tts_runtime_diagnostics=noop,
             ffmpeg=object(),
             librosa=object(),
             sf=object(),

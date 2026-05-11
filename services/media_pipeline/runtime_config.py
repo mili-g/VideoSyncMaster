@@ -127,6 +127,14 @@ class TtsRuntimeConfig:
     preset_voice: str = "Vivian"
     qwen_model_size: str = "1.7B"
     qwen_ref_text: str = ""
+    gpt_sovits_prompt_text: str = ""
+    gpt_sovits_prompt_lang: str = ""
+    gpt_sovits_text_split_method: str = "cut0"
+    gpt_sovits_speed_factor: float = 1.0
+    gpt_sovits_batch_threshold: float = 0.68
+    gpt_sovits_parallel_infer: bool = True
+    gpt_sovits_sample_steps: int = 32
+    gpt_sovits_official_fast_mode: bool = False
     batch_size: int = 10
     voice_mode: str = "clone"
     ref_audio: str | None = None
@@ -150,6 +158,7 @@ class TtsRuntimeConfig:
                 qwen_model_size = "0.6B"
             elif tts_model_profile == "quality":
                 qwen_model_size = "1.7B"
+        default_batch_size = 8 if tts_service_name == "gptsovits" else 10
         return cls(
             tts_model_profile=tts_model_profile,
             temperature=_pick_float(primary, fallback, "temperature", default=0.8),
@@ -166,8 +175,16 @@ class TtsRuntimeConfig:
             preset_voice=_pick_str(primary, fallback, "preset_voice", default="Vivian"),
             qwen_model_size=qwen_model_size,
             qwen_ref_text=_pick_str(primary, fallback, "qwen_ref_text", default=""),
-            batch_size=max(1, _pick_int(primary, fallback, "batch_size", default=10)),
-            voice_mode=_pick_str(primary, fallback, "voice_mode", default="clone"),
+            gpt_sovits_prompt_text=_pick_str(primary, fallback, "gpt_sovits_prompt_text", default=""),
+            gpt_sovits_prompt_lang=_pick_str(primary, fallback, "gpt_sovits_prompt_lang", default=""),
+            gpt_sovits_text_split_method=_pick_str(primary, fallback, "gpt_sovits_text_split_method", default="cut0"),
+            gpt_sovits_speed_factor=_pick_float(primary, fallback, "gpt_sovits_speed_factor", default=1.0),
+            gpt_sovits_batch_threshold=_pick_float(primary, fallback, "gpt_sovits_batch_threshold", default=0.68),
+            gpt_sovits_parallel_infer=_pick_bool(primary, fallback, "gpt_sovits_parallel_infer", default=True),
+            gpt_sovits_sample_steps=max(8, _pick_int(primary, fallback, "gpt_sovits_sample_steps", default=32)),
+            gpt_sovits_official_fast_mode=_pick_bool(primary, fallback, "gpt_sovits_official_fast_mode", default=False),
+            batch_size=max(1, _pick_int(primary, fallback, "batch_size", default=default_batch_size)),
+            voice_mode=_pick_str(primary, fallback, "voice_mode", default=("narration" if tts_service_name == "gptsovits" else "clone")),
             ref_audio=_pick_value(primary, fallback, "ref_audio"),
             fallback_ref_audio=_pick_value(primary, fallback, "fallback_ref_audio"),
             fallback_ref_text=_pick_str(primary, fallback, "fallback_ref_text", default=""),
@@ -193,6 +210,14 @@ class TtsRuntimeConfig:
             "preset_voice": self.preset_voice,
             "qwen_model_size": self.qwen_model_size,
             "qwen_ref_text": self.qwen_ref_text,
+            "gpt_sovits_prompt_text": self.gpt_sovits_prompt_text,
+            "gpt_sovits_prompt_lang": self.gpt_sovits_prompt_lang,
+            "gpt_sovits_text_split_method": self.gpt_sovits_text_split_method,
+            "gpt_sovits_speed_factor": self.gpt_sovits_speed_factor,
+            "gpt_sovits_batch_threshold": self.gpt_sovits_batch_threshold,
+            "gpt_sovits_parallel_infer": self.gpt_sovits_parallel_infer,
+            "gpt_sovits_sample_steps": self.gpt_sovits_sample_steps,
+            "gpt_sovits_official_fast_mode": self.gpt_sovits_official_fast_mode,
             "batch_size": self.batch_size,
             "voice_mode": self.voice_mode,
             "ref_audio": self.ref_audio,
@@ -312,6 +337,14 @@ def build_tts_runtime_config(args) -> TtsRuntimeConfig:
         "preset_voice": getattr(args, "preset_voice", None),
         "qwen_model_size": getattr(args, "qwen_model_size", None),
         "qwen_ref_text": getattr(args, "qwen_ref_text", None),
+        "gpt_sovits_prompt_text": getattr(args, "gpt_sovits_prompt_text", None),
+        "gpt_sovits_prompt_lang": getattr(args, "gpt_sovits_prompt_lang", None),
+        "gpt_sovits_text_split_method": getattr(args, "gpt_sovits_text_split_method", None),
+        "gpt_sovits_speed_factor": getattr(args, "gpt_sovits_speed_factor", None),
+        "gpt_sovits_batch_threshold": getattr(args, "gpt_sovits_batch_threshold", None),
+        "gpt_sovits_parallel_infer": getattr(args, "gpt_sovits_parallel_infer", None),
+        "gpt_sovits_sample_steps": getattr(args, "gpt_sovits_sample_steps", None),
+        "gpt_sovits_official_fast_mode": getattr(args, "gpt_sovits_official_fast_mode", None),
         "batch_size": getattr(args, "batch_size", None),
         "voice_mode": getattr(args, "voice_mode", None),
         "ref_audio": getattr(args, "ref_audio", None),
@@ -392,6 +425,11 @@ def build_batch_tts_request_config(args, tts_kwargs: dict[str, Any] | None = Non
     tts = TtsRuntimeConfig.from_sources(tts_kwargs, vars(args))
     json_path = str(getattr(args, "ref", "") or "")
     output_dir = str(getattr(args, "output", "") or "")
+    explicit_ref_text = str(
+        getattr(args, "qwen_ref_text", "")
+        or getattr(args, "gpt_sovits_prompt_text", "")
+        or ""
+    )
     import os
     return BatchTtsRequestConfig(
         video_path=str(getattr(args, "input", "") or ""),
@@ -400,7 +438,7 @@ def build_batch_tts_request_config(args, tts_kwargs: dict[str, Any] | None = Non
         target_lang=str(getattr(args, "lang", "English") or "English"),
         tts_service_name=str(getattr(args, "tts_service", "indextts") or "indextts"),
         args_ref_audio=getattr(args, "ref_audio", None),
-        explicit_qwen_ref_text=str(getattr(args, "qwen_ref_text", "") or ""),
+        explicit_qwen_ref_text=explicit_ref_text,
         max_retry_attempts=max(0, int(getattr(args, "dub_retry_attempts", 3) or 0)),
         progress_completed_offset=max(0, int(getattr(args, "resume_completed", 0) or 0)),
         progress_total_override=max(0, int(getattr(args, "resume_total", 0) or 0)),

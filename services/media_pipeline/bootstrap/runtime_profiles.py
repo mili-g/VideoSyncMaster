@@ -10,6 +10,8 @@ RUNTIME_PROFILE_VERSION_MAP = {
     "qwen": PROFILE_QWEN3,
     "indextts": PROFILE_INDEX_TTS,
     "index-tts": PROFILE_INDEX_TTS,
+    "gptsovits": PROFILE_QWEN3,
+    "gpt-sovits": PROFILE_QWEN3,
 }
 
 
@@ -36,6 +38,8 @@ def infer_runtime_profile(*, tts_service: str | None = None, asr_service: str | 
             return "indextts"
         if service_key == "qwen":
             return "qwen3"
+        if service_key == "gptsovits":
+            return "gptsovits"
 
     if asr_service:
         service_key = str(asr_service).strip().lower()

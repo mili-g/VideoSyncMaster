@@ -1,5 +1,5 @@
 @echo off
-setlocal
+setlocal EnableExtensions EnableDelayedExpansion
 chcp 65001 >nul
 
 cd /d "%~dp0\..\.."
@@ -47,8 +47,21 @@ if not exist "node_modules" (
     )
 )
 
-echo [INFO] Starting development server ...
-call npm run dev -- --host 127.0.0.1 --port 5173
+set "DEV_HOST=127.0.0.1"
+set "DEV_PORT="
+
+for /f "usebackq delims=" %%P in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "$hostIp = [System.Net.IPAddress]::Parse('%DEV_HOST%'); $ports = @(5173, 5373, 6173, 3000, 9000, 24678, 4173); foreach ($port in $ports) { try { $listener = [System.Net.Sockets.TcpListener]::new($hostIp, $port); $listener.Start(); $listener.Stop(); Write-Output $port; break } catch {} }"`) do (
+    set "DEV_PORT=%%P"
+)
+
+if not defined DEV_PORT (
+    echo [ERROR] No available development port was found for %DEV_HOST%.
+    pause
+    exit /b 1
+)
+
+echo [INFO] Starting development server on %DEV_HOST%:!DEV_PORT! ...
+call npm run dev -- --host %DEV_HOST% --port !DEV_PORT!
 set "EXIT_CODE=%ERRORLEVEL%"
 
 if not "%EXIT_CODE%"=="0" (

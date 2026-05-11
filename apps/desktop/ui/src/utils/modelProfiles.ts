@@ -1,6 +1,6 @@
 import type { AsrService } from './asrService';
 
-export type TtsService = 'indextts' | 'qwen';
+export type TtsService = 'indextts' | 'qwen' | 'gptsovits';
 
 export interface ModelProfileOption {
     id: string;
@@ -36,6 +36,11 @@ export const TTS_MODEL_PROFILES: Record<TtsService, ModelProfileOption[]> = {
     indextts: [
         { id: 'standard', label: 'Standard', description: '标准档位，适用于常规语音合成任务。' }
     ],
+    gptsovits: [
+        { id: 'balanced', label: 'Balanced / 平衡', description: '默认生产档位，兼顾速度、稳定性与完整朗读。' },
+        { id: 'fast', label: 'Fast / 极速', description: '优先吞吐与响应速度，自动保持在硬件安全范围内。' },
+        { id: 'quality', label: 'Quality / 高保真', description: '优先文本完整度与发音稳定性，适合正式成片。' }
+    ],
     qwen: [
         { id: 'quality', label: 'Quality / 1.7B', description: '高质量档位，适用于正式配音生产。' },
         { id: 'fast', label: 'Fast / 0.6B', description: '轻量档位，适合快速试听与资源受限设备。' }
@@ -53,6 +58,7 @@ const ASR_PROFILE_STORAGE_KEYS: Record<AsrService, string> = {
 
 const TTS_PROFILE_STORAGE_KEYS: Record<TtsService, string> = {
     indextts: 'tts_model_profile_indextts',
+    gptsovits: 'tts_model_profile_gptsovits',
     qwen: 'tts_model_profile_qwen'
 };
 

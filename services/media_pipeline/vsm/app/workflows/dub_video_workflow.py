@@ -414,7 +414,7 @@ def run_dub_video_workflow(
         tts_service_name=config.tts_service,
         tts_kwargs=config.tts.to_runner_kwargs(),
         args_ref_audio=config.tts.ref_audio,
-        explicit_qwen_ref_text=config.tts.qwen_ref_text or "",
+        explicit_qwen_ref_text=config.tts.qwen_ref_text or config.tts.gpt_sovits_prompt_text or "",
         max_retry_attempts=config.dub_retry_attempts,
         get_tts_runner=get_tts_runner,
         get_audio_duration=get_audio_duration,

@@ -17,7 +17,7 @@ from app_logging import get_logger, log_business, log_debug, log_error, redirect
 from audio_validation import validate_generated_audio, validate_generated_audio_array
 from event_protocol import emit_issue, emit_partial_result, emit_progress, emit_stage
 from ffmpeg_utils import ensure_portable_ffmpeg_in_path, resolve_ffmpeg_executable
-from gpu_runtime import choose_adaptive_batch_size, format_gpu_snapshot
+from gpu_runtime import choose_adaptive_batch_size, classify_single_gpu_tier, format_gpu_snapshot, get_single_gpu_memory_snapshot
 from model_profiles import MODELS_ROOT, get_tts_profile, resolve_existing_path
 
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -90,6 +90,36 @@ def get_indextts_runtime_status():
     if IndexTTS2 is None:
         return False, f"IndexTTS2 import failed: {INDEXTTS_IMPORT_ERROR or 'unknown import error'}"
     return True, None
+
+
+def get_indextts_runtime_diagnostics(*, text="", target_duration=None, batch_size=1, **kwargs):
+    snapshot, tier = _get_indextts_gpu_profile()
+    requested_batch_size = max(int(batch_size or 1), 1)
+    adaptive_batch_size, adaptive_detail = choose_adaptive_batch_size(requested_batch_size, "indextts")
+    infer_kwargs = _build_indextts_infer_kwargs(
+        text,
+        kwargs,
+        target_duration=target_duration,
+        safe_mode=False,
+    )
+    infer_kwargs.pop("_gpu_snapshot", None)
+    infer_kwargs.pop("_gpu_tier", None)
+    return {
+        "service": "indextts",
+        "runtime_ok": get_indextts_runtime_status()[0],
+        "snapshot": snapshot,
+        "tier": tier,
+        "adaptive_batch": adaptive_batch_size,
+        "adaptive_batch_detail": adaptive_detail,
+        "effective_single": {
+            "max_mel_tokens": int(infer_kwargs.get("max_mel_tokens", 0) or 0),
+            "max_text_tokens_per_segment": int(infer_kwargs.get("max_text_tokens_per_segment", 0) or 0),
+            "top_k": int(infer_kwargs.get("top_k", 0) or 0),
+            "top_p": float(infer_kwargs.get("top_p", 0.0) or 0.0),
+            "temperature": float(infer_kwargs.get("temperature", 0.0) or 0.0),
+            "repetition_penalty": float(infer_kwargs.get("repetition_penalty", 0.0) or 0.0),
+        },
+    }
 
 
 def _resolve_indextts_model_paths(model_dir=None, config_path=None, model_profile=None):
@@ -217,10 +247,17 @@ def _compute_indextts_max_mel_tokens(text, requested_cap, *, target_duration=Non
     return max(240, min(cap, recommended))
 
 
+def _get_indextts_gpu_profile():
+    snapshot = get_single_gpu_memory_snapshot()
+    tier = classify_single_gpu_tier(snapshot)
+    return snapshot, tier
+
+
 def _build_indextts_infer_kwargs(text, kwargs, *, target_duration=None, safe_mode=False):
     base_kwargs = _build_indextts_kwargs(text, kwargs)
     requested_cap = _resolve_requested_indextts_max_mel_tokens(kwargs)
     requested_segment_limit = _resolve_requested_indextts_segment_limit(kwargs)
+    gpu_snapshot, gpu_tier = _get_indextts_gpu_profile()
 
     base_kwargs["max_mel_tokens"] = _compute_indextts_max_mel_tokens(
         text,
@@ -233,6 +270,29 @@ def _build_indextts_infer_kwargs(text, kwargs, *, target_duration=None, safe_mod
         requested_segment_limit,
         safe_mode=safe_mode
     )
+
+    if gpu_tier == "critical":
+        base_kwargs["max_mel_tokens"] = min(int(base_kwargs["max_mel_tokens"]), 420 if safe_mode else 520)
+        base_kwargs["max_text_tokens_per_segment"] = min(int(base_kwargs["max_text_tokens_per_segment"]), 48)
+        base_kwargs["top_k"] = min(int(base_kwargs.get("top_k", 50)), 18)
+        base_kwargs["top_p"] = min(float(base_kwargs.get("top_p", 1.0)), 0.84)
+        base_kwargs["temperature"] = min(float(base_kwargs.get("temperature", 0.9)), 0.62)
+        base_kwargs["repetition_penalty"] = max(float(base_kwargs.get("repetition_penalty", 1.0)), 1.14)
+        base_kwargs["num_beams"] = 1
+    elif gpu_tier == "tight":
+        base_kwargs["max_mel_tokens"] = min(int(base_kwargs["max_mel_tokens"]), 520 if safe_mode else 680)
+        base_kwargs["max_text_tokens_per_segment"] = min(int(base_kwargs["max_text_tokens_per_segment"]), 56)
+        base_kwargs["top_k"] = min(int(base_kwargs.get("top_k", 50)), 24)
+        base_kwargs["top_p"] = min(float(base_kwargs.get("top_p", 1.0)), 0.90)
+        base_kwargs["temperature"] = min(float(base_kwargs.get("temperature", 0.9)), 0.72)
+        base_kwargs["repetition_penalty"] = max(float(base_kwargs.get("repetition_penalty", 1.0)), 1.10)
+        base_kwargs["num_beams"] = min(int(base_kwargs.get("num_beams", 1)), 1)
+    elif gpu_tier == "balanced":
+        base_kwargs["max_mel_tokens"] = min(int(base_kwargs["max_mel_tokens"]), 840 if safe_mode else 1080)
+        base_kwargs["max_text_tokens_per_segment"] = min(int(base_kwargs["max_text_tokens_per_segment"]), 72)
+
+    base_kwargs["_gpu_tier"] = gpu_tier
+    base_kwargs["_gpu_snapshot"] = gpu_snapshot
 
     if safe_mode:
         base_kwargs["do_sample"] = True
@@ -287,6 +347,11 @@ def _run_indextts_with_safe_retry(
                     f"(segment_limit={infer_kwargs.get('max_text_tokens_per_segment')}, "
                     f"max_mel_tokens={infer_kwargs.get('max_mel_tokens')})."
                 )
+
+            gpu_tier = infer_kwargs.pop("_gpu_tier", "unknown")
+            gpu_snapshot = infer_kwargs.pop("_gpu_snapshot", None)
+            if gpu_snapshot:
+                print(f"[IndexTTS] GPU profile: {format_gpu_snapshot(gpu_snapshot)} tier={gpu_tier}")
 
             tts.infer(
                 spk_audio_prompt=ref_audio_path,

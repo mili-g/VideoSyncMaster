@@ -42,6 +42,7 @@ class ProjectLayout:
     qwen_asr_dir: Path
     vc_redist_path: Path
     installer_script_path: Path
+    runtime_bootstrap_manifest_path: Path
 
     @property
     def ui_release_dir(self) -> Path:
@@ -80,6 +81,10 @@ def get_installer_script_path(root_dir: Path) -> Path:
     return root_dir / "resources" / "packaging" / "installer" / "patch_installer.iss"
 
 
+def get_runtime_bootstrap_manifest_path(root_dir: Path) -> Path:
+    return root_dir / "resources" / "packaging" / "runtime" / "runtime-bootstrap-manifest.json"
+
+
 def build_project_layout(root_dir: Path) -> ProjectLayout:
     return ProjectLayout(
         root_dir=root_dir,
@@ -91,6 +96,7 @@ def build_project_layout(root_dir: Path) -> ProjectLayout:
         qwen_asr_dir=get_qwen_asr_dir(root_dir),
         vc_redist_path=get_vc_redist_path(root_dir),
         installer_script_path=get_installer_script_path(root_dir),
+        runtime_bootstrap_manifest_path=get_runtime_bootstrap_manifest_path(root_dir),
     )
 
 
@@ -145,41 +151,6 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def _read_runtime_download_config(config_path: Path) -> dict:
-    if not config_path.exists():
-        return {}
-
-    try:
-        return json.loads(config_path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        raise RuntimeError(f"运行时下载配置文件无效: {config_path}") from exc
-
-
-def resolve_runtime_download_urls(root_dir: Path, bundle_name: str) -> tuple[str, str]:
-    config_path = root_dir / "resources" / "packaging" / "runtime" / "runtime-download-config.json"
-    config = _read_runtime_download_config(config_path)
-
-    explicit_download_url = os.environ.get("VIDEOSYNC_RUNTIME_DOWNLOAD_URL") or str(config.get("runtimeDownloadUrl") or "").strip()
-    download_base_url = os.environ.get("VIDEOSYNC_RUNTIME_DOWNLOAD_BASE_URL") or str(config.get("runtimeDownloadBaseUrl") or "").strip()
-    download_page_url = os.environ.get("VIDEOSYNC_RUNTIME_DOWNLOAD_PAGE_URL") or str(config.get("runtimeDownloadPageUrl") or "").strip()
-
-    download_url = explicit_download_url
-    if not download_url and download_base_url:
-        download_url = f"{download_base_url.rstrip('/')}/{bundle_name}"
-
-    if not download_url:
-        raise RuntimeError(
-            "未配置官方运行时下载地址。"
-            "请设置 VIDEOSYNC_RUNTIME_DOWNLOAD_URL 或 VIDEOSYNC_RUNTIME_DOWNLOAD_BASE_URL，"
-            "或提供 resources/packaging/runtime/runtime-download-config.json。"
-        )
-
-    if not download_page_url:
-        download_page_url = download_url
-
-    return download_url, download_page_url
 
 
 def create_zip_with_progress(
@@ -323,6 +294,13 @@ def prepare_common_runtime_files(layout: ProjectLayout, portable_root: Path):
         print_info("包含 VC++ Runtime 安装程序")
         ensure_file_copied(layout.vc_redist_path, portable_root / "VC_redist.x64.exe")
 
+    if layout.runtime_bootstrap_manifest_path.exists():
+        print_info("包含运行时自动安装清单")
+        ensure_file_copied(
+            layout.runtime_bootstrap_manifest_path,
+            portable_root / "resources" / "runtime" / "runtime-bootstrap-manifest.json",
+        )
+
 
 def write_portable_readme(portable_root: Path):
     """写入便携版说明"""
@@ -339,10 +317,12 @@ def write_portable_readme(portable_root: Path):
 - services/media_pipeline/: 后端逻辑与运行桥接代码
 - models/asr/qwen3/: Qwen ASR 资源
 - storage/cache/env/: 依赖版本切换缓存
+- resources/runtime/runtime-bootstrap-manifest.json: 自动安装清单
 
 注意事项:
 - 请将整个目录保存在本地磁盘，不要只拷贝 VideoSync.exe
 - 首次启动前建议确认显卡驱动与 VC++ Runtime 已安装
+- GPT-SoVITS 会基于内置运行时继续自动拉起独立环境，不依赖系统 Python
 - 如需迁移到其它电脑，请整体复制整个便携目录
 """
     readme_path.write_text(content, encoding="utf-8")
@@ -379,6 +359,7 @@ VideoSync/
 说明：
 - services/media_pipeline/ 已包含在程序包内
 - ffmpeg 等后端资源已随程序提供
+- resources/runtime/runtime-bootstrap-manifest.json 记录了自动安装组件清单
 - 若缺少 python/ 或 models/，相关功能将无法运行
 """
     readme_path.write_text(content, encoding="utf-8")
@@ -428,130 +409,6 @@ def get_version(ui_dir: Path) -> str:
             return data.get("version", "0.0.0")
     except:
         return "1.0.0"
-
-
-def collect_runtime_file_stats(source_dirs: list[tuple[Path, Path]]) -> list[dict]:
-    entries: list[dict] = []
-    for src_path, archive_prefix in source_dirs:
-        for file_path in sorted(src_path.rglob("*")):
-            if not file_path.is_file():
-                continue
-            relative_path = (archive_prefix / file_path.relative_to(src_path)).as_posix()
-            entries.append({
-                "path": relative_path,
-                "size": file_path.stat().st_size,
-            })
-    return entries
-
-
-def get_zip_entry_count(zip_path: Path) -> int:
-    with zipfile.ZipFile(zip_path, "r") as zipf:
-        return len(zipf.infolist())
-
-
-def build_python_runtime_bundle(root_dir: Path) -> Optional[Path]:
-    """构建与当前本地运行环境严格对应的 Python Runtime Bundle。"""
-    layout = build_project_layout(root_dir)
-    version = get_version(layout.ui_dir)
-    runtime_root = root_dir / "runtime"
-    overlay_dir = runtime_root / "overlays" / "transformers5_asr"
-
-    if not layout.python_dir.exists():
-        print_error(f"找不到 Python 环境: {layout.python_dir}")
-        return None
-    if not overlay_dir.exists():
-        print_error(f"找不到 Transformers 5.x ASR overlay: {overlay_dir}")
-        return None
-
-    release_runtime_dir = root_dir / "release-assets" / "runtime"
-    release_runtime_dir.mkdir(parents=True, exist_ok=True)
-
-    manifest_path = root_dir / "resources" / "packaging" / "runtime" / "python-runtime-manifest.json"
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
-
-    source_dirs = [
-        (layout.python_dir, Path("python")),
-        (overlay_dir, Path("overlays") / "transformers5_asr"),
-    ]
-    file_entries = collect_runtime_file_stats(source_dirs)
-    if not file_entries:
-        print_error("运行时目录为空，无法生成 Runtime Bundle")
-        return None
-
-    temp_bundle_path = release_runtime_dir / f"VideoSync-PythonRuntime-{version}.tmp.zip"
-    if temp_bundle_path.exists():
-        temp_bundle_path.unlink()
-
-    print_header(f"构建 Python Runtime Bundle v{version}")
-    print_info("开始打包当前本地 Python 运行时与 Transformers 5.x ASR overlay...")
-    create_zip_with_progress(
-        temp_bundle_path,
-        source_dirs,
-        exclude_patterns=[".git"],
-        compression=zipfile.ZIP_STORED,
-        compresslevel=None,
-    )
-
-    bundle_sha256 = sha256_file(temp_bundle_path)
-    bundle_name = f"VideoSync-PythonRuntime-{version}-{bundle_sha256[:12]}.zip"
-    final_bundle_path = release_runtime_dir / bundle_name
-    if final_bundle_path.exists():
-        final_bundle_path.unlink()
-    temp_bundle_path.replace(final_bundle_path)
-
-    for stale_bundle in release_runtime_dir.glob(f"VideoSync-PythonRuntime-{version}-*.zip"):
-        if stale_bundle != final_bundle_path:
-            stale_bundle.unlink()
-
-    critical_paths = [
-        "python/python.exe",
-        "python/Lib/site-packages/funasr/__init__.py",
-        "python/Lib/site-packages/qwen_asr/__init__.py",
-        "python/Lib/site-packages/qwen_omni_utils/__init__.py",
-        "python/Lib/site-packages/torch/__init__.py",
-        "overlays/transformers5_asr/transformers/__init__.py",
-    ]
-    critical_files = []
-    for relative_path in critical_paths:
-        source_path = runtime_root / Path(relative_path)
-        if not source_path.exists():
-            print_error(f"关键运行时文件缺失: {source_path}")
-            return None
-        critical_files.append({
-            "path": relative_path,
-            "size": source_path.stat().st_size,
-            "sha256": sha256_file(source_path),
-        })
-
-    download_url, download_page_url = resolve_runtime_download_urls(root_dir, bundle_name)
-
-    manifest = {
-        "schemaVersion": 1,
-        "appVersion": version,
-        "runtimeVersion": bundle_sha256[:12],
-        "bundleFileName": bundle_name,
-        "bundleSha256": bundle_sha256,
-        "bundleSize": final_bundle_path.stat().st_size,
-        "releaseTag": f"v{version}",
-        "downloadUrl": download_url,
-        "downloadPageUrl": download_page_url,
-        "expectedFileCount": get_zip_entry_count(final_bundle_path),
-        "requiredPaths": critical_paths,
-        "criticalFiles": critical_files,
-    }
-
-    manifest_path.write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    (release_runtime_dir / "python-runtime-manifest.json").write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-
-    print_success(f"Runtime Bundle 已生成: {final_bundle_path}")
-    print_success(f"Runtime Manifest 已更新: {manifest_path}")
-    return final_bundle_path
 
 
 def build_full_portable(root_dir: Path):
@@ -657,6 +514,7 @@ def build_program_only(root_dir: Path):
 
     print_header("构建纯程序目录")
     copy_tree_with_progress(win_unpacked, portable_dir, "程序主体")
+    prepare_common_runtime_files(layout, portable_dir)
 
     write_program_only_readme(portable_dir)
 
@@ -723,8 +581,8 @@ def build_update_patch(root_dir: Path):
 
 
 def build_installer(root_dir: Path):
-    """构建傻瓜式更新包"""
-    print_header("构建傻瓜式一键更新包")
+    """构建安装版 EXE。"""
+    print_header("构建安装版 EXE")
     
     layout = build_project_layout(root_dir)
 
@@ -738,50 +596,23 @@ def build_installer(root_dir: Path):
     if req_file.exists() and win_unpacked.exists():
         print_info("正在包含 requirements.txt...")
         shutil.copy2(req_file, win_unpacked / "requirements.txt")
-    
-    # 3. 调用 Inno Setup
-    iscc_path = None
-    iscc_in_path = shutil.which("iscc")
-    if iscc_in_path:
-        iscc_path = Path(iscc_in_path)
-    else:
-        possible_paths = [
-            Path(r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe"),
-            Path(r"C:\Program Files\Inno Setup 6\ISCC.exe"),
-            Path(os.environ.get("LOCALAPPDATA", r"C:\Users\Default\AppData\Local")) / "Programs" / "Inno Setup 6" / "ISCC.exe",
-            Path(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)")) / "Inno Setup 6" / "ISCC.exe",
-            Path(os.environ.get("PROGRAMFILES", r"C:\Program Files")) / "Inno Setup 6" / "ISCC.exe",
-        ]
-        for p in possible_paths:
-            if p.exists():
-                iscc_path = p
-                break
-                
-    if not iscc_path:
-        print_error("未找到 Inno Setup (ISCC.exe)")
-        print_info("请确保已安装 Inno Setup 6。如果已安装，请尝试将安装目录添加到系统环境变量 PATH 中。")
-        return
-    
-    if not layout.installer_script_path.exists():
-        print_error(f"未找到安装脚本: {layout.installer_script_path}")
-        return
-    
-    print_info("正在调用 Inno Setup...")
-    try:
-        result = subprocess.run(
-            [str(iscc_path), str(layout.installer_script_path)],
-            cwd=root_dir,
-            capture_output=True,
-            text=True
+    if layout.runtime_bootstrap_manifest_path.exists() and win_unpacked.exists():
+        print_info("正在包含运行时自动安装清单...")
+        ensure_file_copied(
+            layout.runtime_bootstrap_manifest_path,
+            win_unpacked / "resources" / "runtime" / "runtime-bootstrap-manifest.json",
         )
-        if result.returncode != 0:
-            print_error("编译失败！")
-            print(result.stdout)
-            print(result.stderr)
-            return
-        print_success(f"一键更新包已生成，请查看 {layout.ui_release_dir} 目录")
-    except Exception as e:
-        print_error(f"编译失败: {e}")
+
+    setup_exe = layout.ui_release_dir / f"VideoSync Setup {get_version(layout.ui_dir)}.exe"
+    if not setup_exe.exists():
+        print_error(f"未找到安装包产物: {setup_exe}")
+        print_info("请检查 electron-builder 构建日志和 release 目录输出。")
+        return
+
+    print_success(f"安装包已生成: {setup_exe}")
+    print_info("该安装版由 electron-builder 直接产出。")
+    print_info("安装版首次启动会从 Python / PyTorch 官方源下载并修复运行环境。")
+    print_info("GPT-SoVITS 会在首次预热或首次合成时基于内置运行时自动补齐独立依赖。")
 
 
 def clean_build_artifacts(root_dir: Path):
@@ -851,18 +682,15 @@ def main():
         print("  4. 构建轻量逻辑补丁 (~50MB ZIP)")
         print("     [包含：仅程序逻辑，环境/模型需已有]")
         print()
-        print("  5. 构建傻瓜式一键更新包 (~50MB EXE)")
-        print("     [会同步生成匹配当前版本的 Python Runtime Bundle，需一并上传到 Release 资产]")
+        print("  5. 构建安装版 EXE (~50MB)")
+        print("     [程序首次启动会从 Python / PyTorch 官方源下载并修复运行环境]")
         print()
-        print("  6. 单独构建 Python Runtime Bundle")
-        print("     [用于安装版首次启动自动下载的运行时资产]")
-        print()
-        print("  7. 清理构建产物 (Clean)")
-        print("  8. 退出")
+        print("  6. 清理构建产物 (Clean)")
+        print("  7. 退出")
         print()
         
         try:
-            choice = input("请输入选项 (1-8): ").strip()
+            choice = input("请输入选项 (1-7): ").strip()
             
             if choice == "1":
                 build_program_only(root_dir)
@@ -875,10 +703,8 @@ def main():
             elif choice == "5":
                 build_installer(root_dir)
             elif choice == "6":
-                build_python_runtime_bundle(root_dir)
-            elif choice == "7":
                 clean_build_artifacts(root_dir)
-            elif choice == "8":
+            elif choice == "7":
                 print_info("再见！")
                 break
             else:

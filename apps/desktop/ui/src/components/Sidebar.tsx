@@ -69,6 +69,12 @@ const navIconMap: Record<ViewId, React.ReactNode> = {
             <path d="M9 9h6v6H9zM9 2.5v2M15 2.5v2M9 19.5v2M15 19.5v2M19.5 9h2M19.5 15h2M2.5 9h2M2.5 15h2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" fill="none" />
         </>
     ),
+    licenses: makeIcon(
+        <>
+            <path d="M12 3.5l6.5 3v5.4c0 4.4-2.9 7.5-6.5 8.9-3.6-1.4-6.5-4.5-6.5-8.9V6.5z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+            <path d="M9.5 11.8l1.7 1.7 3.5-3.8" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+        </>
+    ),
     diagnostics: makeIcon(
         <>
             <path d="M12 3.5l7 2.8v5.5c0 4.2-2.8 7.2-7 8.7-4.2-1.5-7-4.5-7-8.7V6.3z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
@@ -121,6 +127,12 @@ const utilityItems = (hasMissingDeps?: boolean): NavItem[] => [
         caption: hasMissingDeps ? '需要处理' : '环境诊断',
         tone: hasMissingDeps ? 'warning' : 'default',
         icon: navIconMap.diagnostics
+    },
+    {
+        id: 'licenses',
+        name: '授权',
+        caption: '授权中心',
+        icon: navIconMap.licenses
     },
     {
         id: 'logs',

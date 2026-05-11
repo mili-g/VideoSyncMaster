@@ -19,6 +19,7 @@ def execute_action(
     build_action_router,
     log_error,
     logger,
+    cleanup_loaded_tts_runtime,
 ):
     asr_kwargs = build_asr_runtime_config(args).to_runner_kwargs()
     tts_kwargs = build_tts_kwargs(args)
@@ -50,6 +51,16 @@ def execute_action(
             )
         )
     finally:
+        try:
+            cleanup_loaded_tts_runtime()
+        except Exception as cleanup_error:
+            log_error(
+                logger,
+                "Failed to cleanup loaded TTS runtime after action",
+                event="tts_runtime_cleanup_failed",
+                stage="cleanup",
+                detail=str(cleanup_error),
+            )
         clear_event_context()
 
 

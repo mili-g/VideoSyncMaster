@@ -33,6 +33,7 @@ interface PrepareReferenceAudioCommandOptions {
     input: string;
     ref: string;
     output: string;
+    ttsService?: string;
     json?: boolean;
 }
 
@@ -129,6 +130,7 @@ export function buildPrepareReferenceAudioCommand({
     input,
     ref,
     output,
+    ttsService,
     json = true
 }: PrepareReferenceAudioCommandOptions): BackendCommandSpec<typeof BACKEND_ACTIONS.PREPARE_REFERENCE_AUDIO> {
     const args = withBackendAction(
@@ -137,6 +139,7 @@ export function buildPrepareReferenceAudioCommand({
         '--ref', ref,
         '--output', output
     );
+    if (ttsService) args.push('--tts_service', ttsService);
     if (json) args.push('--json');
     return { action: BACKEND_ACTIONS.PREPARE_REFERENCE_AUDIO, args };
 }

@@ -29,6 +29,25 @@ def get_single_gpu_memory_snapshot():
         return None
 
 
+def classify_single_gpu_tier(snapshot=None):
+    if snapshot is None:
+        snapshot = get_single_gpu_memory_snapshot()
+    if snapshot is None:
+        return "unknown"
+
+    free_gb = float(snapshot.get("free_gb") or 0.0)
+    total_gb = float(snapshot.get("total_gb") or 0.0)
+    free_ratio = (free_gb / total_gb) if total_gb > 0 else 0.0
+
+    if free_gb < 2.5 or free_ratio < 0.12:
+        return "critical"
+    if total_gb < 10.0 or free_gb < 4.0 or free_ratio < 0.22:
+        return "tight"
+    if total_gb < 16.0 or free_gb < 7.0 or free_ratio < 0.35:
+        return "balanced"
+    return "roomy"
+
+
 def _clamp_batch_size(value, requested):
     requested = max(int(requested or 1), 1)
     return max(1, min(int(value), requested))
@@ -95,7 +114,10 @@ def format_gpu_snapshot(detail):
     total_gb = detail.get("total_gb")
     requested = detail.get("requested_batch_size")
     adaptive = detail.get("adaptive_batch_size")
+    tier = classify_single_gpu_tier(detail)
 
     free_text = f"{free_gb:.2f}GB" if isinstance(free_gb, (float, int)) and math.isfinite(free_gb) else "unknown"
     total_text = f"{total_gb:.2f}GB" if isinstance(total_gb, (float, int)) and math.isfinite(total_gb) else "unknown"
-    return f"free {free_text} / total {total_text}, batch {requested} -> {adaptive}"
+    if requested is None or adaptive is None:
+        return f"tier {tier}, free {free_text} / total {total_text}"
+    return f"tier {tier}, free {free_text} / total {total_text}, batch {requested} -> {adaptive}"

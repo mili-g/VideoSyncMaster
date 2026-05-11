@@ -51,9 +51,11 @@ export function usePersistentSettings({ setFeedback }: PersistentSettingsOptions
         }
         return normalized;
     });
-    const [ttsService, setTtsService] = useState<'indextts' | 'qwen'>(() => {
+    const [ttsService, setTtsService] = useState<'indextts' | 'qwen' | 'gptsovits'>(() => {
         const saved = localStorage.getItem('ttsService');
-        return saved === 'indextts' || saved === 'qwen' ? (saved as 'indextts' | 'qwen') : 'indextts';
+        return saved === 'indextts' || saved === 'qwen' || saved === 'gptsovits'
+            ? (saved as 'indextts' | 'qwen' | 'gptsovits')
+            : 'indextts';
     });
     const [asrModelProfiles, setAsrModelProfiles] = useState<Record<AsrService, string>>(() => ({
         bcut: getStoredAsrModelProfile('bcut'),
@@ -65,6 +67,7 @@ export function usePersistentSettings({ setFeedback }: PersistentSettingsOptions
     }));
     const [ttsModelProfiles, setTtsModelProfiles] = useState<Record<TtsService, string>>(() => ({
         indextts: getStoredTtsModelProfile('indextts'),
+        gptsovits: getStoredTtsModelProfile('gptsovits'),
         qwen: getStoredTtsModelProfile('qwen')
     }));
     const [asrRuntimeSettings, setAsrRuntimeSettings] = useState<AsrRuntimeSettings>(() => getStoredAsrRuntimeSettings());
@@ -81,7 +84,7 @@ export function usePersistentSettings({ setFeedback }: PersistentSettingsOptions
         return true;
     };
 
-    const handleTtsServiceChange = (newService: 'indextts' | 'qwen') => {
+    const handleTtsServiceChange = (newService: 'indextts' | 'qwen' | 'gptsovits') => {
         const notice = getRuntimeCombinationNotice(asrService, newService);
         if (notice) {
             setFeedback({ title: '运行时提示', message: notice.message, type: 'success' });

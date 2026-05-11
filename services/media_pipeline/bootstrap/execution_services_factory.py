@@ -331,6 +331,20 @@ def build_execution_services(context: ExecutionServiceFactoryContext) -> Executi
         _, _, reference_audio_handler = get_tts_action_handlers()
         return reference_audio_handler(*args, **kwargs)
 
+    def get_tts_runtime_diagnostics(tts_service="indextts", **kwargs):
+        service_name = str(tts_service or "indextts").strip().lower()
+        if service_name == "gptsovits":
+            from gpt_sovits_service import get_gpt_sovits_runtime_diagnostics as imported_get_gpt_sovits_runtime_diagnostics
+
+            return imported_get_gpt_sovits_runtime_diagnostics(**kwargs)
+        if service_name == "qwen":
+            from qwen_tts_service import get_qwen_tts_runtime_diagnostics as imported_get_qwen_tts_runtime_diagnostics
+
+            return imported_get_qwen_tts_runtime_diagnostics(**kwargs)
+        from tts import get_indextts_runtime_diagnostics as imported_get_indextts_runtime_diagnostics
+
+        return imported_get_indextts_runtime_diagnostics(**kwargs)
+
     return ExecutionServices(
         dispatch_basic_action=lambda *args, **kwargs: get_basic_action_handlers()[0](*args, **kwargs),
         list_basic_actions=lambda: get_basic_action_handlers()[1](),
@@ -346,6 +360,7 @@ def build_execution_services(context: ExecutionServiceFactoryContext) -> Executi
         handle_generate_single_tts=handle_generate_single_tts,
         handle_generate_batch_tts=handle_generate_batch_tts,
         handle_prepare_reference_audio=handle_prepare_reference_audio,
+        get_tts_runtime_diagnostics=get_tts_runtime_diagnostics,
         ffmpeg=context.runtime.ffmpeg_module,
         librosa=LazyModuleProxy(get_librosa_module),
         sf=LazyModuleProxy(get_soundfile_module),

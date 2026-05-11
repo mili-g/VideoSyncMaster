@@ -65,5 +65,22 @@ def build_action_router(
                 tts_service=getattr(args, "tts_service", None),
                 asr_service=getattr(args, "asr", None),
             ),
+            "get_tts_runtime_diagnostics": lambda: {
+                "success": True,
+                "service": getattr(args, "tts_service", "indextts"),
+                "diagnostics": services.get_tts_runtime_diagnostics(
+                    getattr(args, "tts_service", "indextts"),
+                    text=getattr(args, "text", "") or "",
+                    target_duration=getattr(args, "duration", None),
+                    duration=getattr(args, "duration", None),
+                    batch_size=getattr(args, "batch_size", 1),
+                    max_new_tokens=getattr(args, "max_new_tokens", 2048),
+                    gpt_sovits_parallel_infer=str(getattr(args, "gpt_sovits_parallel_infer", "true")).strip().lower() == "true",
+                    gpt_sovits_sample_steps=getattr(args, "gpt_sovits_sample_steps", 32),
+                    gpt_sovits_batch_threshold=getattr(args, "gpt_sovits_batch_threshold", 0.68),
+                    gpt_sovits_text_split_method=getattr(args, "gpt_sovits_text_split_method", "cut5"),
+                    gpt_sovits_official_fast_mode=str(getattr(args, "gpt_sovits_official_fast_mode", "true")).strip().lower() == "true",
+                ),
+            },
         },
     )

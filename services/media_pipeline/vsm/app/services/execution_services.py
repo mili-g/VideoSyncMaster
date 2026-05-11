@@ -20,6 +20,7 @@ class ExecutionServices:
     handle_generate_single_tts: Callable[..., Any]
     handle_generate_batch_tts: Callable[..., Any]
     handle_prepare_reference_audio: Callable[..., Any]
+    get_tts_runtime_diagnostics: Callable[..., Any]
     ffmpeg: Any
     librosa: Any
     sf: Any

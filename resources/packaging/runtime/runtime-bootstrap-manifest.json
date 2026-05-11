@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "generatedFor": "VideoSync desktop packaging and first-run bootstrap",
+  "managedRuntime": {
+    "name": "Managed Python Runtime",
+    "trigger": "installer first launch or manual repair runtime action",
+    "pythonSource": {
+      "version": "3.11.9",
+      "distribution": "official embeddable package",
+      "downloadHost": "python.org"
+    },
+    "installedComponents": [
+      "pip",
+      "setuptools",
+      "wheel",
+      "torch",
+      "torchvision",
+      "torchaudio"
+    ],
+    "downloadSources": [
+      "python.org",
+      "bootstrap.pypa.io",
+      "download.pytorch.org",
+      "PyPI"
+    ],
+    "localPatchPayloads": [
+      "triton",
+      "flash_attn",
+      "flash_attn_2_cuda.cp311-win_amd64.pyd"
+    ],
+    "guarantees": [
+      "No system Python is required.",
+      "Runtime is installed into the app-managed runtime directory.",
+      "Torch is pinned to the packaged CUDA build.",
+      "Bootstrap fails fast if CUDA wheels are not installed or torch.cuda.is_available() is false."
+    ]
+  },
+  "gptSovitsRuntime": {
+    "name": "GPT-SoVITS Isolated Runtime",
+    "trigger": "GPT-SoVITS warmup or first synthesis request",
+    "pythonSource": "reuse managed bundled python and create isolated virtual environment",
+    "repoSource": "official GPT-SoVITS repository archive",
+    "assetSources": [
+      "GPT-SoVITS pretrained models archive",
+      "G2PW model archive",
+      "nltk_data archive",
+      "open_jtalk dictionary archive"
+    ],
+    "installedComponents": [
+      "virtualenv",
+      "torchcodec",
+      "pyopenjtalk-prebuilt",
+      "opencc-python-reimplemented"
+    ],
+    "windowsCompatibilityShims": [
+      "jieba_fast package shim",
+      "torchaudio.load fallback via soundfile"
+    ],
+    "guarantees": [
+      "No system Python is required.",
+      "Bootstrap runs inside the app-managed runtime.",
+      "Windows bootstrap avoids build-only dependencies that require local compilation.",
+      "The isolated GPT-SoVITS runtime reuses the managed CUDA-enabled PyTorch stack."
+    ]
+  }
+}

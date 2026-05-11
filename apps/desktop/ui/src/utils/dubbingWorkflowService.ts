@@ -1,4 +1,4 @@
-import { getStoredQwenTtsSettings, getStoredTtsVoiceMode } from './runtimeSettings';
+import { getStoredGptSovitsTtsSettings, getStoredQwenTtsSettings, getStoredTtsVoiceMode } from './runtimeSettings';
 import { getStoredTtsModelProfile } from './modelProfiles';
 import { buildPrepareReferenceAudioCommand } from './backendCommandBuilders';
 import { runBackendCommand } from './backendCommandClient';
@@ -27,7 +27,7 @@ export interface FallbackReferenceAudio {
 
 export interface TtsRequestOptions {
     targetLang: string;
-    ttsService: 'indextts' | 'qwen';
+    ttsService: 'indextts' | 'qwen' | 'gptsovits';
     batchSize: number;
     cloneBatchSize: number;
     maxNewTokens: number;
@@ -37,6 +37,8 @@ export interface TtsRequestOptions {
     fallbackRefText?: string;
     nearbyRefAudios?: Array<{ audio_path: string; ref_text?: string }>;
     qwenRefText?: string;
+    gptSovitsPromptText?: string;
+    gptSovitsPromptLang?: string;
 }
 
 export function collectNearbySuccessfulAudioRefs<T extends DubbingSegmentLike>(
@@ -77,6 +79,7 @@ export async function prepareFallbackReferenceAudio<T extends Pick<DubbingSegmen
     sourcePath: string,
     workDir: string,
     segments: T[],
+    ttsService: 'indextts' | 'qwen' | 'gptsovits' = 'indextts',
     lane: 'default' | 'prep' = 'default'
 ): Promise<FallbackReferenceAudio | undefined> {
     if (segments.length === 0) {
@@ -99,6 +102,7 @@ export async function prepareFallbackReferenceAudio<T extends Pick<DubbingSegmen
             input: sourcePath,
             ref: refJsonPath,
             output: workDir,
+            ttsService,
             json: true
         }), { lane });
         if (result?.success && result.ref_audio_path) {
@@ -114,12 +118,12 @@ export async function prepareFallbackReferenceAudio<T extends Pick<DubbingSegmen
 }
 
 export function buildTtsExtraArgs(
-    ttsService: 'indextts' | 'qwen',
+    ttsService: 'indextts' | 'qwen' | 'gptsovits',
     batchSize: number,
     cloneBatchSize: number
 ) {
     const args: string[] = [];
-    const voiceMode = getStoredTtsVoiceMode();
+    const voiceMode = getStoredTtsVoiceMode(ttsService);
     let effectiveBatchSize = batchSize;
     let blocked: DubbingFeedbackPayload | null = null;
 
@@ -152,6 +156,17 @@ export function buildTtsExtraArgs(
             if (qwenSettings.refAudio) args.push('--ref_audio', qwenSettings.refAudio);
             if (qwenSettings.refText) args.push('--qwen_ref_text', qwenSettings.refText);
         }
+    } else if (ttsService === 'gptsovits') {
+        const gptSovitsSettings = getStoredGptSovitsTtsSettings();
+        if (gptSovitsSettings.refAudio) args.push('--ref_audio', gptSovitsSettings.refAudio);
+        if (gptSovitsSettings.promptText) args.push('--gpt_sovits_prompt_text', gptSovitsSettings.promptText);
+        args.push('--gpt_sovits_text_split_method', gptSovitsSettings.textSplitMethod);
+        args.push('--gpt_sovits_speed_factor', String(gptSovitsSettings.speedFactor));
+        args.push('--gpt_sovits_batch_threshold', String(gptSovitsSettings.batchThreshold));
+        args.push('--gpt_sovits_parallel_infer', gptSovitsSettings.parallelInfer ? 'true' : 'false');
+        args.push('--gpt_sovits_sample_steps', String(gptSovitsSettings.sampleSteps));
+        args.push('--gpt_sovits_official_fast_mode', gptSovitsSettings.officialFastMode ? 'true' : 'false');
+        effectiveBatchSize = Math.max(4, Math.min(batchSize || 8, gptSovitsSettings.officialFastMode ? 12 : 8));
     } else {
         const refAudio = localStorage.getItem('tts_ref_audio_path');
         if (refAudio) args.push('--ref_audio', refAudio);
@@ -204,6 +219,12 @@ export function buildSingleTtsArgs(
     if (options.qwenRefText) {
         args.push('--qwen_ref_text', options.qwenRefText);
     }
+    if (options.gptSovitsPromptText) {
+        args.push('--gpt_sovits_prompt_text', options.gptSovitsPromptText);
+    }
+    if (options.gptSovitsPromptLang) {
+        args.push('--gpt_sovits_prompt_lang', options.gptSovitsPromptLang);
+    }
 
     return { action: BACKEND_ACTIONS.GENERATE_SINGLE_TTS, args } satisfies BackendCommandSpec<typeof BACKEND_ACTIONS.GENERATE_SINGLE_TTS>;
 }
@@ -217,9 +238,7 @@ export function buildBatchTtsArgs(
     resumeTotal = 0
 ) {
     const { args: extraArgs, effectiveBatchSize } = buildTtsExtraArgs(options.ttsService, options.batchSize, options.cloneBatchSize);
-    return {
-        action: BACKEND_ACTIONS.GENERATE_BATCH_TTS,
-        args: withBackendAction(
+    const args = withBackendAction(
         BACKEND_ACTIONS.GENERATE_BATCH_TTS,
         '--input', sourcePath,
         '--output', outputDir,
@@ -235,7 +254,13 @@ export function buildBatchTtsArgs(
         '--lang', options.targetLang,
         '--json',
         ...extraArgs
-        )
+    );
+    if (options.gptSovitsPromptLang) {
+        args.push('--gpt_sovits_prompt_lang', options.gptSovitsPromptLang);
+    }
+    return {
+        action: BACKEND_ACTIONS.GENERATE_BATCH_TTS,
+        args
     } satisfies BackendCommandSpec<typeof BACKEND_ACTIONS.GENERATE_BATCH_TTS>;
 }
 

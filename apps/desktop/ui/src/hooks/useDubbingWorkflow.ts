@@ -17,6 +17,7 @@ import type { ModelStatusResponse } from '../types/backend';
 import type { MergeVideoResponse } from '../types/backend';
 import { resolveSubtitleArtifactLanguages } from '../utils/languageTags';
 import { validateSegmentLanguageFit } from '../utils/subtitleLanguageGuard';
+import type { TtsService } from '../utils/modelProfiles';
 
 type FeedbackType = 'success' | 'error';
 
@@ -33,7 +34,7 @@ interface DubbingWorkflowOptions {
     outputDirOverride?: string;
     targetLang: string;
     asrOriLang: string;
-    ttsService: 'indextts' | 'qwen';
+    ttsService: TtsService;
     ttsModelProfile: string;
     batchSize: number;
     cloneBatchSize: number;
@@ -117,7 +118,7 @@ export function useDubbingWorkflow({
     setMergedVideoPath
 }: DubbingWorkflowOptions) {
     const hasErrors = translatedSegments.some(segment => segment.audioStatus === 'error');
-    const voiceMode = getStoredTtsVoiceMode();
+    const voiceMode = getStoredTtsVoiceMode(ttsService);
     const useNarrationMode = voiceMode === 'narration';
 
     const showBlockingFeedback = (title: string, message: string, statusText?: string) => {
@@ -185,6 +186,15 @@ export function useDubbingWorkflow({
 
             if (ttsService === 'indextts') {
                 return readDetail('index_tts', 'Index-TTS 模型未就绪。');
+            }
+
+            if (ttsService === 'gptsovits') {
+                const detail = details.gpt_sovits?.detail || 'GPT-SoVITS 将在首次启用时自动初始化。';
+                const state = details.gpt_sovits?.state;
+                if (state === 'unsupported_platform' || state === 'runtime_incompatible') {
+                    return detail;
+                }
+                return null;
             }
 
             const tokenizerIssue = readDetail('qwen_tokenizer', 'Qwen3-TTS tokenizer 未就绪。');
@@ -335,7 +345,8 @@ export function useDubbingWorkflow({
             const fallbackRefAudio = await prepareFallbackReferenceAudio(
                 originalVideoPath,
                 projectPaths.sessionTempDir,
-                sourceSegments.length > 0 ? sourceSegments : translatedSegments
+                sourceSegments.length > 0 ? sourceSegments : translatedSegments,
+                ttsService
             );
 
             const result = await runBackendCommand(
@@ -349,7 +360,11 @@ export function useDubbingWorkflow({
                     fallbackRefAudio: fallbackRefAudio?.audioPath,
                     fallbackRefText: fallbackRefAudio?.refText,
                     nearbyRefAudios: useNarrationMode ? [] : collectNearbySuccessfulAudioRefs(translatedSegments, index),
-                    qwenRefText: useNarrationMode ? '' : (sourceSegments[index]?.text || '')
+                    qwenRefText: useNarrationMode ? '' : (sourceSegments[index]?.text || ''),
+                    gptSovitsPromptText: ttsService === 'gptsovits'
+                        ? (fallbackRefAudio?.refText || sourceSegments[index]?.text || '')
+                        : (useNarrationMode ? (fallbackRefAudio?.refText || '') : (sourceSegments[index]?.text || '')),
+                    gptSovitsPromptLang: asrOriLang
                 })
             );
 
@@ -530,7 +545,8 @@ export function useDubbingWorkflow({
                         cloneBatchSize,
                         maxNewTokens,
                         videoStrategy,
-                        audioMixMode
+                        audioMixMode,
+                        gptSovitsPromptLang: asrOriLang
                     },
                     recoveredCount,
                     workingSegments.length
@@ -670,7 +686,8 @@ export function useDubbingWorkflow({
             const fallbackRefAudio = await prepareFallbackReferenceAudio(
                 originalVideoPath,
                 projectPaths.sessionTempDir,
-                sourceSegments.length > 0 ? sourceSegments : translatedSegments
+                sourceSegments.length > 0 ? sourceSegments : translatedSegments,
+                ttsService
             );
 
             const totalErrors = errorSegments.length;
@@ -701,7 +718,11 @@ export function useDubbingWorkflow({
                         fallbackRefAudio: fallbackRefAudio?.audioPath,
                         fallbackRefText: fallbackRefAudio?.refText,
                         nearbyRefAudios: useNarrationMode ? [] : collectNearbySuccessfulAudioRefs(translatedSegments, index),
-                        qwenRefText: useNarrationMode ? '' : (sourceSegments[index]?.text || '')
+                        qwenRefText: useNarrationMode ? '' : (sourceSegments[index]?.text || ''),
+                        gptSovitsPromptText: ttsService === 'gptsovits'
+                            ? (fallbackRefAudio?.refText || sourceSegments[index]?.text || '')
+                            : (useNarrationMode ? (fallbackRefAudio?.refText || '') : (sourceSegments[index]?.text || '')),
+                        gptSovitsPromptLang: asrOriLang
                     })
                 );
 

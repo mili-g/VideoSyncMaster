@@ -146,6 +146,32 @@ export interface AsrDiagnosticsResponse extends BackendResponseBase {
     failed_probes?: string[];
 }
 
+export interface TtsRuntimeDiagnosticsPayload {
+    service?: string;
+    runtime_ok?: boolean;
+    snapshot?: {
+        free_gb?: number;
+        total_gb?: number;
+    } | null;
+    tier?: string;
+    model_profile?: string;
+    adaptive_batch?: number;
+    adaptive_batch_detail?: {
+        free_gb?: number;
+        total_gb?: number;
+        requested_batch_size?: number;
+        adaptive_batch_size?: number;
+    } | null;
+    effective_single?: Record<string, number | string | boolean>;
+    effective_batch?: Record<string, number | string | boolean>;
+    official_fast_mode?: boolean;
+}
+
+export interface TtsRuntimeDiagnosticsResponse extends BackendResponseBase {
+    service?: string;
+    diagnostics?: TtsRuntimeDiagnosticsPayload;
+}
+
 export interface FileDialogResult {
     canceled: boolean;
     filePaths?: string[];

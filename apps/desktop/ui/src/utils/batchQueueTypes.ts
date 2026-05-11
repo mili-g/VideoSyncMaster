@@ -2,6 +2,7 @@ import type { SrtSegment } from './srt';
 import type { prepareBatchProjectPaths } from './projectPaths';
 import type { SessionManifest, SessionResumePlan } from './sessionManifest';
 import type { QueueResumeInfo, StructuredErrorInfo } from '../types/workflow';
+import type { TtsService } from './modelProfiles';
 
 export type BatchQueueStatus = 'pending' | 'processing' | 'success' | 'error' | 'canceled';
 
@@ -62,7 +63,7 @@ export interface BatchQueueOptions {
     outputDirOverride?: string;
     targetLang: string;
     asrService: string;
-    ttsService: 'indextts' | 'qwen';
+    ttsService: TtsService;
     asrOriLang: string;
     videoStrategy: string;
     audioMixMode: 'preserve_background' | 'replace_original';

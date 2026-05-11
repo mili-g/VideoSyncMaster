@@ -21,6 +21,7 @@ DEFAULT_ASR_MODEL_PROFILES = {
 DEFAULT_TTS_MODEL_PROFILES = {
     "indextts": "standard",
     "qwen": "quality",
+    "gptsovits": "balanced",
 }
 
 
@@ -131,6 +132,17 @@ TTS_MODEL_PROFILES = {
         "fast": {
             "label": "Qwen3-TTS 0.6B",
             "qwen_model_size": "0.6B",
+        },
+    },
+    "gptsovits": {
+        "fast": {
+            "label": "GPT-SoVITS Fast",
+        },
+        "balanced": {
+            "label": "GPT-SoVITS Balanced",
+        },
+        "quality": {
+            "label": "GPT-SoVITS Quality",
         },
     },
 }

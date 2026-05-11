@@ -10,7 +10,7 @@ import logging
 from app_logging import get_logger, redirect_print
 from audio_validation import validate_generated_audio
 from event_protocol import emit_issue, emit_partial_result, emit_progress, emit_stage
-from gpu_runtime import choose_adaptive_batch_size, format_gpu_snapshot
+from gpu_runtime import choose_adaptive_batch_size, classify_single_gpu_tier, format_gpu_snapshot, get_single_gpu_memory_snapshot
 from model_profiles import get_tts_profile
 from path_layout import get_media_tool_bin_dir, get_media_tool_root, get_models_root, get_project_root
 
@@ -202,6 +202,38 @@ def get_qwen_tts_runtime_status():
         return False, f"Qwen3TTSModel import failed: {QWEN_TTS_IMPORT_ERROR or 'unknown import error'}"
     return True, None
 
+
+def get_qwen_tts_runtime_diagnostics(*, text="", duration=None, batch_size=1, max_new_tokens=4096, **kwargs):
+    requested_batch_size = max(int(batch_size or 1), 1)
+    adaptive_batch_size, adaptive_detail = choose_adaptive_batch_size(requested_batch_size, "qwen_tts")
+    effective_max_new_tokens, snapshot, tier = _compute_qwen_gpu_aware_max_new_tokens(text, max_new_tokens, duration)
+    gen_kwargs = _build_qwen_generation_kwargs(
+        {
+            **kwargs,
+            "max_new_tokens": max_new_tokens,
+        },
+        text=text,
+        duration=duration,
+        adaptive_max_new_tokens=True,
+    )
+    gpu_snapshot = gen_kwargs.pop("_gpu_snapshot", snapshot)
+    gpu_tier = gen_kwargs.pop("_gpu_tier", tier)
+    sanitized = _sanitize_qwen_generation_kwargs(gen_kwargs)
+    return {
+        "service": "qwen",
+        "runtime_ok": get_qwen_tts_runtime_status()[0],
+        "snapshot": gpu_snapshot,
+        "tier": gpu_tier,
+        "adaptive_batch": adaptive_batch_size,
+        "adaptive_batch_detail": adaptive_detail,
+        "effective_single": {
+            "max_new_tokens": int(effective_max_new_tokens),
+            "temperature": float(sanitized.get("temperature", 0.0) or 0.0),
+            "top_p": float(sanitized.get("top_p", 0.0) or 0.0),
+            "repetition_penalty": float(sanitized.get("repetition_penalty", 0.0) or 0.0),
+        },
+    }
+
 # Global Model Cache
 # { 'model_type': model_instance }
 # types: 'VoiceDesign', 'Base', 'CustomVoice'
@@ -285,6 +317,23 @@ def _compute_adaptive_max_new_tokens(text, requested_max_new_tokens, duration=No
     return max(512, min(requested, adaptive_cap))
 
 
+def _compute_qwen_gpu_aware_max_new_tokens(text, requested_max_new_tokens, duration=None):
+    adaptive_cap = _compute_adaptive_max_new_tokens(text, requested_max_new_tokens, duration)
+    snapshot = get_single_gpu_memory_snapshot()
+    tier = classify_single_gpu_tier(snapshot)
+
+    if tier == "critical":
+        adaptive_cap = min(adaptive_cap, 896)
+    elif tier == "tight":
+        adaptive_cap = min(adaptive_cap, 1280)
+    elif tier == "balanced":
+        adaptive_cap = min(adaptive_cap, 2048)
+    elif tier == "roomy":
+        adaptive_cap = min(adaptive_cap, 2560)
+
+    return max(512, adaptive_cap), snapshot, tier
+
+
 def _build_qwen_generation_kwargs(kwargs, *, text="", duration=None, adaptive_max_new_tokens=False):
     gen_kwargs = {}
     real_model = kwargs.get("_real_model")
@@ -300,9 +349,14 @@ def _build_qwen_generation_kwargs(kwargs, *, text="", duration=None, adaptive_ma
 
     requested_max_new_tokens = int(kwargs.get("max_new_tokens", 4096))
     if adaptive_max_new_tokens:
-        gen_kwargs["max_new_tokens"] = _compute_adaptive_max_new_tokens(text, requested_max_new_tokens, duration)
+        max_new_tokens, gpu_snapshot, gpu_tier = _compute_qwen_gpu_aware_max_new_tokens(text, requested_max_new_tokens, duration)
+        gen_kwargs["max_new_tokens"] = max_new_tokens
+        gen_kwargs["_gpu_snapshot"] = gpu_snapshot
+        gen_kwargs["_gpu_tier"] = gpu_tier
     else:
         gen_kwargs["max_new_tokens"] = requested_max_new_tokens
+        gen_kwargs["_gpu_snapshot"] = get_single_gpu_memory_snapshot()
+        gen_kwargs["_gpu_tier"] = classify_single_gpu_tier(gen_kwargs["_gpu_snapshot"])
 
     if "temperature" in kwargs:
         gen_kwargs["temperature"] = float(kwargs["temperature"])
@@ -322,7 +376,20 @@ def _build_qwen_generation_kwargs(kwargs, *, text="", duration=None, adaptive_ma
     if kwargs.get("do_sample"):
         gen_kwargs["do_sample"] = True
 
-    return {key: value for key, value in gen_kwargs.items() if key in QWEN_ALLOWED_GENERATION_KWARGS}
+    if gen_kwargs.get("_gpu_tier") == "critical":
+        gen_kwargs["temperature"] = min(float(gen_kwargs.get("temperature", 0.7)), 0.65)
+        gen_kwargs["top_p"] = min(float(gen_kwargs.get("top_p", 0.8)), 0.82)
+        gen_kwargs["repetition_penalty"] = max(float(gen_kwargs.get("repetition_penalty", 1.0)), 1.08)
+    elif gen_kwargs.get("_gpu_tier") == "tight":
+        gen_kwargs["temperature"] = min(float(gen_kwargs.get("temperature", 0.7)), 0.68)
+        gen_kwargs["top_p"] = min(float(gen_kwargs.get("top_p", 0.8)), 0.86)
+        gen_kwargs["repetition_penalty"] = max(float(gen_kwargs.get("repetition_penalty", 1.0)), 1.04)
+
+    return gen_kwargs
+
+
+def _sanitize_qwen_generation_kwargs(gen_kwargs):
+    return {key: value for key, value in (gen_kwargs or {}).items() if key in QWEN_ALLOWED_GENERATION_KWARGS}
 
 def get_model(model_type, model_size="1.7B", device="cuda"):
     """
@@ -558,6 +625,11 @@ def run_qwen_tts(text, ref_audio_path, output_path, language="Auto", **kwargs):
                 text=text,
                 adaptive_max_new_tokens=True
             )
+            gpu_snapshot = gen_kwargs.pop("_gpu_snapshot", None)
+            gpu_tier = gen_kwargs.pop("_gpu_tier", "unknown")
+            if gpu_snapshot:
+                print(f"[QwenTTS] GPU profile: {format_gpu_snapshot(gpu_snapshot)} tier={gpu_tier}")
+            gen_kwargs = _sanitize_qwen_generation_kwargs(gen_kwargs)
             
             # Pass other kwargs directly if needed or filter?
             # generate_voice_clone handles them via **kwargs usually
@@ -680,6 +752,11 @@ def run_batch_qwen_tts(tasks, language="Auto", **kwargs):
                 duration=batch_tasks[0].get('duration') if len(batch_tasks) == 1 else None,
                 adaptive_max_new_tokens=(len(batch_tasks) == 1)
             )
+            gpu_snapshot = gen_kwargs.pop("_gpu_snapshot", None)
+            gpu_tier = gen_kwargs.pop("_gpu_tier", "unknown")
+            if gpu_snapshot:
+                print(f"[QwenTTS] GPU profile: {format_gpu_snapshot(gpu_snapshot)} tier={gpu_tier}")
+            gen_kwargs = _sanitize_qwen_generation_kwargs(gen_kwargs)
 
             try:
                 wavs = []
