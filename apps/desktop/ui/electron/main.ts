@@ -176,8 +176,17 @@ const LICENSE_PROTECTED_BACKEND_ACTIONS = new Set([
   'prepare_reference_audio'
 ])
 const LICENSE_TICKET_SECRET_ENV = 'VSM_LICENSE_TICKET_SECRET'
+const BACKEND_WORKER_LANE_ENV = 'VSM_BACKEND_WORKER_LANE'
+const BACKEND_INTEGRITY_ENFORCED_ENV = 'VSM_ENFORCE_BACKEND_INTEGRITY'
 const LICENSE_TICKET_TTL_MS = 90 * 1000
 const backendLicenseTicketSecret = randomBytes(32).toString('hex')
+const CRITICAL_BACKEND_FILE_HASHES = {
+  'main.py': '178A29BC6B52D2CCBC763C32A71ACBA90C0955C60E5963EBF99EDCF6C30DF3B2',
+  'cli_options.py': '60498643EF4E2B6686E847C08CE93CC1F53B5153DDEE87EFE4020039AA47BE2E',
+  'licensing_guard.py': '97096DC2ACA47AD3873E1471B16E5D066657AF561CAC58B8D7C9D8E73E6765A5',
+  'vsm/interfaces/cli/worker_host.py': 'BD20D7C5C2DE51469DCD668B7A6B5D242563054C9314FEEBADF17A906D6A39DD'
+} as const
+const CRITICAL_PUBLIC_KEY_SHA256 = '48707BFDED2151381B79FF03CE40F586BDB363E9F153EEC0237AE33FF3313284'
 
 type MainLogLevel = 'info' | 'warn' | 'error' | 'debug'
 type MainLogType = 'business' | 'error' | 'security' | 'debug'
@@ -1382,6 +1391,77 @@ function sha256File(filePath: string) {
   return hash.digest('hex')
 }
 
+type IntegrityCheckResult = {
+  ok: boolean
+  issues: string[]
+  checkedAt: string
+}
+
+let integrityCheckCache: { expiresAt: number; result: IntegrityCheckResult } | null = null
+
+function buildCriticalIntegritySnapshot(projectRoot = getProjectRoot()): IntegrityCheckResult {
+  const issues: string[] = []
+  const backendRoot = getBackendRoot(projectRoot)
+
+  for (const [relativePath, expectedHash] of Object.entries(CRITICAL_BACKEND_FILE_HASHES)) {
+    const targetPath = path.join(backendRoot, relativePath)
+    if (!fs.existsSync(targetPath)) {
+      issues.push(`缺少关键文件：${relativePath}`)
+      continue
+    }
+    const currentHash = sha256File(targetPath).toUpperCase()
+    if (currentHash !== expectedHash) {
+      issues.push(`关键文件完整性校验失败：${relativePath}`)
+    }
+  }
+
+  const publicKeyPath = getEmbeddedTrustedLicensePublicKeyPath()
+  if (!fs.existsSync(publicKeyPath)) {
+    issues.push('缺少许可证公钥文件。')
+  } else {
+    const currentHash = sha256File(publicKeyPath).toUpperCase()
+    if (currentHash !== CRITICAL_PUBLIC_KEY_SHA256) {
+      issues.push('许可证公钥完整性校验失败。')
+    }
+  }
+
+  return {
+    ok: issues.length === 0,
+    issues,
+    checkedAt: new Date().toISOString()
+  }
+}
+
+function getCriticalIntegritySnapshot(projectRoot = getProjectRoot()) {
+  if (!app.isPackaged) {
+    return {
+      ok: true,
+      issues: [],
+      checkedAt: new Date().toISOString()
+    } satisfies IntegrityCheckResult
+  }
+
+  const now = Date.now()
+  if (integrityCheckCache && integrityCheckCache.expiresAt > now) {
+    return integrityCheckCache.result
+  }
+
+  const result = buildCriticalIntegritySnapshot(projectRoot)
+  integrityCheckCache = {
+    expiresAt: now + 15_000,
+    result
+  }
+  return result
+}
+
+function getCriticalIntegrityError() {
+  const snapshot = getCriticalIntegritySnapshot()
+  if (snapshot.ok) {
+    return null
+  }
+  return `检测到客户端关键文件异常，请重新安装当前版本。\n\n${snapshot.issues.join('\n')}`
+}
+
 async function downloadRuntimeBundle(downloadUrl: string, destinationPath: string, onProgress?: (percent: number, message: string) => void) {
   if (/^file:\/\//i.test(downloadUrl)) {
     const sourcePath = fileURLToPath(downloadUrl)
@@ -2505,6 +2585,16 @@ function verifyLicenseEnvelope(envelope: LicenseEnvelopeRecord) {
 
 function readActiveLicenseStatus() {
   const cachePath = getLicenseCachePath()
+  const integrityError = getCriticalIntegrityError()
+  if (integrityError) {
+    return {
+      exists: fs.existsSync(cachePath),
+      verified: false,
+      validNow: false,
+      reason: integrityError
+    }
+  }
+
   if (!fs.existsSync(cachePath)) {
     return { exists: false, verified: false, validNow: false }
   }
@@ -2539,8 +2629,12 @@ function readActiveLicenseStatus() {
 
 function buildLicensingOverview() {
   const machine = getMachineFingerprintInfoSafe()
+  const integritySnapshot = getCriticalIntegritySnapshot()
+  const integrityError = integritySnapshot.ok
+    ? undefined
+    : `检测到客户端关键文件异常，请重新安装当前版本。\n\n${integritySnapshot.issues.join('\n')}`
   return {
-    success: machine.available !== false,
+    success: machine.available !== false && integritySnapshot.ok,
     plans: LICENSE_PLANS,
     machine: {
       shortFingerprint: machine.shortFingerprint,
@@ -2549,7 +2643,7 @@ function buildLicensingOverview() {
       reason: machine.reason
     },
     activeLicense: readActiveLicenseStatus(),
-    error: machine.available === false ? machine.reason : undefined
+    error: integrityError || (machine.available === false ? machine.reason : undefined)
   }
 }
 
@@ -2587,10 +2681,12 @@ function getBackendActionFromArgs(args: string[]) {
 }
 
 function buildBackendLicenseTicket(action: string, lane: BackendLane) {
+  const now = Date.now()
   const payload = {
     action,
     lane,
-    exp: Date.now() + LICENSE_TICKET_TTL_MS,
+    iat: now,
+    exp: now + LICENSE_TICKET_TTL_MS,
     nonce: randomBytes(12).toString('hex')
   }
   const serialized = JSON.stringify(payload)
@@ -2620,6 +2716,16 @@ function getBackendActionLicenseError(action: string | null) {
     return null
   }
 
+  const integrityError = getCriticalIntegrityError()
+  if (integrityError) {
+    logMainSecurity('拦截完整性异常的后端任务', {
+      domain: 'licensing.integrity',
+      action: 'getBackendActionLicenseError',
+      detail: `${action} | ${integrityError}`
+    })
+    return integrityError
+  }
+
   const licenseStatus = readActiveLicenseStatus()
   if (licenseStatus.validNow) {
     return null
@@ -2636,6 +2742,11 @@ function getBackendActionLicenseError(action: string | null) {
 
 
 function activateLicenseFromCode(activationCode: string) {
+  const integrityError = getCriticalIntegrityError()
+  if (integrityError) {
+    return { success: false, error: integrityError }
+  }
+
   const envelope = decodeActivationCode(activationCode)
   const verification = verifyLicenseEnvelope(envelope)
   if (!verification.verified) {
@@ -3032,6 +3143,8 @@ async function ensureBackendWorker(lane: BackendLane) {
   const workerEnv = {
     ...getPythonProcessEnv(),
     [LICENSE_TICKET_SECRET_ENV]: backendLicenseTicketSecret,
+    [BACKEND_WORKER_LANE_ENV]: lane,
+    [BACKEND_INTEGRITY_ENFORCED_ENV]: app.isPackaged ? '1' : '0',
     ...workerState.launchEnvOverrides
   }
   if (Object.keys(workerState.launchEnvOverrides).length > 0) {

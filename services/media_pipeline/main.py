@@ -15,7 +15,11 @@ from bootstrap.execution_services_factory import (
 )
 from bootstrap.runtime_env import setup_gpu_paths
 from bootstrap.startup_context import initialize_runtime_bootstrap
-from bootstrap.tts_runtime import get_tts_runner as resolve_tts_runner, warmup_tts_runtime as run_tts_runtime_warmup
+from bootstrap.tts_runtime import (
+    cleanup_loaded_tts_runtime,
+    get_tts_runner as resolve_tts_runner,
+    warmup_tts_runtime as run_tts_runtime_warmup,
+)
 from infra.events import clear_event_context, emit_partial_result, emit_progress, emit_stage, scoped_event_context, set_event_context
 from infra.logging import log_business, log_error
 
@@ -35,6 +39,7 @@ from vsm.interfaces.cli.json_output import emit_json_block
 from vsm.interfaces.cli.worker_host import run_worker_loop as run_cli_worker_loop
 from dependency_manager import ensure_transformers_version, check_gpu_deps, get_installed_version, infer_runtime_profile, normalize_runtime_profile, resolve_runtime_profile_version
 from error_model import emit_error_issue, error_result, exception_result, make_error
+from licensing_guard import enforce_backend_runtime_guards
 from runtime_config import build_asr_runtime_config
 
 WORKER_RESULT_PREFIX = "__WORKER_RESULT__"
@@ -72,6 +77,7 @@ execution_services = build_execution_services(
 
 
 def execute_with_args(args):
+    enforce_backend_runtime_guards(args)
     return execute_action(
         args,
         build_asr_runtime_config=build_asr_runtime_config,
@@ -85,6 +91,7 @@ def execute_with_args(args):
         build_action_router=build_action_router,
         log_error=log_error,
         logger=logger,
+        cleanup_loaded_tts_runtime=cleanup_loaded_tts_runtime,
     )
 
 
